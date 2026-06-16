@@ -32,12 +32,14 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_vm tests/test_vm.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sql tests/test_sql.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_lexer tests/test_lexer.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_parser tests/test_parser.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(BINDIR)/test_value
 	$(BINDIR)/test_chunk
 	$(BINDIR)/test_compiler
 	$(BINDIR)/test_vm
 	$(BINDIR)/test_sql
 	$(BINDIR)/test_lexer
+	$(BINDIR)/test_parser
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)

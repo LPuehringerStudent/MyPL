@@ -52,6 +52,15 @@ TEST(parser_parses_comparison) {
     free(expr);
 }
 
+TEST(parser_parses_field_expression) {
+    Expr* expr = parse_expression("row.id");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_FIELD, expr->kind);
+    ASSERT_INT_EQ(0, strcmp("row", expr->as.field.row));
+    ASSERT_INT_EQ(0, strcmp("id", expr->as.field.field));
+    free_expr(expr);
+}
+
 TEST(parser_parses_procedure_and_var_decl) {
     Program* program = parse("proc main() -> int { int x = 42; }");
     ASSERT_PTR_NOT_NULL(program);
@@ -69,6 +78,42 @@ TEST(parser_parses_procedure_and_var_decl) {
     free_program(program);
 }
 
+TEST(parser_parses_assignment) {
+    Program* program = parse("proc main() -> int { x = 1; }");
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_ASSIGN, stmt->kind);
+    ASSERT_INT_EQ(0, strcmp("x", stmt->as.assign.name));
+    free_program(program);
+}
+
+TEST(parser_parses_if_statement) {
+    Program* program = parse("proc main() -> int { if x == 1 { return 0; } }");
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_IF, stmt->kind);
+    free_program(program);
+}
+
+TEST(parser_parses_return_statement) {
+    Program* program = parse("proc main() -> int { return 42; }");
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_RETURN, stmt->kind);
+    ASSERT_INT_EQ(EXPR_LITERAL, stmt->as.return_stmt.value->kind);
+    free_program(program);
+}
+
+TEST(parser_parses_for_sql_loop) {
+    Program* program = parse("proc main() -> int { for row in SELECT * FROM users { return 0; } }");
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_FOR, stmt->kind);
+    ASSERT_INT_EQ(0, strcmp("row", stmt->as.for_stmt.var_name));
+    ASSERT_INT_EQ(0, strcmp("SELECT * FROM users", stmt->as.for_stmt.sql_query));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -76,6 +121,11 @@ int main(void) {
     RUN_TEST(parser_parses_addition);
     RUN_TEST(parser_respects_precedence);
     RUN_TEST(parser_parses_comparison);
+    RUN_TEST(parser_parses_field_expression);
     RUN_TEST(parser_parses_procedure_and_var_decl);
+    RUN_TEST(parser_parses_assignment);
+    RUN_TEST(parser_parses_if_statement);
+    RUN_TEST(parser_parses_return_statement);
+    RUN_TEST(parser_parses_for_sql_loop);
     TEST_SUMMARY();
 }

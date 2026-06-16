@@ -18,12 +18,35 @@ Program* create_program(void) {
     return program;
 }
 
-static void free_expr(Expr* expr);
+void free_expr(Expr* expr) {
+    if (expr == NULL) return;
+    switch (expr->kind) {
+        case EXPR_VARIABLE:
+            free(expr->as.variable.name);
+            break;
+        case EXPR_BINARY:
+            free_expr(expr->as.binary.left);
+            free_expr(expr->as.binary.right);
+            break;
+        case EXPR_UNARY:
+            free_expr(expr->as.unary.operand);
+            break;
+        case EXPR_FIELD:
+            free(expr->as.field.row);
+            free(expr->as.field.field);
+            break;
+        default:
+            break;
+    }
+    free(expr);
+}
+
+static void free_stmt(Stmt* stmt);
 
 static void free_block(Block* block) {
     if (block == NULL) return;
     for (int i = 0; i < block->stmt_count; i++) {
-        /* TODO: free_stmt */
+        free_stmt(block->stmts[i]);
     }
     free(block->stmts);
     free(block);
@@ -55,6 +78,34 @@ Block* create_block(void) {
     block->stmts = NULL;
     block->stmt_count = 0;
     return block;
+}
+
+static void free_stmt(Stmt* stmt) {
+    if (stmt == NULL) return;
+    switch (stmt->kind) {
+        case STMT_VAR_DECL:
+            free(stmt->as.var_decl.name);
+            free_expr(stmt->as.var_decl.initializer);
+            break;
+        case STMT_ASSIGN:
+            free(stmt->as.assign.name);
+            free_expr(stmt->as.assign.value);
+            break;
+        case STMT_IF:
+            free_expr(stmt->as.if_stmt.condition);
+            free_block(stmt->as.if_stmt.then_block);
+            free_block(stmt->as.if_stmt.else_block);
+            break;
+        case STMT_FOR:
+            free(stmt->as.for_stmt.var_name);
+            free(stmt->as.for_stmt.sql_query);
+            free_block(stmt->as.for_stmt.body);
+            break;
+        case STMT_RETURN:
+            free_expr(stmt->as.return_stmt.value);
+            break;
+    }
+    free(stmt);
 }
 
 Stmt* create_var_decl_stmt(TypeKind type, const char* name, Expr* init) {
