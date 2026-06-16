@@ -19,6 +19,13 @@ static char peek(Lexer* lexer) {
     return *lexer->current;
 }
 
+static int match(Lexer* lexer, char expected) {
+    if (is_at_end(lexer)) return 0;
+    if (*lexer->current != expected) return 0;
+    lexer->current++;
+    return 1;
+}
+
 static Token make_token(Lexer* lexer, TokenType type) {
     Token token;
     token.type = type;
@@ -52,16 +59,26 @@ Token lexer_next_token(Lexer* lexer) {
         case '{': return make_token(lexer, TOKEN_LBRACE);
         case '}': return make_token(lexer, TOKEN_RBRACE);
         case '+': return make_token(lexer, TOKEN_PLUS);
-        case '-': return make_token(lexer, TOKEN_MINUS);
+        case '-':
+            if (match(lexer, '>')) return make_token(lexer, TOKEN_ARROW);
+            return make_token(lexer, TOKEN_MINUS);
         case '*': return make_token(lexer, TOKEN_STAR);
         case '/': return make_token(lexer, TOKEN_SLASH);
         case ',': return make_token(lexer, TOKEN_COMMA);
         case ';': return make_token(lexer, TOKEN_SEMICOLON);
         case ':': return make_token(lexer, TOKEN_COLON);
-        case '<': return make_token(lexer, TOKEN_LT);
-        case '>': return make_token(lexer, TOKEN_GT);
-        case '=': return make_token(lexer, TOKEN_ASSIGN);
-        case '!': return make_token(lexer, TOKEN_BANG);
+        case '<':
+            if (match(lexer, '=')) return make_token(lexer, TOKEN_LE);
+            return make_token(lexer, TOKEN_LT);
+        case '>':
+            if (match(lexer, '=')) return make_token(lexer, TOKEN_GE);
+            return make_token(lexer, TOKEN_GT);
+        case '=':
+            if (match(lexer, '=')) return make_token(lexer, TOKEN_EQ);
+            return make_token(lexer, TOKEN_ASSIGN);
+        case '!':
+            if (match(lexer, '=')) return make_token(lexer, TOKEN_NE);
+            return make_token(lexer, TOKEN_BANG);
     }
 
     return error_token(lexer, "unexpected character");
