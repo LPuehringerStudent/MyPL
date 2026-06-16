@@ -1,6 +1,11 @@
-#include "compiler.h"
+#include "parser.h"
 
-int parse(const char* source) {
+Program* parse(const char* source) {
     (void)source;
-    return 0;
+    return NULL;
+}
+
+Expr* parse_expression(const char* source) {
+    (void)source;
+    return NULL;
 }
