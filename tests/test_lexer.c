@@ -83,10 +83,30 @@ TEST(lexer_scans_keywords) {
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 }
 
+TEST(lexer_scans_identifiers) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "foo");
+    Token t1 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_IDENT, t1.type);
+    ASSERT_INT_EQ(3, t1.length);
+
+    lexer_init(&lexer, "_bar");
+    Token t2 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_IDENT, t2.type);
+    ASSERT_INT_EQ(4, t2.length);
+
+    lexer_init(&lexer, "baz123");
+    Token t3 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_IDENT, t3.type);
+    ASSERT_INT_EQ(6, t3.length);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
     RUN_TEST(lexer_scans_two_char_operators);
     RUN_TEST(lexer_scans_keywords);
+    RUN_TEST(lexer_scans_identifiers);
     TEST_SUMMARY();
 }
