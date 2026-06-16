@@ -123,7 +123,36 @@ static Token error_token(Lexer* lexer, const char* message) {
     return token;
 }
 
+static void skip_whitespace(Lexer* lexer) {
+    for (;;) {
+        char c = peek(lexer);
+        switch (c) {
+            case ' ':
+            case '\r':
+            case '\t':
+                advance(lexer);
+                break;
+            case '\n':
+                lexer->line++;
+                advance(lexer);
+                break;
+            case '/':
+                if (peek_next(lexer) == '/') {
+                    while (peek(lexer) != '\n' && !is_at_end(lexer)) {
+                        advance(lexer);
+                    }
+                } else {
+                    return;
+                }
+                break;
+            default:
+                return;
+        }
+    }
+}
+
 Token lexer_next_token(Lexer* lexer) {
+    skip_whitespace(lexer);
     lexer->start = lexer->current;
 
     if (is_at_end(lexer)) {

@@ -161,6 +161,29 @@ TEST(lexer_reports_unterminated_string) {
     ASSERT_INT_EQ(TOKEN_ERROR, t.type);
 }
 
+TEST(lexer_skips_whitespace) {
+    Lexer lexer;
+    lexer_init(&lexer, "  \t\n  proc   (  ) ");
+    ASSERT_INT_EQ(TOKEN_PROC, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_LPAREN, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_RPAREN, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
+TEST(lexer_tracks_lines) {
+    Lexer lexer;
+    lexer_init(&lexer, "proc\nfoo");
+    ASSERT_INT_EQ(1, lexer_next_token(&lexer).line);
+    ASSERT_INT_EQ(2, lexer_next_token(&lexer).line);
+}
+
+TEST(lexer_reports_unexpected_character) {
+    Lexer lexer;
+    lexer_init(&lexer, "@");
+    Token t = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_ERROR, t.type);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
@@ -171,5 +194,8 @@ int main(void) {
     RUN_TEST(lexer_scans_floats);
     RUN_TEST(lexer_scans_strings);
     RUN_TEST(lexer_reports_unterminated_string);
+    RUN_TEST(lexer_skips_whitespace);
+    RUN_TEST(lexer_tracks_lines);
+    RUN_TEST(lexer_reports_unexpected_character);
     TEST_SUMMARY();
 }
