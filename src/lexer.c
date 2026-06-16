@@ -37,6 +37,28 @@ static int is_digit(char c) {
 }
 
 static Token make_token(Lexer* lexer, TokenType type);
+
+static char peek_next(Lexer* lexer) {
+    if (is_at_end(lexer)) return '\0';
+    return lexer->current[1];
+}
+
+static Token number(Lexer* lexer) {
+    while (is_digit(peek(lexer))) {
+        advance(lexer);
+    }
+
+    if (peek(lexer) == '.' && is_digit(peek_next(lexer))) {
+        advance(lexer); /* consume '.' */
+        while (is_digit(peek(lexer))) {
+            advance(lexer);
+        }
+        return make_token(lexer, TOKEN_FLOAT);
+    }
+
+    return make_token(lexer, TOKEN_INT);
+}
+
 static TokenType identifier_type(Lexer* lexer);
 
 static Token identifier(Lexer* lexer) {
@@ -133,6 +155,9 @@ Token lexer_next_token(Lexer* lexer) {
         case 'S': case 'T': case 'U': case 'V': case 'W': case 'X':
         case 'Y': case 'Z':
             return identifier(lexer);
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            return number(lexer);
     }
 
     return error_token(lexer, "unexpected character");

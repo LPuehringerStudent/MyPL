@@ -102,11 +102,51 @@ TEST(lexer_scans_identifiers) {
     ASSERT_INT_EQ(6, t3.length);
 }
 
+TEST(lexer_scans_integers) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "123");
+    Token t1 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_INT, t1.type);
+    ASSERT_INT_EQ(3, t1.length);
+
+    lexer_init(&lexer, "0");
+    Token t2 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_INT, t2.type);
+    ASSERT_INT_EQ(1, t2.length);
+
+    lexer_init(&lexer, "42");
+    Token t3 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_INT, t3.type);
+    ASSERT_INT_EQ(2, t3.length);
+}
+
+TEST(lexer_scans_floats) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "3.14");
+    Token t1 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_FLOAT, t1.type);
+    ASSERT_INT_EQ(4, t1.length);
+
+    lexer_init(&lexer, "0.5");
+    Token t2 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_FLOAT, t2.type);
+    ASSERT_INT_EQ(3, t2.length);
+
+    lexer_init(&lexer, "10.0");
+    Token t3 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_FLOAT, t3.type);
+    ASSERT_INT_EQ(4, t3.length);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
     RUN_TEST(lexer_scans_two_char_operators);
     RUN_TEST(lexer_scans_keywords);
     RUN_TEST(lexer_scans_identifiers);
+    RUN_TEST(lexer_scans_integers);
+    RUN_TEST(lexer_scans_floats);
     TEST_SUMMARY();
 }
