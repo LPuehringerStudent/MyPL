@@ -221,6 +221,90 @@ TEST(vm_executes_false_comparison) {
     free_chunk(&chunk);
 }
 
+TEST(vm_executes_conditional_jump) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int truthy = add_constant(&chunk, value_int(1));
+    int forty_two = add_constant(&chunk, value_int(42));
+    int thirteen = add_constant(&chunk, value_int(13));
+
+    /* if true: push 42, else: push 13 */
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)truthy);
+    write_chunk(&chunk, OP_JZ);
+    write_chunk_u16(&chunk, 0); /* offset patched below */
+    int jump_else = chunk.count - 2;
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)forty_two);
+    write_chunk(&chunk, OP_JMP);
+    write_chunk_u16(&chunk, 0); /* offset patched below */
+    int jump_end = chunk.count - 2;
+
+    int else_offset = chunk.count;
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)thirteen);
+    int end_offset = chunk.count;
+
+    /* Jump offset is measured from the instruction after the 16-bit operand. */
+    chunk.code[jump_else] = (uint8_t)((else_offset - (jump_else + 2)) >> 8);
+    chunk.code[jump_else + 1] = (uint8_t)((else_offset - (jump_else + 2)) & 0xFF);
+    chunk.code[jump_end] = (uint8_t)((end_offset - (jump_end + 2)) >> 8);
+    chunk.code[jump_end + 1] = (uint8_t)((end_offset - (jump_end + 2)) & 0xFF);
+
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(42, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_executes_jump_when_false) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int falsy = add_constant(&chunk, value_int(0));
+    int forty_two = add_constant(&chunk, value_int(42));
+    int thirteen = add_constant(&chunk, value_int(13));
+
+    /* if false: push 13, else: push 42 */
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)falsy);
+    write_chunk(&chunk, OP_JZ);
+    write_chunk_u16(&chunk, 0); /* offset patched below */
+    int jump_else = chunk.count - 2;
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)forty_two);
+    write_chunk(&chunk, OP_JMP);
+    write_chunk_u16(&chunk, 0); /* offset patched below */
+    int jump_end = chunk.count - 2;
+
+    int else_offset = chunk.count;
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)thirteen);
+    int end_offset = chunk.count;
+
+    /* Jump offset is measured from the instruction after the 16-bit operand. */
+    chunk.code[jump_else] = (uint8_t)((else_offset - (jump_else + 2)) >> 8);
+    chunk.code[jump_else + 1] = (uint8_t)((else_offset - (jump_else + 2)) & 0xFF);
+    chunk.code[jump_end] = (uint8_t)((end_offset - (jump_end + 2)) >> 8);
+    chunk.code[jump_end + 1] = (uint8_t)((end_offset - (jump_end + 2)) & 0xFF);
+
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(13, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_can_push_and_pop_values);
     RUN_TEST(vm_executes_constant_and_return);
@@ -233,5 +317,7 @@ int main(void) {
     RUN_TEST(vm_executes_less_than);
     RUN_TEST(vm_executes_greater_than);
     RUN_TEST(vm_executes_false_comparison);
+    RUN_TEST(vm_executes_conditional_jump);
+    RUN_TEST(vm_executes_jump_when_false);
     TEST_SUMMARY();
 }

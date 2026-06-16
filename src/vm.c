@@ -93,6 +93,21 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 binary_op(vm, value_gt);
                 break;
             }
+            case OP_JZ: {
+                uint16_t offset = read_u16(vm->ip);
+                vm->ip += 2;
+                Value cond = pop(vm);
+                if (!value_is_truthy(cond)) {
+                    vm->ip += offset;
+                }
+                break;
+            }
+            case OP_JMP: {
+                uint16_t offset = read_u16(vm->ip);
+                vm->ip += 2;
+                vm->ip += offset;
+                break;
+            }
             case OP_RETURN: {
                 return INTERPRET_OK;
             }
