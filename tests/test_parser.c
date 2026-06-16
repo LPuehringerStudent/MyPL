@@ -15,7 +15,7 @@ TEST(parser_parses_integer_literal) {
     ASSERT_PTR_NOT_NULL(expr);
     ASSERT_INT_EQ(EXPR_LITERAL, expr->kind);
     ASSERT_INT_EQ(42, expr->as.literal.value.as.as_int);
-    free(expr);
+    free_expr(expr);
 }
 
 TEST(parser_parses_identifier) {
@@ -23,7 +23,7 @@ TEST(parser_parses_identifier) {
     ASSERT_PTR_NOT_NULL(expr);
     ASSERT_INT_EQ(EXPR_VARIABLE, expr->kind);
     ASSERT_INT_EQ(0, strcmp("foo", expr->as.variable.name));
-    free(expr);
+    free_expr(expr);
 }
 
 TEST(parser_parses_addition) {
@@ -31,7 +31,7 @@ TEST(parser_parses_addition) {
     ASSERT_PTR_NOT_NULL(expr);
     ASSERT_INT_EQ(EXPR_BINARY, expr->kind);
     ASSERT_INT_EQ(TOKEN_PLUS, expr->as.binary.op);
-    free(expr);
+    free_expr(expr);
 }
 
 TEST(parser_respects_precedence) {
@@ -41,7 +41,7 @@ TEST(parser_respects_precedence) {
     ASSERT_INT_EQ(TOKEN_PLUS, expr->as.binary.op);
     ASSERT_INT_EQ(EXPR_BINARY, expr->as.binary.right->kind);
     ASSERT_INT_EQ(TOKEN_STAR, expr->as.binary.right->as.binary.op);
-    free(expr);
+    free_expr(expr);
 }
 
 TEST(parser_parses_comparison) {
@@ -49,7 +49,7 @@ TEST(parser_parses_comparison) {
     ASSERT_PTR_NOT_NULL(expr);
     ASSERT_INT_EQ(EXPR_BINARY, expr->kind);
     ASSERT_INT_EQ(TOKEN_EQ, expr->as.binary.op);
-    free(expr);
+    free_expr(expr);
 }
 
 TEST(parser_parses_field_expression) {

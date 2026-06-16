@@ -24,7 +24,9 @@ void free_chunk(Chunk* chunk) {
 void write_chunk(Chunk* chunk, uint8_t byte) {
     if (chunk->count >= chunk->capacity) {
         chunk->capacity = grow_capacity(chunk->capacity);
-        chunk->code = realloc(chunk->code, (size_t)chunk->capacity);
+        uint8_t* new_code = realloc(chunk->code, (size_t)chunk->capacity);
+        if (new_code == NULL) return;
+        chunk->code = new_code;
     }
     chunk->code[chunk->count] = byte;
     chunk->count++;
@@ -33,8 +35,10 @@ void write_chunk(Chunk* chunk, uint8_t byte) {
 int add_constant(Chunk* chunk, Value value) {
     if (chunk->constants_count >= chunk->constants_capacity) {
         chunk->constants_capacity = grow_capacity(chunk->constants_capacity);
-        chunk->constants = realloc(chunk->constants,
-                                   sizeof(Value) * (size_t)chunk->constants_capacity);
+        Value* new_constants = realloc(chunk->constants,
+                                       sizeof(Value) * (size_t)chunk->constants_capacity);
+        if (new_constants == NULL) return -1;
+        chunk->constants = new_constants;
     }
     chunk->constants[chunk->constants_count] = value;
     chunk->constants_count++;

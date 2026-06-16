@@ -161,6 +161,8 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_RETURN: {
                 return INTERPRET_OK;
             }
+            default:
+                return INTERPRET_RUNTIME_ERROR;
         }
     }
 }

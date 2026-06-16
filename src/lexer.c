@@ -220,7 +220,7 @@ Token lexer_next_token(Lexer* lexer) {
         case '5': case '6': case '7': case '8': case '9':
             return number(lexer);
         case '"': return string(lexer);
+        default:
+            return error_token(lexer, "unexpected character");
     }
-
-    return error_token(lexer, "unexpected character");
 }

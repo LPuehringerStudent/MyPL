@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #include "compiler.h"
 
 Value value_int(int v) {

@@ -13,6 +13,7 @@ static char* copy_string(const char* source) {
 
 Program* create_program(void) {
     Program* program = malloc(sizeof(Program));
+    if (program == NULL) return NULL;
     program->procs = NULL;
     program->proc_count = 0;
     return program;
@@ -54,11 +55,21 @@ static void free_block(Block* block) {
 
 ProcDecl* create_proc_decl(const char* name, TypeKind return_type) {
     ProcDecl* proc = malloc(sizeof(ProcDecl));
+    if (proc == NULL) return NULL;
     proc->name = copy_string(name);
+    if (proc->name == NULL && name != NULL) {
+        free(proc);
+        return NULL;
+    }
     proc->params = NULL;
     proc->param_count = 0;
     proc->return_type = return_type;
     proc->body = create_block();
+    if (proc->body == NULL) {
+        free(proc->name);
+        free(proc);
+        return NULL;
+    }
     return proc;
 }
 
@@ -75,6 +86,7 @@ void free_program(Program* program) {
 
 Block* create_block(void) {
     Block* block = malloc(sizeof(Block));
+    if (block == NULL) return NULL;
     block->stmts = NULL;
     block->stmt_count = 0;
     return block;
@@ -110,23 +122,39 @@ static void free_stmt(Stmt* stmt) {
 
 Stmt* create_var_decl_stmt(TypeKind type, const char* name, Expr* init) {
     Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
     stmt->kind = STMT_VAR_DECL;
     stmt->as.var_decl.type = type;
     stmt->as.var_decl.name = copy_string(name);
+    if (stmt->as.var_decl.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
     stmt->as.var_decl.initializer = init;
     return stmt;
 }
 
 Stmt* create_assign_stmt(const char* name, Expr* value) {
     Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
     stmt->kind = STMT_ASSIGN;
     stmt->as.assign.name = copy_string(name);
+    if (stmt->as.assign.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
     stmt->as.assign.value = value;
     return stmt;
 }
 
 Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block) {
     Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(cond);
+        free_block(then_block);
+        free_block(else_block);
+        return NULL;
+    }
     stmt->kind = STMT_IF;
     stmt->as.if_stmt.condition = cond;
     stmt->as.if_stmt.then_block = then_block;
@@ -136,15 +164,34 @@ Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block) {
 
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body) {
     Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_block(body);
+        return NULL;
+    }
     stmt->kind = STMT_FOR;
     stmt->as.for_stmt.var_name = copy_string(var_name);
+    if (stmt->as.for_stmt.var_name == NULL && var_name != NULL) {
+        free_block(body);
+        free(stmt);
+        return NULL;
+    }
     stmt->as.for_stmt.sql_query = copy_string(sql_query);
+    if (stmt->as.for_stmt.sql_query == NULL && sql_query != NULL) {
+        free(stmt->as.for_stmt.var_name);
+        free_block(body);
+        free(stmt);
+        return NULL;
+    }
     stmt->as.for_stmt.body = body;
     return stmt;
 }
 
 Stmt* create_return_stmt(Expr* value) {
     Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(value);
+        return NULL;
+    }
     stmt->kind = STMT_RETURN;
     stmt->as.return_stmt.value = value;
     return stmt;
@@ -152,6 +199,7 @@ Stmt* create_return_stmt(Expr* value) {
 
 Expr* create_literal_expr(Value value) {
     Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) return NULL;
     expr->kind = EXPR_LITERAL;
     expr->as.literal.value = value;
     return expr;
@@ -159,13 +207,23 @@ Expr* create_literal_expr(Value value) {
 
 Expr* create_variable_expr(const char* name) {
     Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) return NULL;
     expr->kind = EXPR_VARIABLE;
     expr->as.variable.name = copy_string(name);
+    if (expr->as.variable.name == NULL && name != NULL) {
+        free(expr);
+        return NULL;
+    }
     return expr;
 }
 
 Expr* create_binary_expr(TokenType op, Expr* left, Expr* right) {
     Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        free_expr(left);
+        free_expr(right);
+        return NULL;
+    }
     expr->kind = EXPR_BINARY;
     expr->as.binary.op = op;
     expr->as.binary.left = left;
@@ -175,6 +233,10 @@ Expr* create_binary_expr(TokenType op, Expr* left, Expr* right) {
 
 Expr* create_unary_expr(TokenType op, Expr* operand) {
     Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        free_expr(operand);
+        return NULL;
+    }
     expr->kind = EXPR_UNARY;
     expr->as.unary.op = op;
     expr->as.unary.operand = operand;
@@ -183,8 +245,18 @@ Expr* create_unary_expr(TokenType op, Expr* operand) {
 
 Expr* create_field_expr(const char* row, const char* field) {
     Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) return NULL;
     expr->kind = EXPR_FIELD;
     expr->as.field.row = copy_string(row);
+    if (expr->as.field.row == NULL && row != NULL) {
+        free(expr);
+        return NULL;
+    }
     expr->as.field.field = copy_string(field);
+    if (expr->as.field.field == NULL && field != NULL) {
+        free(expr->as.field.row);
+        free(expr);
+        return NULL;
+    }
     return expr;
 }

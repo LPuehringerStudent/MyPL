@@ -1,7 +1,6 @@
 #ifndef MYDB_SQL_ENGINE_H
 #define MYDB_SQL_ENGINE_H
 
-#include <stddef.h>
 #include "mydb.h"
 
 struct Context {
