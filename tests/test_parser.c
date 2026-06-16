@@ -24,9 +24,38 @@ TEST(parser_parses_identifier) {
     free(expr);
 }
 
+TEST(parser_parses_addition) {
+    Expr* expr = parse_expression("1 + 2");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_BINARY, expr->kind);
+    ASSERT_INT_EQ(TOKEN_PLUS, expr->as.binary.op);
+    free(expr);
+}
+
+TEST(parser_respects_precedence) {
+    Expr* expr = parse_expression("1 + 2 * 3");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_BINARY, expr->kind);
+    ASSERT_INT_EQ(TOKEN_PLUS, expr->as.binary.op);
+    ASSERT_INT_EQ(EXPR_BINARY, expr->as.binary.right->kind);
+    ASSERT_INT_EQ(TOKEN_STAR, expr->as.binary.right->as.binary.op);
+    free(expr);
+}
+
+TEST(parser_parses_comparison) {
+    Expr* expr = parse_expression("x == 1");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_BINARY, expr->kind);
+    ASSERT_INT_EQ(TOKEN_EQ, expr->as.binary.op);
+    free(expr);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_null_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
     RUN_TEST(parser_parses_identifier);
+    RUN_TEST(parser_parses_addition);
+    RUN_TEST(parser_respects_precedence);
+    RUN_TEST(parser_parses_comparison);
     TEST_SUMMARY();
 }
