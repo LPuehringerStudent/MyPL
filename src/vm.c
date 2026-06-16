@@ -49,6 +49,16 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 push(vm, vm->chunk->constants[idx]);
                 break;
             }
+            case OP_GET_LOCAL: {
+                uint8_t slot = *vm->ip++;
+                push(vm, vm->stack[slot]);
+                break;
+            }
+            case OP_SET_LOCAL: {
+                uint8_t slot = *vm->ip++;
+                vm->stack[slot] = *(vm->stack_top - 1);
+                break;
+            }
             case OP_RETURN: {
                 return INTERPRET_OK;
             }
