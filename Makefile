@@ -26,10 +26,12 @@ $(OBJDIR) $(BINDIR):
 	mkdir -p $@
 
 test: $(TARGET)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_value tests/test_value.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_chunk tests/test_chunk.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_compiler tests/test_compiler.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_vm tests/test_vm.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sql tests/test_sql.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(BINDIR)/test_value
 	$(BINDIR)/test_chunk
 	$(BINDIR)/test_compiler
 	$(BINDIR)/test_vm
