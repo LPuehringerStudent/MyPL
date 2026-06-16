@@ -3,6 +3,8 @@
 
 #include "compiler.h"
 
+#define STACK_MAX 256
+
 typedef struct VM VM;
 
 typedef enum {
@@ -14,5 +16,6 @@ typedef enum {
 VM*             vm_init(void);
 void            vm_free(VM* vm);
 InterpretResult vm_interpret(VM* vm, Chunk* chunk);
+Value           vm_pop(VM* vm);
 
 #endif
