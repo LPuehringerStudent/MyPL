@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "lexer.h"
 
 void lexer_init(Lexer* lexer, const char* source) {
@@ -24,6 +26,46 @@ static int match(Lexer* lexer, char expected) {
     if (*lexer->current != expected) return 0;
     lexer->current++;
     return 1;
+}
+
+static int is_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static int is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+static Token make_token(Lexer* lexer, TokenType type);
+static TokenType identifier_type(Lexer* lexer);
+
+static Token identifier(Lexer* lexer) {
+    while (is_alpha(peek(lexer)) || is_digit(peek(lexer))) {
+        advance(lexer);
+    }
+    return make_token(lexer, identifier_type(lexer));
+}
+
+static TokenType identifier_type(Lexer* lexer) {
+    int length = (int)(lexer->current - lexer->start);
+    switch (lexer->start[0]) {
+        case 'f':
+            if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
+            if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT;
+            break;
+        case 'i':
+            if (length == 2 && memcmp(lexer->start, "if", 2) == 0) return TOKEN_IF;
+            if (length == 3 && memcmp(lexer->start, "int", 3) == 0) return TOKEN_INT;
+            if (length == 2 && memcmp(lexer->start, "in", 2) == 0) return TOKEN_IN;
+            break;
+        case 'p':
+            if (length == 4 && memcmp(lexer->start, "proc", 4) == 0) return TOKEN_PROC;
+            break;
+        case 'r':
+            if (length == 6 && memcmp(lexer->start, "return", 6) == 0) return TOKEN_RETURN;
+            break;
+    }
+    return TOKEN_IDENT;
 }
 
 static Token make_token(Lexer* lexer, TokenType type) {
@@ -79,6 +121,18 @@ Token lexer_next_token(Lexer* lexer) {
         case '!':
             if (match(lexer, '=')) return make_token(lexer, TOKEN_NE);
             return make_token(lexer, TOKEN_BANG);
+        case '_':
+        case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+        case 'g': case 'h': case 'i': case 'j': case 'k': case 'l':
+        case 'm': case 'n': case 'o': case 'p': case 'q': case 'r':
+        case 's': case 't': case 'u': case 'v': case 'w': case 'x':
+        case 'y': case 'z':
+        case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+        case 'G': case 'H': case 'I': case 'J': case 'K': case 'L':
+        case 'M': case 'N': case 'O': case 'P': case 'Q': case 'R':
+        case 'S': case 'T': case 'U': case 'V': case 'W': case 'X':
+        case 'Y': case 'Z':
+            return identifier(lexer);
     }
 
     return error_token(lexer, "unexpected character");

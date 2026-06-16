@@ -51,9 +51,42 @@ TEST(lexer_scans_two_char_operators) {
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 }
 
+TEST(lexer_scans_keywords) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "proc");
+    ASSERT_INT_EQ(TOKEN_PROC, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "for");
+    ASSERT_INT_EQ(TOKEN_FOR, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "if");
+    ASSERT_INT_EQ(TOKEN_IF, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "return");
+    ASSERT_INT_EQ(TOKEN_RETURN, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "in");
+    ASSERT_INT_EQ(TOKEN_IN, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "int");
+    ASSERT_INT_EQ(TOKEN_INT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "float");
+    ASSERT_INT_EQ(TOKEN_FLOAT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
     RUN_TEST(lexer_scans_two_char_operators);
+    RUN_TEST(lexer_scans_keywords);
     TEST_SUMMARY();
 }
