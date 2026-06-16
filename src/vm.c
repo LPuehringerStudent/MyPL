@@ -57,8 +57,12 @@ Value vm_pop(VM* vm) {
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
     vm->chunk = chunk;
     vm->ip = chunk->code;
+    uint8_t* end = chunk->code + chunk->count;
 
     for (;;) {
+        if (vm->ip >= end) {
+            return INTERPRET_RUNTIME_ERROR;
+        }
         uint8_t op = *vm->ip++;
         switch (op) {
             case OP_CONST: {

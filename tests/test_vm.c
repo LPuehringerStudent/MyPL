@@ -337,6 +337,17 @@ TEST(vm_stack_underflow_returns_runtime_error) {
     free_chunk(&chunk);
 }
 
+TEST(vm_missing_return_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -353,5 +364,6 @@ int main(void) {
     RUN_TEST(vm_executes_jump_when_false);
     RUN_TEST(vm_stack_overflow_returns_runtime_error);
     RUN_TEST(vm_stack_underflow_returns_runtime_error);
+    RUN_TEST(vm_missing_return_returns_runtime_error);
     TEST_SUMMARY();
 }
