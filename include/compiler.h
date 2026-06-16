@@ -56,6 +56,15 @@ Value value_int(int v);
 Value value_float(double v);
 Value value_string(char* s);
 
+Value value_add(Value a, Value b);
+Value value_sub(Value a, Value b);
+Value value_mul(Value a, Value b);
+Value value_div(Value a, Value b);
+Value value_eq(Value a, Value b);
+Value value_lt(Value a, Value b);
+Value value_gt(Value a, Value b);
+int   value_is_truthy(Value value);
+
 int compile(const char* source, Chunk* chunk);
 
 #endif
