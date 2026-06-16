@@ -133,6 +133,94 @@ TEST(vm_executes_division) {
     free_chunk(&chunk);
 }
 
+TEST(vm_executes_comparisons) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(5));
+    int b = add_constant(&chunk, value_int(5));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_EQ);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_executes_less_than) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(3));
+    int b = add_constant(&chunk, value_int(5));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_LT);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_executes_greater_than) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(7));
+    int b = add_constant(&chunk, value_int(2));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_GT);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_executes_false_comparison) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(5));
+    int b = add_constant(&chunk, value_int(3));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_LT);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_can_push_and_pop_values);
     RUN_TEST(vm_executes_constant_and_return);
@@ -141,5 +229,9 @@ int main(void) {
     RUN_TEST(vm_executes_subtraction);
     RUN_TEST(vm_executes_multiplication);
     RUN_TEST(vm_executes_division);
+    RUN_TEST(vm_executes_comparisons);
+    RUN_TEST(vm_executes_less_than);
+    RUN_TEST(vm_executes_greater_than);
+    RUN_TEST(vm_executes_false_comparison);
     TEST_SUMMARY();
 }

@@ -81,6 +81,18 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 binary_op(vm, value_div);
                 break;
             }
+            case OP_EQ: {
+                binary_op(vm, value_eq);
+                break;
+            }
+            case OP_LT: {
+                binary_op(vm, value_lt);
+                break;
+            }
+            case OP_GT: {
+                binary_op(vm, value_gt);
+                break;
+            }
             case OP_RETURN: {
                 return INTERPRET_OK;
             }
