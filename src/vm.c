@@ -32,6 +32,12 @@ static Value pop(VM* vm) {
     return *vm->stack_top;
 }
 
+static void binary_op(VM* vm, Value (*op)(Value, Value)) {
+    Value b = pop(vm);
+    Value a = pop(vm);
+    push(vm, op(a, b));
+}
+
 Value vm_pop(VM* vm) {
     return pop(vm);
 }
@@ -57,6 +63,22 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_SET_LOCAL: {
                 uint8_t slot = *vm->ip++;
                 vm->stack[slot] = *(vm->stack_top - 1);
+                break;
+            }
+            case OP_ADD: {
+                binary_op(vm, value_add);
+                break;
+            }
+            case OP_SUB: {
+                binary_op(vm, value_sub);
+                break;
+            }
+            case OP_MUL: {
+                binary_op(vm, value_mul);
+                break;
+            }
+            case OP_DIV: {
+                binary_op(vm, value_div);
                 break;
             }
             case OP_RETURN: {
