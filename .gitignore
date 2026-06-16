@@ -1,0 +1,21 @@
+# Build artifacts
+bin/
+build/
+*.o
+*.a
+*.so
+mydb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Project docs (kept out of repo)
+docs/
+ARCHITECTURE.md
