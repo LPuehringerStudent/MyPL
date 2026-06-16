@@ -1,6 +1,7 @@
 #ifndef MYDB_COMPILER_H
 #define MYDB_COMPILER_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -47,6 +48,10 @@ void init_chunk(Chunk* chunk);
 void free_chunk(Chunk* chunk);
 void write_chunk(Chunk* chunk, uint8_t byte);
 int  add_constant(Chunk* chunk, Value value);
+
+Value value_int(int v);
+Value value_float(double v);
+Value value_string(char* s);
 
 int compile(const char* source, Chunk* chunk);
 

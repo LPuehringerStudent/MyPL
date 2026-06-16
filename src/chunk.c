@@ -1,20 +1,42 @@
+#include <stdlib.h>
+
 #include "compiler.h"
 
+static int grow_capacity(int capacity) {
+    return capacity < 8 ? 8 : capacity * 2;
+}
+
 void init_chunk(Chunk* chunk) {
-    (void)chunk;
+    chunk->code = NULL;
+    chunk->count = 0;
+    chunk->capacity = 0;
+    chunk->constants = NULL;
+    chunk->constants_count = 0;
+    chunk->constants_capacity = 0;
 }
 
 void free_chunk(Chunk* chunk) {
-    (void)chunk;
+    free(chunk->code);
+    free(chunk->constants);
+    init_chunk(chunk);
 }
 
 void write_chunk(Chunk* chunk, uint8_t byte) {
-    (void)chunk;
-    (void)byte;
+    if (chunk->count >= chunk->capacity) {
+        chunk->capacity = grow_capacity(chunk->capacity);
+        chunk->code = realloc(chunk->code, (size_t)chunk->capacity);
+    }
+    chunk->code[chunk->count] = byte;
+    chunk->count++;
 }
 
 int add_constant(Chunk* chunk, Value value) {
-    (void)chunk;
-    (void)value;
-    return 0;
+    if (chunk->constants_count >= chunk->constants_capacity) {
+        chunk->constants_capacity = grow_capacity(chunk->constants_capacity);
+        chunk->constants = realloc(chunk->constants,
+                                   sizeof(Value) * (size_t)chunk->constants_capacity);
+    }
+    chunk->constants[chunk->constants_count] = value;
+    chunk->constants_count++;
+    return chunk->constants_count - 1;
 }
