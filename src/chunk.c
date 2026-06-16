@@ -40,3 +40,12 @@ int add_constant(Chunk* chunk, Value value) {
     chunk->constants_count++;
     return chunk->constants_count - 1;
 }
+
+void write_chunk_u16(Chunk* chunk, uint16_t value) {
+    write_chunk(chunk, (uint8_t)((value >> 8) & 0xFF));
+    write_chunk(chunk, (uint8_t)(value & 0xFF));
+}
+
+uint16_t read_u16(const uint8_t* bytes) {
+    return (uint16_t)((bytes[0] << 8) | bytes[1]);
+}

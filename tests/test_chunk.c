@@ -50,10 +50,23 @@ TEST(free_chunk_releases_memory) {
     ASSERT_INT_EQ(0, chunk.constants_capacity);
 }
 
+TEST(chunk_can_store_16_bit_operands) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    write_chunk_u16(&chunk, 0x1234);
+    ASSERT_INT_EQ(2, chunk.count);
+    ASSERT_INT_EQ(0x12, chunk.code[0]);
+    ASSERT_INT_EQ(0x34, chunk.code[1]);
+    uint16_t value = read_u16(chunk.code);
+    ASSERT_INT_EQ(0x1234, (int)value);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(init_chunk_clears_fields);
     RUN_TEST(write_chunk_stores_bytes);
     RUN_TEST(add_constant_appends_values);
     RUN_TEST(free_chunk_releases_memory);
+    RUN_TEST(chunk_can_store_16_bit_operands);
     TEST_SUMMARY();
 }

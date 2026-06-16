@@ -49,6 +49,9 @@ void free_chunk(Chunk* chunk);
 void write_chunk(Chunk* chunk, uint8_t byte);
 int  add_constant(Chunk* chunk, Value value);
 
+void   write_chunk_u16(Chunk* chunk, uint16_t value);
+uint16_t read_u16(const uint8_t* bytes);
+
 Value value_int(int v);
 Value value_float(double v);
 Value value_string(char* s);
