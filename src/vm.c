@@ -22,24 +22,36 @@ void vm_free(VM* vm) {
     free(vm);
 }
 
-static void push(VM* vm, Value value) {
+static int push(VM* vm, Value value) {
+    if (vm->stack_top >= vm->stack + STACK_MAX) {
+        return 0;
+    }
     *vm->stack_top = value;
     vm->stack_top++;
+    return 1;
 }
 
-static Value pop(VM* vm) {
+static int pop(VM* vm, Value* out) {
+    if (vm->stack_top <= vm->stack) {
+        return 0;
+    }
     vm->stack_top--;
-    return *vm->stack_top;
+    *out = *vm->stack_top;
+    return 1;
 }
 
-static void binary_op(VM* vm, Value (*op)(Value, Value)) {
-    Value b = pop(vm);
-    Value a = pop(vm);
-    push(vm, op(a, b));
+static int binary_op(VM* vm, Value (*op)(Value, Value)) {
+    Value b;
+    Value a;
+    if (!pop(vm, &b)) return 0;
+    if (!pop(vm, &a)) return 0;
+    return push(vm, op(a, b));
 }
 
 Value vm_pop(VM* vm) {
-    return pop(vm);
+    Value value;
+    pop(vm, &value);
+    return value;
 }
 
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
@@ -52,12 +64,16 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_CONST: {
                 uint16_t idx = read_u16(vm->ip);
                 vm->ip += 2;
-                push(vm, vm->chunk->constants[idx]);
+                if (!push(vm, vm->chunk->constants[idx])) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 break;
             }
             case OP_GET_LOCAL: {
                 uint8_t slot = *vm->ip++;
-                push(vm, vm->stack[slot]);
+                if (!push(vm, vm->stack[slot])) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 break;
             }
             case OP_SET_LOCAL: {
@@ -66,37 +82,38 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_ADD: {
-                binary_op(vm, value_add);
+                if (!binary_op(vm, value_add)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_SUB: {
-                binary_op(vm, value_sub);
+                if (!binary_op(vm, value_sub)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_MUL: {
-                binary_op(vm, value_mul);
+                if (!binary_op(vm, value_mul)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_DIV: {
-                binary_op(vm, value_div);
+                if (!binary_op(vm, value_div)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_EQ: {
-                binary_op(vm, value_eq);
+                if (!binary_op(vm, value_eq)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_LT: {
-                binary_op(vm, value_lt);
+                if (!binary_op(vm, value_lt)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_GT: {
-                binary_op(vm, value_gt);
+                if (!binary_op(vm, value_gt)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_JZ: {
                 uint16_t offset = read_u16(vm->ip);
                 vm->ip += 2;
-                Value cond = pop(vm);
+                Value cond;
+                if (!pop(vm, &cond)) return INTERPRET_RUNTIME_ERROR;
                 if (!value_is_truthy(cond)) {
                     vm->ip += offset;
                 }

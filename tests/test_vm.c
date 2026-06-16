@@ -1,7 +1,7 @@
 #include "test_harness.h"
 #include "vm.h"
 
-TEST(vm_can_push_and_pop_values) {
+TEST(vm_init_and_free) {
     VM* vm = vm_init();
     ASSERT_PTR_NOT_NULL(vm);
     vm_free(vm);
@@ -305,8 +305,40 @@ TEST(vm_executes_jump_when_false) {
     free_chunk(&chunk);
 }
 
+TEST(vm_stack_overflow_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int idx = add_constant(&chunk, value_int(1));
+    for (int i = 0; i < STACK_MAX + 1; i++) {
+        write_chunk(&chunk, OP_CONST);
+        write_chunk_u16(&chunk, (uint16_t)idx);
+    }
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_stack_underflow_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    write_chunk(&chunk, OP_ADD);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
-    RUN_TEST(vm_can_push_and_pop_values);
+    RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
     RUN_TEST(vm_executes_local_variables);
     RUN_TEST(vm_executes_arithmetic);
@@ -319,5 +351,7 @@ int main(void) {
     RUN_TEST(vm_executes_false_comparison);
     RUN_TEST(vm_executes_conditional_jump);
     RUN_TEST(vm_executes_jump_when_false);
+    RUN_TEST(vm_stack_overflow_returns_runtime_error);
+    RUN_TEST(vm_stack_underflow_returns_runtime_error);
     TEST_SUMMARY();
 }
