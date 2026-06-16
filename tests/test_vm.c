@@ -348,6 +348,89 @@ TEST(vm_missing_return_returns_runtime_error) {
     free_chunk(&chunk);
 }
 
+TEST(vm_invalid_constant_index_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int idx = add_constant(&chunk, value_int(1));
+    ASSERT_INT_EQ(0, idx);
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, 1); /* invalid: constants_count == 1 */
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_invalid_get_local_slot_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    write_chunk(&chunk, OP_GET_LOCAL);
+    write_chunk(&chunk, 0);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_invalid_set_local_slot_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int idx = add_constant(&chunk, value_int(1));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)idx);
+    write_chunk(&chunk, OP_SET_LOCAL);
+    write_chunk(&chunk, 1); /* invalid: only one value on stack */
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_invalid_jump_target_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    write_chunk(&chunk, OP_JMP);
+    write_chunk_u16(&chunk, 0xFFFF);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_invalid_jz_target_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int idx = add_constant(&chunk, value_int(0));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)idx);
+    write_chunk(&chunk, OP_JZ);
+    write_chunk_u16(&chunk, 0xFFFF);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -365,5 +448,10 @@ int main(void) {
     RUN_TEST(vm_stack_overflow_returns_runtime_error);
     RUN_TEST(vm_stack_underflow_returns_runtime_error);
     RUN_TEST(vm_missing_return_returns_runtime_error);
+    RUN_TEST(vm_invalid_constant_index_returns_runtime_error);
+    RUN_TEST(vm_invalid_get_local_slot_returns_runtime_error);
+    RUN_TEST(vm_invalid_set_local_slot_returns_runtime_error);
+    RUN_TEST(vm_invalid_jump_target_returns_runtime_error);
+    RUN_TEST(vm_invalid_jz_target_returns_runtime_error);
     TEST_SUMMARY();
 }

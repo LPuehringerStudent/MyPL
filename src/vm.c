@@ -66,22 +66,32 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
         uint8_t op = *vm->ip++;
         switch (op) {
             case OP_CONST: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t idx = read_u16(vm->ip);
                 vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 if (!push(vm, vm->chunk->constants[idx])) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
             }
             case OP_GET_LOCAL: {
+                if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
                 uint8_t slot = *vm->ip++;
+                int depth = (int)(vm->stack_top - vm->stack);
+                if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
                 if (!push(vm, vm->stack[slot])) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
             }
             case OP_SET_LOCAL: {
+                if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
                 uint8_t slot = *vm->ip++;
+                int depth = (int)(vm->stack_top - vm->stack);
+                if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
                 vm->stack[slot] = *(vm->stack_top - 1);
                 break;
             }
@@ -114,19 +124,29 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_JZ: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t offset = read_u16(vm->ip);
                 vm->ip += 2;
                 Value cond;
                 if (!pop(vm, &cond)) return INTERPRET_RUNTIME_ERROR;
                 if (!value_is_truthy(cond)) {
-                    vm->ip += offset;
+                    uint8_t* target = vm->ip + offset;
+                    if (target < vm->chunk->code || target > end) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    vm->ip = target;
                 }
                 break;
             }
             case OP_JMP: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t offset = read_u16(vm->ip);
                 vm->ip += 2;
-                vm->ip += offset;
+                uint8_t* target = vm->ip + offset;
+                if (target < vm->chunk->code || target > end) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                vm->ip = target;
                 break;
             }
             case OP_RETURN: {
