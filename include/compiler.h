@@ -24,6 +24,12 @@ typedef enum {
     OP_RETURN
 } OpCode;
 
+typedef enum {
+    VAL_INT,
+    VAL_FLOAT,
+    VAL_STRING
+} ValueType;
+
 typedef struct {
     int type;
     union {

@@ -50,6 +50,15 @@ TEST(gt_ints) {
     ASSERT_INT_EQ(1, r.as.as_int);
 }
 
+TEST(value_types_use_enum_constants) {
+    Value i = value_int(1);
+    Value f = value_float(1.5);
+    Value s = value_string("x");
+    ASSERT_INT_EQ(VAL_INT, i.type);
+    ASSERT_INT_EQ(VAL_FLOAT, f.type);
+    ASSERT_INT_EQ(VAL_STRING, s.type);
+}
+
 int main(void) {
     RUN_TEST(add_ints);
     RUN_TEST(sub_ints);
@@ -58,5 +67,6 @@ int main(void) {
     RUN_TEST(eq_ints);
     RUN_TEST(lt_ints);
     RUN_TEST(gt_ints);
+    RUN_TEST(value_types_use_enum_constants);
     TEST_SUMMARY();
 }
