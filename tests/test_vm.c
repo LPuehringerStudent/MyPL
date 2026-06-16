@@ -452,6 +452,153 @@ TEST(vm_division_by_zero_returns_runtime_error) {
     free_chunk(&chunk);
 }
 
+TEST(vm_add_float_and_int_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_float(1.5));
+    int b = add_constant(&chunk, value_int(2));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_ADD);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_sub_string_and_int_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_string("x"));
+    int b = add_constant(&chunk, value_int(2));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_SUB);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_mul_float_and_string_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_float(2.0));
+    int b = add_constant(&chunk, value_string("x"));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_MUL);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_div_string_and_int_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_string("x"));
+    int b = add_constant(&chunk, value_int(2));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_DIV);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_eq_float_and_int_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_float(1.0));
+    int b = add_constant(&chunk, value_int(1));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_EQ);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_lt_float_and_int_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_float(1.0));
+    int b = add_constant(&chunk, value_int(2));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_LT);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_gt_string_and_int_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_string("x"));
+    int b = add_constant(&chunk, value_int(2));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_GT);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -475,5 +622,12 @@ int main(void) {
     RUN_TEST(vm_invalid_jump_target_returns_runtime_error);
     RUN_TEST(vm_invalid_jz_target_returns_runtime_error);
     RUN_TEST(vm_division_by_zero_returns_runtime_error);
+    RUN_TEST(vm_add_float_and_int_returns_runtime_error);
+    RUN_TEST(vm_sub_string_and_int_returns_runtime_error);
+    RUN_TEST(vm_mul_float_and_string_returns_runtime_error);
+    RUN_TEST(vm_div_string_and_int_returns_runtime_error);
+    RUN_TEST(vm_eq_float_and_int_returns_runtime_error);
+    RUN_TEST(vm_lt_float_and_int_returns_runtime_error);
+    RUN_TEST(vm_gt_string_and_int_returns_runtime_error);
     TEST_SUMMARY();
 }
