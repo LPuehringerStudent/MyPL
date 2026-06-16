@@ -75,12 +75,34 @@ TEST(lexer_scans_keywords) {
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 
     lexer_init(&lexer, "int");
-    ASSERT_INT_EQ(TOKEN_INT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 
     lexer_init(&lexer, "float");
-    ASSERT_INT_EQ(TOKEN_FLOAT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_FLOAT_TYPE, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
+TEST(lexer_distinguishes_type_keywords_from_literals) {
+    Lexer lexer;
+    lexer_init(&lexer, "int 1 float 1.0");
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_INT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_FLOAT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_FLOAT, lexer_next_token(&lexer).type);
+}
+
+TEST(lexer_scans_dot) {
+    Lexer lexer;
+    lexer_init(&lexer, ".");
+    ASSERT_INT_EQ(TOKEN_DOT, lexer_next_token(&lexer).type);
+}
+
+TEST(lexer_scans_sql_query) {
+    Lexer lexer;
+    lexer_init(&lexer, "SELECT salary FROM employees WHERE id > min_id");
+    Token t = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_SQL_QUERY, t.type);
 }
 
 TEST(lexer_scans_identifiers) {
@@ -189,6 +211,9 @@ int main(void) {
     RUN_TEST(lexer_scans_single_char_tokens);
     RUN_TEST(lexer_scans_two_char_operators);
     RUN_TEST(lexer_scans_keywords);
+    RUN_TEST(lexer_distinguishes_type_keywords_from_literals);
+    RUN_TEST(lexer_scans_dot);
+    RUN_TEST(lexer_scans_sql_query);
     RUN_TEST(lexer_scans_identifiers);
     RUN_TEST(lexer_scans_integers);
     RUN_TEST(lexer_scans_floats);

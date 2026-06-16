@@ -75,12 +75,25 @@ static Token string(Lexer* lexer) {
 }
 
 static TokenType identifier_type(Lexer* lexer);
+static Token sql_query(Lexer* lexer);
 
 static Token identifier(Lexer* lexer) {
     while (is_alpha(peek(lexer)) || is_digit(peek(lexer))) {
         advance(lexer);
     }
-    return make_token(lexer, identifier_type(lexer));
+    TokenType type = identifier_type(lexer);
+    if (type == TOKEN_SQL_QUERY) {
+        return sql_query(lexer);
+    }
+    return make_token(lexer, type);
+}
+
+static Token sql_query(Lexer* lexer) {
+    while (peek(lexer) != '{' && !is_at_end(lexer)) {
+        if (peek(lexer) == '\n') lexer->line++;
+        advance(lexer);
+    }
+    return make_token(lexer, TOKEN_SQL_QUERY);
 }
 
 static TokenType identifier_type(Lexer* lexer) {
@@ -88,11 +101,11 @@ static TokenType identifier_type(Lexer* lexer) {
     switch (lexer->start[0]) {
         case 'f':
             if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
-            if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT;
+            if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
             break;
         case 'i':
             if (length == 2 && memcmp(lexer->start, "if", 2) == 0) return TOKEN_IF;
-            if (length == 3 && memcmp(lexer->start, "int", 3) == 0) return TOKEN_INT;
+            if (length == 3 && memcmp(lexer->start, "int", 3) == 0) return TOKEN_INT_TYPE;
             if (length == 2 && memcmp(lexer->start, "in", 2) == 0) return TOKEN_IN;
             break;
         case 'p':
@@ -100,6 +113,9 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 'r':
             if (length == 6 && memcmp(lexer->start, "return", 6) == 0) return TOKEN_RETURN;
+            break;
+        case 'S':
+            if (length == 6 && memcmp(lexer->start, "SELECT", 6) == 0) return TOKEN_SQL_QUERY;
             break;
     }
     return TOKEN_IDENT;
@@ -187,6 +203,7 @@ Token lexer_next_token(Lexer* lexer) {
         case '!':
             if (match(lexer, '=')) return make_token(lexer, TOKEN_NE);
             return make_token(lexer, TOKEN_BANG);
+        case '.': return make_token(lexer, TOKEN_DOT);
         case '_':
         case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
         case 'g': case 'h': case 'i': case 'j': case 'k': case 'l':
