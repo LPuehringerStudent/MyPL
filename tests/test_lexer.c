@@ -140,6 +140,27 @@ TEST(lexer_scans_floats) {
     ASSERT_INT_EQ(4, t3.length);
 }
 
+TEST(lexer_scans_strings) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "\"hello\"");
+    Token t1 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_STRING, t1.type);
+    ASSERT_INT_EQ(7, t1.length);
+
+    lexer_init(&lexer, "\"\"");
+    Token t2 = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_STRING, t2.type);
+    ASSERT_INT_EQ(2, t2.length);
+}
+
+TEST(lexer_reports_unterminated_string) {
+    Lexer lexer;
+    lexer_init(&lexer, "\"hello");
+    Token t = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_ERROR, t.type);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
@@ -148,5 +169,7 @@ int main(void) {
     RUN_TEST(lexer_scans_identifiers);
     RUN_TEST(lexer_scans_integers);
     RUN_TEST(lexer_scans_floats);
+    RUN_TEST(lexer_scans_strings);
+    RUN_TEST(lexer_reports_unterminated_string);
     TEST_SUMMARY();
 }

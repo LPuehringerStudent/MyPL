@@ -37,6 +37,7 @@ static int is_digit(char c) {
 }
 
 static Token make_token(Lexer* lexer, TokenType type);
+static Token error_token(Lexer* lexer, const char* message);
 
 static char peek_next(Lexer* lexer) {
     if (is_at_end(lexer)) return '\0';
@@ -57,6 +58,20 @@ static Token number(Lexer* lexer) {
     }
 
     return make_token(lexer, TOKEN_INT);
+}
+
+static Token string(Lexer* lexer) {
+    while (peek(lexer) != '"' && !is_at_end(lexer)) {
+        if (peek(lexer) == '\n') lexer->line++;
+        advance(lexer);
+    }
+
+    if (is_at_end(lexer)) {
+        return error_token(lexer, "unterminated string");
+    }
+
+    advance(lexer); /* closing quote */
+    return make_token(lexer, TOKEN_STRING);
 }
 
 static TokenType identifier_type(Lexer* lexer);
@@ -158,6 +173,7 @@ Token lexer_next_token(Lexer* lexer) {
         case '0': case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8': case '9':
             return number(lexer);
+        case '"': return string(lexer);
     }
 
     return error_token(lexer, "unexpected character");
