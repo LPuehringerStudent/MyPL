@@ -37,7 +37,21 @@ Value vm_pop(VM* vm) {
 }
 
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
-    (void)vm;
-    (void)chunk;
-    return INTERPRET_OK;
+    vm->chunk = chunk;
+    vm->ip = chunk->code;
+
+    for (;;) {
+        uint8_t op = *vm->ip++;
+        switch (op) {
+            case OP_CONST: {
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                push(vm, vm->chunk->constants[idx]);
+                break;
+            }
+            case OP_RETURN: {
+                return INTERPRET_OK;
+            }
+        }
+    }
 }
