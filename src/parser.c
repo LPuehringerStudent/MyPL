@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,6 +37,12 @@ typedef struct {
 
 static ParseRule* get_rule(TokenType type);
 static Expr* parse_precedence(Parser* parser, Precedence precedence);
+
+static void error_at_current(Parser* parser, const char* message) {
+    fprintf(stderr, "Parse error at line %d: %s (got token %d)\n",
+            parser->current.line, message, parser->current.type);
+    parser->had_error = 1;
+}
 
 static void advance(Parser* parser) {
     parser->previous = parser->current;
@@ -94,7 +101,7 @@ static Expr* parse_precedence(Parser* parser, Precedence precedence) {
     advance(parser);
     PrefixFn prefix_rule = get_rule(parser->previous.type)->prefix;
     if (prefix_rule == NULL) {
-        parser->had_error = 1;
+        error_at_current(parser, "expected expression");
         return NULL;
     }
 
@@ -111,6 +118,72 @@ static Expr* parse_precedence(Parser* parser, Precedence precedence) {
 
 static Expr* expression(Parser* parser) {
     return parse_precedence(parser, PREC_ASSIGNMENT);
+}
+
+static TypeKind parse_type(Parser* parser) {
+    if (match(parser, TOKEN_INT_TYPE)) return TYPE_INT;
+    if (match(parser, TOKEN_FLOAT_TYPE)) return TYPE_FLOAT;
+    if (match(parser, TOKEN_STRING)) return TYPE_STRING;
+    error_at_current(parser, "expected type");
+    return TYPE_INT;
+}
+
+static Stmt* var_decl(Parser* parser);
+static Stmt* statement(Parser* parser);
+
+static Block* block(Parser* parser) {
+    Block* result = create_block();
+    advance(parser); /* { */
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        Stmt** new_stmts = realloc(result->stmts,
+            sizeof(Stmt*) * (size_t)(result->stmt_count + 1));
+        result->stmts = new_stmts;
+        result->stmts[result->stmt_count++] = statement(parser);
+    }
+    advance(parser); /* } */
+    return result;
+}
+
+static Stmt* var_decl(Parser* parser) {
+    TypeKind type = parse_type(parser);
+    advance(parser); /* identifier */
+    char* name = copy_token_lexeme(&parser->previous);
+    Expr* init = NULL;
+    if (match(parser, TOKEN_ASSIGN)) {
+        init = expression(parser);
+    }
+    advance(parser); /* semicolon */
+    Stmt* stmt = create_var_decl_stmt(type, name, init);
+    free(name);
+    return stmt;
+}
+
+static Stmt* statement(Parser* parser) {
+    if (check(parser, TOKEN_INT_TYPE) || check(parser, TOKEN_FLOAT_TYPE)) {
+        return var_decl(parser);
+    }
+    error_at_current(parser, "expected statement");
+    return NULL;
+}
+
+static void parse_proc(Parser* parser, Program* program) {
+    /* current is IDENT (procedure name); 'proc' was consumed by caller */
+    advance(parser); /* name */
+    char* name = copy_token_lexeme(&parser->previous);
+    advance(parser); /* ( */
+    /* params skipped for now */
+    advance(parser); /* ) */
+    advance(parser); /* -> */
+    TypeKind return_type = parse_type(parser);
+    ProcDecl* proc = create_proc_decl(name, return_type);
+    free(name);
+    proc->body = block(parser);
+
+    ProcDecl* new_procs = realloc(program->procs,
+        sizeof(ProcDecl) * (size_t)(program->proc_count + 1));
+    program->procs = new_procs;
+    program->procs[program->proc_count++] = *proc;
+    free(proc);
 }
 
 static ParseRule rules[] = {
@@ -172,6 +245,24 @@ Expr* parse_expression(const char* source) {
 }
 
 Program* parse(const char* source) {
-    (void)source;
-    return NULL;
+    Parser parser;
+    lexer_init(&parser.lexer, source);
+    parser.had_error = 0;
+    advance(&parser);
+
+    Program* program = create_program();
+    while (!check(&parser, TOKEN_EOF)) {
+        if (match(&parser, TOKEN_PROC)) {
+            parse_proc(&parser, program);
+        } else {
+            error_at_current(&parser, "expected 'proc'");
+            break;
+        }
+    }
+
+    if (parser.had_error) {
+        free_program(program);
+        return NULL;
+    }
+    return program;
 }

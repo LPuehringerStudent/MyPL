@@ -129,6 +129,8 @@ struct Expr {
 Program* create_program(void);
 void free_program(Program* program);
 
+ProcDecl* create_proc_decl(const char* name, TypeKind return_type);
+
 Block* create_block(void);
 
 Stmt* create_var_decl_stmt(TypeKind type, const char* name, Expr* init);

@@ -29,6 +29,16 @@ static void free_block(Block* block) {
     free(block);
 }
 
+ProcDecl* create_proc_decl(const char* name, TypeKind return_type) {
+    ProcDecl* proc = malloc(sizeof(ProcDecl));
+    proc->name = copy_string(name);
+    proc->params = NULL;
+    proc->param_count = 0;
+    proc->return_type = return_type;
+    proc->body = create_block();
+    return proc;
+}
+
 void free_program(Program* program) {
     if (program == NULL) return;
     for (int i = 0; i < program->proc_count; i++) {
