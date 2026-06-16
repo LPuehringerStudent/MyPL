@@ -21,6 +21,7 @@ TEST(write_chunk_stores_bytes) {
     write_chunk(&chunk, OP_CONST);
     ASSERT_INT_EQ(2, chunk.count);
     ASSERT_INT_EQ(OP_CONST, chunk.code[1]);
+    free_chunk(&chunk);
 }
 
 TEST(add_constant_appends_values) {
@@ -34,6 +35,7 @@ TEST(add_constant_appends_values) {
     ASSERT_INT_EQ(1, idx1);
     ASSERT_INT_EQ(2, chunk.constants_count);
     ASSERT_INT_EQ(7, chunk.constants[1].as.as_int);
+    free_chunk(&chunk);
 }
 
 TEST(free_chunk_releases_memory) {
