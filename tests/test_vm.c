@@ -431,6 +431,27 @@ TEST(vm_invalid_jz_target_returns_runtime_error) {
     free_chunk(&chunk);
 }
 
+TEST(vm_division_by_zero_returns_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(1));
+    int b = add_constant(&chunk, value_int(0));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_DIV);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    InterpretResult result = vm_interpret(vm, &chunk);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -453,5 +474,6 @@ int main(void) {
     RUN_TEST(vm_invalid_set_local_slot_returns_runtime_error);
     RUN_TEST(vm_invalid_jump_target_returns_runtime_error);
     RUN_TEST(vm_invalid_jz_target_returns_runtime_error);
+    RUN_TEST(vm_division_by_zero_returns_runtime_error);
     TEST_SUMMARY();
 }

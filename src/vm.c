@@ -108,7 +108,12 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_DIV: {
-                if (!binary_op(vm, value_div)) return INTERPRET_RUNTIME_ERROR;
+                Value b;
+                Value a;
+                if (!pop(vm, &b)) return INTERPRET_RUNTIME_ERROR;
+                if (!pop(vm, &a)) return INTERPRET_RUNTIME_ERROR;
+                if (b.as.as_int == 0) return INTERPRET_RUNTIME_ERROR;
+                if (!push(vm, value_div(a, b))) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_EQ: {
