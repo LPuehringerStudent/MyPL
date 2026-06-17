@@ -7,6 +7,10 @@ struct VM {
     uint8_t* ip;
     Value    stack[STACK_MAX];
     Value*   stack_top;
+    Value*   frames[STACK_MAX];
+    uint8_t* return_ips[STACK_MAX];
+    int      frame_count;
+    Value*   frame_base;
 };
 
 VM* vm_init(void) {
@@ -15,6 +19,8 @@ VM* vm_init(void) {
     vm->chunk = NULL;
     vm->ip = NULL;
     vm->stack_top = vm->stack;
+    vm->frame_count = 0;
+    vm->frame_base = vm->stack;
     return vm;
 }
 
@@ -83,9 +89,9 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_GET_LOCAL: {
                 if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
                 uint8_t slot = *vm->ip++;
-                int depth = (int)(vm->stack_top - vm->stack);
+                int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                if (!push(vm, vm->stack[slot])) {
+                if (!push(vm, vm->frame_base[slot])) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -93,9 +99,9 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_SET_LOCAL: {
                 if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
                 uint8_t slot = *vm->ip++;
-                int depth = (int)(vm->stack_top - vm->stack);
+                int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                vm->stack[slot] = *(vm->stack_top - 1);
+                vm->frame_base[slot] = *(vm->stack_top - 1);
                 break;
             }
             case OP_ADD: {
@@ -158,8 +164,30 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 vm->ip = target;
                 break;
             }
+            case OP_CALL: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t target = read_u16(vm->ip);
+                if (target > (uint16_t)vm->chunk->count) return INTERPRET_RUNTIME_ERROR;
+                if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                vm->return_ips[vm->frame_count] = vm->ip + 2;
+                vm->frames[vm->frame_count] = vm->frame_base;
+                vm->frame_count++;
+                vm->frame_base = vm->stack_top;
+                vm->ip = vm->chunk->code + target;
+                break;
+            }
             case OP_RETURN: {
-                return INTERPRET_OK;
+                if (vm->frame_count == 0) {
+                    return INTERPRET_OK;
+                }
+                Value result;
+                if (!pop(vm, &result)) return INTERPRET_RUNTIME_ERROR;
+                vm->frame_count--;
+                vm->frame_base = vm->frames[vm->frame_count];
+                vm->ip = vm->return_ips[vm->frame_count];
+                vm->stack_top = vm->frame_base;
+                if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
+                break;
             }
             default:
                 return INTERPRET_RUNTIME_ERROR;

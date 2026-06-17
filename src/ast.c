@@ -36,6 +36,13 @@ void free_expr(Expr* expr) {
             free(expr->as.field.row);
             free(expr->as.field.field);
             break;
+        case EXPR_CALL:
+            free(expr->as.call.name);
+            for (int i = 0; i < expr->as.call.arg_count; i++) {
+                free_expr(expr->as.call.args[i]);
+            }
+            free(expr->as.call.args);
+            break;
         default:
             break;
     }
@@ -258,5 +265,29 @@ Expr* create_field_expr(const char* row, const char* field) {
         free(expr);
         return NULL;
     }
+    return expr;
+}
+
+Expr* create_call_expr(const char* name, Expr** args, int arg_count) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        for (int i = 0; i < arg_count; i++) {
+            free_expr(args[i]);
+        }
+        free(args);
+        return NULL;
+    }
+    expr->kind = EXPR_CALL;
+    expr->as.call.name = copy_string(name);
+    if (expr->as.call.name == NULL && name != NULL) {
+        for (int i = 0; i < arg_count; i++) {
+            free_expr(args[i]);
+        }
+        free(args);
+        free(expr);
+        return NULL;
+    }
+    expr->as.call.args = args;
+    expr->as.call.arg_count = arg_count;
     return expr;
 }

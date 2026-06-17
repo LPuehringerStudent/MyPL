@@ -15,7 +15,8 @@ typedef enum {
     EXPR_VARIABLE,
     EXPR_BINARY,
     EXPR_UNARY,
-    EXPR_FIELD
+    EXPR_FIELD,
+    EXPR_CALL
 } ExprKind;
 
 typedef enum {
@@ -115,6 +116,12 @@ typedef struct {
     char* field;
 } FieldExpr;
 
+typedef struct {
+    char* name;
+    Expr** args;
+    int arg_count;
+} CallExpr;
+
 struct Expr {
     ExprKind kind;
     union {
@@ -123,6 +130,7 @@ struct Expr {
         BinaryExpr binary;
         UnaryExpr unary;
         FieldExpr field;
+        CallExpr call;
     } as;
 };
 
@@ -146,5 +154,6 @@ Expr* create_variable_expr(const char* name);
 Expr* create_binary_expr(TokenType op, Expr* left, Expr* right);
 Expr* create_unary_expr(TokenType op, Expr* operand);
 Expr* create_field_expr(const char* row, const char* field);
+Expr* create_call_expr(const char* name, Expr** args, int arg_count);
 
 #endif

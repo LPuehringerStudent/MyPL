@@ -599,6 +599,27 @@ TEST(vm_gt_string_and_int_returns_runtime_error) {
     free_chunk(&chunk);
 }
 
+TEST(vm_executes_procedure_call) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int target = chunk.count + 4; /* after call + return */
+    write_chunk(&chunk, OP_CALL);
+    write_chunk_u16(&chunk, (uint16_t)target);
+    write_chunk(&chunk, OP_RETURN);
+
+    /* procedure body */
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)add_constant(&chunk, value_int(7)));
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(7, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -629,5 +650,6 @@ int main(void) {
     RUN_TEST(vm_eq_float_and_int_returns_runtime_error);
     RUN_TEST(vm_lt_float_and_int_returns_runtime_error);
     RUN_TEST(vm_gt_string_and_int_returns_runtime_error);
+    RUN_TEST(vm_executes_procedure_call);
     TEST_SUMMARY();
 }

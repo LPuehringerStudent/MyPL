@@ -112,6 +112,34 @@ static Expr* field(Parser* parser, Expr* left) {
     return expr;
 }
 
+static Expr* call(Parser* parser, Expr* left) {
+    if (left->kind != EXPR_VARIABLE) {
+        error_at_current(parser, "can only call named procedures");
+        return left;
+    }
+
+    Expr** args = NULL;
+    int arg_count = 0;
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            Expr** new_args = realloc(args, sizeof(Expr*) * (size_t)(arg_count + 1));
+            if (new_args == NULL) {
+                for (int i = 0; i < arg_count; i++) free_expr(args[i]);
+                free(args);
+                free_expr(left);
+                return NULL;
+            }
+            args = new_args;
+            args[arg_count++] = expression(parser);
+        } while (match(parser, TOKEN_COMMA));
+    }
+    advance(parser); /* consume ) */
+
+    Expr* expr = create_call_expr(left->as.variable.name, args, arg_count);
+    free_expr(left);
+    return expr;
+}
+
 static Expr* binary(Parser* parser, Expr* left) {
     TokenType op = parser->previous.type;
     ParseRule* rule = get_rule(op);
@@ -282,7 +310,7 @@ static ParseRule rules[] = {
     [TOKEN_SLASH]      = {NULL,     binary, PREC_FACTOR},
     [TOKEN_DOT]        = {NULL,     field,  PREC_CALL},
 
-    [TOKEN_LPAREN]     = {grouping, NULL,   PREC_NONE},
+    [TOKEN_LPAREN]     = {grouping, call,   PREC_CALL},
     [TOKEN_RPAREN]     = {NULL,     NULL,   PREC_NONE},
     [TOKEN_LBRACE]     = {NULL,     NULL,   PREC_NONE},
     [TOKEN_RBRACE]     = {NULL,     NULL,   PREC_NONE},

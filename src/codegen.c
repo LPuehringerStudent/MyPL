@@ -5,6 +5,8 @@
 #include "parser.h"
 
 #define MAX_LOCALS 256
+#define MAX_PROCS 256
+#define MAX_CALL_PATCHES 1024
 
 typedef struct {
     const char* name;
@@ -13,10 +15,24 @@ typedef struct {
 } Local;
 
 typedef struct {
+    const char* name;
+    int offset;
+} ProcEntry;
+
+typedef struct {
+    int offset;
+    const char* name;
+} CallPatch;
+
+typedef struct {
     Chunk* chunk;
     Local locals[MAX_LOCALS];
     int local_count;
     int scope_depth;
+    ProcEntry procs[MAX_PROCS];
+    int proc_count;
+    CallPatch patches[MAX_CALL_PATCHES];
+    int patch_count;
 } Compiler;
 
 static void emit_byte(Compiler* compiler, uint8_t byte) {
@@ -64,6 +80,33 @@ static int add_local(Compiler* compiler, const char* name, int length) {
     return compiler->local_count++;
 }
 
+static int find_proc(Compiler* compiler, const char* name) {
+    for (int i = 0; i < compiler->proc_count; i++) {
+        if (strcmp(compiler->procs[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void patch_call(Chunk* chunk, int offset, int target) {
+    chunk->code[offset] = (uint8_t)((target >> 8) & 0xFF);
+    chunk->code[offset + 1] = (uint8_t)(target & 0xFF);
+}
+
+static void emit_call(Compiler* compiler, const char* name) {
+    int idx = find_proc(compiler, name);
+    emit_byte(compiler, OP_CALL);
+    if (idx >= 0) {
+        emit_u16(compiler, (uint16_t)compiler->procs[idx].offset);
+    } else {
+        int patch = compiler->patch_count++;
+        compiler->patches[patch].offset = compiler->chunk->count;
+        compiler->patches[patch].name = name;
+        emit_u16(compiler, 0);
+    }
+}
+
 static void compile_expr(Compiler* compiler, Expr* expr);
 static void compile_stmt(Compiler* compiler, Stmt* stmt);
 
@@ -104,6 +147,14 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 case TOKEN_GT:    emit_byte(compiler, OP_GT);  break;
                 default: break;
             }
+            break;
+        }
+        case EXPR_CALL: {
+            CallExpr* c = &expr->as.call;
+            for (int i = 0; i < c->arg_count; i++) {
+                compile_expr(compiler, c->args[i]);
+            }
+            emit_call(compiler, c->name);
             break;
         }
         default:
@@ -163,12 +214,50 @@ int compile(const char* source, Chunk* chunk) {
     compiler.chunk = chunk;
     compiler.local_count = 0;
     compiler.scope_depth = 0;
+    compiler.proc_count = 0;
+    compiler.patch_count = 0;
 
     if (program->proc_count == 0) {
         emit_byte(&compiler, OP_RETURN);
-    } else {
-        compile_block(&compiler, program->procs[0].body);
+        free_program(program);
+        return 1;
+    }
+
+    int entry_index = 0;
+    for (int i = 0; i < program->proc_count; i++) {
+        if (strcmp(program->procs[i].name, "main") == 0) {
+            entry_index = i;
+            break;
+        }
+    }
+
+    /* Top-level: call entry procedure, then halt. */
+    int entry_patch = chunk->count + 1;
+    emit_byte(&compiler, OP_CALL);
+    emit_u16(&compiler, 0);
+    emit_byte(&compiler, OP_RETURN);
+
+    /* Emit procedure bodies and record their offsets. */
+    for (int i = 0; i < program->proc_count; i++) {
+        compiler.procs[compiler.proc_count].name = program->procs[i].name;
+        compiler.procs[compiler.proc_count].offset = chunk->count;
+        compiler.proc_count++;
+        compile_block(&compiler, program->procs[i].body);
         emit_byte(&compiler, OP_RETURN);
+        compiler.local_count = 0;
+    }
+
+    /* Patch top-level entry call. */
+    patch_call(chunk, entry_patch, compiler.procs[entry_index].offset);
+
+    /* Patch forward/out-of-order procedure calls. */
+    for (int i = 0; i < compiler.patch_count; i++) {
+        int idx = find_proc(&compiler, compiler.patches[i].name);
+        if (idx < 0) {
+            free_program(program);
+            return 0;
+        }
+        patch_call(chunk, compiler.patches[i].offset, compiler.procs[idx].offset);
     }
 
     free_program(program);

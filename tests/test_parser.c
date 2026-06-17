@@ -114,6 +114,15 @@ TEST(parser_parses_for_sql_loop) {
     free_program(program);
 }
 
+TEST(parser_parses_call_expression) {
+    Expr* expr = parse_expression("foo()");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_CALL, expr->kind);
+    ASSERT_INT_EQ(0, strcmp("foo", expr->as.call.name));
+    ASSERT_INT_EQ(0, expr->as.call.arg_count);
+    free_expr(expr);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -127,5 +136,6 @@ int main(void) {
     RUN_TEST(parser_parses_if_statement);
     RUN_TEST(parser_parses_return_statement);
     RUN_TEST(parser_parses_for_sql_loop);
+    RUN_TEST(parser_parses_call_expression);
     TEST_SUMMARY();
 }
