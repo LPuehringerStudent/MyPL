@@ -1,6 +1,8 @@
 #include <stdlib.h>
+#include <string.h>
 
 #include "vm.h"
+#include "sql_engine.h"
 
 struct VM {
     Chunk*   chunk;
@@ -11,6 +13,8 @@ struct VM {
     uint8_t* return_ips[STACK_MAX];
     int      frame_count;
     Value*   frame_base;
+    Result*  result;
+    Row*     row;
 };
 
 VM* vm_init(void) {
@@ -21,10 +25,14 @@ VM* vm_init(void) {
     vm->stack_top = vm->stack;
     vm->frame_count = 0;
     vm->frame_base = vm->stack;
+    vm->result = NULL;
+    vm->row = NULL;
     return vm;
 }
 
 void vm_free(VM* vm) {
+    if (vm == NULL) return;
+    result_free(vm->result);
     free(vm);
 }
 
@@ -151,9 +159,53 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!push(vm, value_int(!value_is_truthy(value)))) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
+            case OP_SQL: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value query_value = vm->chunk->constants[idx];
+                if (query_value.type != VAL_STRING || query_value.as.as_string == NULL) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                result_free(vm->result);
+                vm->result = sql_exec(query_value.as.as_string, NULL);
+                if (vm->result == NULL) return INTERPRET_RUNTIME_ERROR;
+                vm->row = NULL;
+                break;
+            }
+            case OP_SQL_NEXT: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                int16_t offset = (int16_t)read_u16(vm->ip);
+                vm->ip += 2;
+                Row* next = result_next(vm->result);
+                if (next == NULL) {
+                    uint8_t* target = vm->ip + offset;
+                    if (target < vm->chunk->code || target > end) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    vm->ip = target;
+                } else {
+                    vm->row = next;
+                }
+                break;
+            }
+            case OP_GET_FIELD: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value name_value = vm->chunk->constants[idx];
+                if (name_value.type != VAL_STRING || name_value.as.as_string == NULL) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                int field_value = row_get_field(vm->row, name_value.as.as_string);
+                if (!push(vm, value_int(field_value))) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
             case OP_JZ: {
                 if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
-                uint16_t offset = read_u16(vm->ip);
+                int16_t offset = (int16_t)read_u16(vm->ip);
                 vm->ip += 2;
                 Value cond;
                 if (!pop(vm, &cond)) return INTERPRET_RUNTIME_ERROR;
@@ -168,7 +220,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             }
             case OP_JMP: {
                 if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
-                uint16_t offset = read_u16(vm->ip);
+                int16_t offset = (int16_t)read_u16(vm->ip);
                 vm->ip += 2;
                 uint8_t* target = vm->ip + offset;
                 if (target < vm->chunk->code || target > end) {

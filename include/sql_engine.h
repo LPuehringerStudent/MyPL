@@ -7,20 +7,36 @@ struct Context {
     const char* db_path;
 };
 
+typedef struct {
+    const char* name;
+    int value;
+} MockField;
+
+typedef struct {
+    MockField* fields;
+    int field_count;
+} MockRow;
+
 struct Result {
-    int dummy;
+    int row_count;
+    int current;
+    struct Row* rows;
 };
 
 struct Row {
-    int dummy;
+    MockField* fields;
+    int field_count;
 };
 
 typedef struct Cursor Cursor;
 typedef struct Pager Pager;
 typedef struct BTree BTree;
 
+void    sql_engine_set_mock(const MockRow* rows, int row_count);
 Result* sql_exec(const char* query, Context* ctx);
 Row*    result_next(Result* res);
+void    result_free(Result* res);
+int     row_get_field(Row* row, const char* name);
 
 Pager* pager_open(const char* filename);
 void   pager_close(Pager* pager);

@@ -55,6 +55,12 @@ static void patch_jump(Compiler* compiler, int offset) {
     compiler->chunk->code[offset + 1] = (uint8_t)(jump & 0xFF);
 }
 
+static void patch_jump_to(Compiler* compiler, int offset, int target) {
+    int jump = target - (offset + 2);
+    compiler->chunk->code[offset] = (uint8_t)((jump >> 8) & 0xFF);
+    compiler->chunk->code[offset + 1] = (uint8_t)(jump & 0xFF);
+}
+
 static void emit_constant(Compiler* compiler, Value value) {
     int idx = add_constant(compiler->chunk, value);
     emit_byte(compiler, OP_CONST);
@@ -158,6 +164,20 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             emit_call(compiler, c->name, c->arg_count);
             break;
         }
+        case EXPR_FIELD: {
+            FieldExpr* f = &expr->as.field;
+            char* field_name = malloc((size_t)strlen(f->field) + 1);
+            if (field_name == NULL) return;
+            strcpy(field_name, f->field);
+            int field_idx = add_constant(compiler->chunk, value_string(field_name));
+            if (field_idx < 0) {
+                free(field_name);
+                return;
+            }
+            emit_byte(compiler, OP_GET_FIELD);
+            emit_u16(compiler, (uint16_t)field_idx);
+            break;
+        }
         case EXPR_UNARY: {
             UnaryExpr* u = &expr->as.unary;
             compile_expr(compiler, u->operand);
@@ -209,6 +229,39 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 compile_block(compiler, i->else_block);
             }
             patch_jump(compiler, end_jump);
+            break;
+        }
+        case STMT_FOR: {
+            ForStmt* f = &stmt->as.for_stmt;
+            char* query = malloc((size_t)strlen(f->sql_query) + 1);
+            if (query == NULL) return;
+            strcpy(query, f->sql_query);
+            int query_idx = add_constant(compiler->chunk, value_string(query));
+            if (query_idx < 0) {
+                free(query);
+                return;
+            }
+            emit_byte(compiler, OP_SQL);
+            emit_u16(compiler, (uint16_t)query_idx);
+
+            int loop_start = compiler->chunk->count;
+            int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
+
+            /* Bind iterator variable to a local slot. The value is unused
+               because fields are read with OP_GET_FIELD, but we need a slot
+               so any nested locals keep correct offsets. */
+            int slot = add_local(compiler, f->var_name, (int)strlen(f->var_name));
+            if (slot < 0) return;
+            emit_byte(compiler, OP_CONST);
+            emit_u16(compiler, (uint16_t)add_constant(compiler->chunk, value_int(0)));
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+
+            compile_block(compiler, f->body);
+
+            int back = emit_jump(compiler, OP_JMP);
+            patch_jump_to(compiler, back, loop_start);
+            patch_jump(compiler, exit_jump);
             break;
         }
         default:

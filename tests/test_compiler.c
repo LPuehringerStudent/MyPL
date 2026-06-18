@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "compiler.h"
 #include "vm.h"
+#include "sql_engine.h"
 
 TEST(compiler_compiles_integer_return) {
     Chunk chunk;
@@ -182,6 +183,38 @@ TEST(compiler_compiles_forward_call_with_arguments) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_for_sql_loop) {
+    MockField fields[] = { {"id", 1} };
+    MockRow rows[] = { { fields, 1 } };
+    sql_engine_set_mock(rows, 1);
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_for_sql_loop_sum) {
+    MockField fields[] = { {"id", 1}, {"id", 2}, {"id", 3} };
+    MockRow rows[] = { { &fields[0], 1 }, { &fields[1], 1 }, { &fields[2], 1 } };
+    sql_engine_set_mock(rows, 3);
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int sum = 0; for row in SELECT id FROM users { sum = sum + row.id; } return sum; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(6, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -198,5 +231,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_procedure_with_parameters);
     RUN_TEST(compiler_compiles_procedure_with_parameter_and_local);
     RUN_TEST(compiler_compiles_forward_call_with_arguments);
+    RUN_TEST(compiler_compiles_for_sql_loop);
+    RUN_TEST(compiler_compiles_for_sql_loop_sum);
     TEST_SUMMARY();
 }
