@@ -87,6 +87,12 @@ static Expr* grouping(Parser* parser) {
     return expr;
 }
 
+static Expr* unary(Parser* parser) {
+    TokenType op = parser->previous.type;
+    Expr* operand = parse_precedence(parser, PREC_UNARY);
+    return create_unary_expr(op, operand);
+}
+
 static Expr* number(Parser* parser) {
     if (parser->previous.type == TOKEN_FLOAT) {
         /* TODO: parse float lexeme */
@@ -342,10 +348,10 @@ static ParseRule rules[] = {
     [TOKEN_ASSIGN]     = {NULL,     NULL,   PREC_NONE},
     [TOKEN_LT]         = {NULL,     binary, PREC_COMPARISON},
     [TOKEN_GT]         = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_BANG]       = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_BANG]       = {unary,    NULL,   PREC_NONE},
 
     [TOKEN_PLUS]       = {NULL,     binary, PREC_TERM},
-    [TOKEN_MINUS]      = {NULL,     binary, PREC_TERM},
+    [TOKEN_MINUS]      = {unary,    binary, PREC_TERM},
     [TOKEN_STAR]       = {NULL,     binary, PREC_FACTOR},
     [TOKEN_SLASH]      = {NULL,     binary, PREC_FACTOR},
     [TOKEN_DOT]        = {NULL,     field,  PREC_CALL},

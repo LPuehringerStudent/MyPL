@@ -34,6 +34,26 @@ TEST(parser_parses_addition) {
     free_expr(expr);
 }
 
+TEST(parser_parses_unary_minus) {
+    Expr* expr = parse_expression("-5");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_UNARY, expr->kind);
+    ASSERT_INT_EQ(TOKEN_MINUS, expr->as.unary.op);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->as.unary.operand->kind);
+    ASSERT_INT_EQ(5, expr->as.unary.operand->as.literal.value.as.as_int);
+    free_expr(expr);
+}
+
+TEST(parser_parses_unary_not) {
+    Expr* expr = parse_expression("!0");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_UNARY, expr->kind);
+    ASSERT_INT_EQ(TOKEN_BANG, expr->as.unary.op);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->as.unary.operand->kind);
+    ASSERT_INT_EQ(0, expr->as.unary.operand->as.literal.value.as.as_int);
+    free_expr(expr);
+}
+
 TEST(parser_respects_precedence) {
     Expr* expr = parse_expression("1 + 2 * 3");
     ASSERT_PTR_NOT_NULL(expr);
@@ -151,6 +171,8 @@ int main(void) {
     RUN_TEST(parser_parses_integer_literal);
     RUN_TEST(parser_parses_identifier);
     RUN_TEST(parser_parses_addition);
+    RUN_TEST(parser_parses_unary_minus);
+    RUN_TEST(parser_parses_unary_not);
     RUN_TEST(parser_respects_precedence);
     RUN_TEST(parser_parses_comparison);
     RUN_TEST(parser_parses_field_expression);

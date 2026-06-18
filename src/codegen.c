@@ -158,6 +158,16 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             emit_call(compiler, c->name, c->arg_count);
             break;
         }
+        case EXPR_UNARY: {
+            UnaryExpr* u = &expr->as.unary;
+            compile_expr(compiler, u->operand);
+            switch (u->op) {
+                case TOKEN_MINUS: emit_byte(compiler, OP_NEGATE); break;
+                case TOKEN_BANG:  emit_byte(compiler, OP_NOT); break;
+                default: break;
+            }
+            break;
+        }
         default:
             /* Unsupported expression kind. */
             break;
