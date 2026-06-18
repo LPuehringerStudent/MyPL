@@ -265,12 +265,49 @@ static void parse_proc(Parser* parser, Program* program) {
     advance(parser); /* name */
     char* name = copy_token_lexeme(&parser->previous);
     advance(parser); /* ( */
-    /* params skipped for now */
+
+    Param* params = NULL;
+    int param_count = 0;
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            advance(parser); /* param name */
+            char* param_name = copy_token_lexeme(&parser->previous);
+            TypeKind param_type = parse_type(parser);
+
+            Param* new_params = realloc(params,
+                sizeof(Param) * (size_t)(param_count + 1));
+            if (new_params == NULL) {
+                free(param_name);
+                for (int i = 0; i < param_count; i++) {
+                    free(params[i].name);
+                }
+                free(params);
+                free(name);
+                parser->had_error = 1;
+                return;
+            }
+            params = new_params;
+            params[param_count].name = param_name;
+            params[param_count].type = param_type;
+            param_count++;
+        } while (match(parser, TOKEN_COMMA));
+    }
+
     advance(parser); /* ) */
     advance(parser); /* -> */
     TypeKind return_type = parse_type(parser);
     ProcDecl* proc = create_proc_decl(name, return_type);
     free(name);
+    if (proc == NULL) {
+        for (int i = 0; i < param_count; i++) {
+            free(params[i].name);
+        }
+        free(params);
+        parser->had_error = 1;
+        return;
+    }
+    proc->params = params;
+    proc->param_count = param_count;
     proc->body = block(parser);
 
     ProcDecl* new_procs = realloc(program->procs,

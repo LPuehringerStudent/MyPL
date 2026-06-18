@@ -603,14 +603,52 @@ TEST(vm_executes_procedure_call) {
     Chunk chunk;
     init_chunk(&chunk);
 
-    int target = chunk.count + 4; /* after call + return */
+    int target = chunk.count + 5; /* after call + arg_count + return */
     write_chunk(&chunk, OP_CALL);
     write_chunk_u16(&chunk, (uint16_t)target);
+    write_chunk(&chunk, 0); /* arg count */
     write_chunk(&chunk, OP_RETURN);
 
     /* procedure body */
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)add_constant(&chunk, value_int(7)));
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(7, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_executes_procedure_call_with_arguments) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int arg1 = add_constant(&chunk, value_int(3));
+    int arg2 = add_constant(&chunk, value_int(4));
+
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)arg1);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)arg2);
+    write_chunk(&chunk, OP_CALL);
+    int target_offset = chunk.count;
+    write_chunk_u16(&chunk, 0); /* patched below */
+    write_chunk(&chunk, 2); /* arg count */
+    write_chunk(&chunk, OP_RETURN);
+
+    /* patch target */
+    int target = chunk.count;
+    chunk.code[target_offset] = (uint8_t)((target >> 8) & 0xFF);
+    chunk.code[target_offset + 1] = (uint8_t)(target & 0xFF);
+
+    /* procedure body: add a + b */
+    write_chunk(&chunk, OP_GET_LOCAL);
+    write_chunk(&chunk, 0);
+    write_chunk(&chunk, OP_GET_LOCAL);
+    write_chunk(&chunk, 1);
+    write_chunk(&chunk, OP_ADD);
     write_chunk(&chunk, OP_RETURN);
 
     VM* vm = vm_init();
@@ -651,5 +689,6 @@ int main(void) {
     RUN_TEST(vm_lt_float_and_int_returns_runtime_error);
     RUN_TEST(vm_gt_string_and_int_returns_runtime_error);
     RUN_TEST(vm_executes_procedure_call);
+    RUN_TEST(vm_executes_procedure_call_with_arguments);
     TEST_SUMMARY();
 }

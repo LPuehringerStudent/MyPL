@@ -71,12 +71,7 @@ ProcDecl* create_proc_decl(const char* name, TypeKind return_type) {
     proc->params = NULL;
     proc->param_count = 0;
     proc->return_type = return_type;
-    proc->body = create_block();
-    if (proc->body == NULL) {
-        free(proc->name);
-        free(proc);
-        return NULL;
-    }
+    proc->body = NULL;
     return proc;
 }
 

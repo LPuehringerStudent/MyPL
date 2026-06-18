@@ -98,6 +98,42 @@ TEST(compiler_compiles_forward_procedure_call) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_procedure_with_parameters) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc add(a int, b int) -> int { return a + b; } proc main() -> int { return add(3, 4); }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(7, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_procedure_with_parameter_and_local) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc f(x int) -> int { int y = 10; return x + y; } proc main() -> int { return f(5); }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(15, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_forward_call_with_arguments) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return later(2, 3); } proc later(a int, b int) -> int { return a * b; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(6, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -107,5 +143,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_if_true_branch);
     RUN_TEST(compiler_compiles_procedure_call);
     RUN_TEST(compiler_compiles_forward_procedure_call);
+    RUN_TEST(compiler_compiles_procedure_with_parameters);
+    RUN_TEST(compiler_compiles_procedure_with_parameter_and_local);
+    RUN_TEST(compiler_compiles_forward_call_with_arguments);
     TEST_SUMMARY();
 }

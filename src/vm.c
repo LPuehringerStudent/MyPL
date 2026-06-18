@@ -165,14 +165,19 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_CALL: {
-                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                if (vm->ip + 3 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t target = read_u16(vm->ip);
+                vm->ip += 2;
+                uint8_t arg_count = *vm->ip++;
                 if (target > (uint16_t)vm->chunk->count) return INTERPRET_RUNTIME_ERROR;
+                if (arg_count > (size_t)(vm->stack_top - vm->frame_base)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
-                vm->return_ips[vm->frame_count] = vm->ip + 2;
+                vm->return_ips[vm->frame_count] = vm->ip;
                 vm->frames[vm->frame_count] = vm->frame_base;
                 vm->frame_count++;
-                vm->frame_base = vm->stack_top;
+                vm->frame_base = vm->stack_top - arg_count;
                 vm->ip = vm->chunk->code + target;
                 break;
             }

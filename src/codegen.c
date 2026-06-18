@@ -94,7 +94,7 @@ static void patch_call(Chunk* chunk, int offset, int target) {
     chunk->code[offset + 1] = (uint8_t)(target & 0xFF);
 }
 
-static void emit_call(Compiler* compiler, const char* name) {
+static void emit_call(Compiler* compiler, const char* name, int arg_count) {
     int idx = find_proc(compiler, name);
     emit_byte(compiler, OP_CALL);
     if (idx >= 0) {
@@ -105,6 +105,7 @@ static void emit_call(Compiler* compiler, const char* name) {
         compiler->patches[patch].name = name;
         emit_u16(compiler, 0);
     }
+    emit_byte(compiler, (uint8_t)arg_count);
 }
 
 static void compile_expr(Compiler* compiler, Expr* expr);
@@ -154,7 +155,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             for (int i = 0; i < c->arg_count; i++) {
                 compile_expr(compiler, c->args[i]);
             }
-            emit_call(compiler, c->name);
+            emit_call(compiler, c->name, c->arg_count);
             break;
         }
         default:
@@ -235,6 +236,7 @@ int compile(const char* source, Chunk* chunk) {
     int entry_patch = chunk->count + 1;
     emit_byte(&compiler, OP_CALL);
     emit_u16(&compiler, 0);
+    emit_byte(&compiler, 0); /* arg count */
     emit_byte(&compiler, OP_RETURN);
 
     /* Emit procedure bodies and record their offsets. */
@@ -242,6 +244,10 @@ int compile(const char* source, Chunk* chunk) {
         compiler.procs[compiler.proc_count].name = program->procs[i].name;
         compiler.procs[compiler.proc_count].offset = chunk->count;
         compiler.proc_count++;
+        for (int p = 0; p < program->procs[i].param_count; p++) {
+            Param* param = &program->procs[i].params[p];
+            add_local(&compiler, param->name, (int)strlen(param->name));
+        }
         compile_block(&compiler, program->procs[i].body);
         emit_byte(&compiler, OP_RETURN);
         compiler.local_count = 0;

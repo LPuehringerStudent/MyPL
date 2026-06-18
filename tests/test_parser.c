@@ -123,6 +123,19 @@ TEST(parser_parses_call_expression) {
     free_expr(expr);
 }
 
+TEST(parser_parses_procedure_parameters) {
+    Program* program = parse("proc add(a int, b int) -> int { return a + b; }");
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, program->proc_count);
+    ProcDecl* proc = &program->procs[0];
+    ASSERT_INT_EQ(2, proc->param_count);
+    ASSERT_INT_EQ(0, strcmp("a", proc->params[0].name));
+    ASSERT_INT_EQ(TYPE_INT, proc->params[0].type);
+    ASSERT_INT_EQ(0, strcmp("b", proc->params[1].name));
+    ASSERT_INT_EQ(TYPE_INT, proc->params[1].type);
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -137,5 +150,6 @@ int main(void) {
     RUN_TEST(parser_parses_return_statement);
     RUN_TEST(parser_parses_for_sql_loop);
     RUN_TEST(parser_parses_call_expression);
+    RUN_TEST(parser_parses_procedure_parameters);
     TEST_SUMMARY();
 }
