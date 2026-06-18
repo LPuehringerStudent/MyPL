@@ -224,6 +224,9 @@ static Stmt* if_statement(Parser* parser) {
     Expr* cond = expression(parser);
     Block* then_block = block(parser);
     Block* else_block = NULL;
+    if (match(parser, TOKEN_ELSE)) {
+        else_block = block(parser);
+    }
     return create_if_stmt(cond, then_block, else_block);
 }
 

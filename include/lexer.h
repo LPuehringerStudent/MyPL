@@ -6,6 +6,7 @@ typedef enum {
     TOKEN_PROC,
     TOKEN_FOR,
     TOKEN_IF,
+    TOKEN_ELSE,
     TOKEN_RETURN,
     TOKEN_IN,
 

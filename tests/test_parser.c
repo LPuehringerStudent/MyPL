@@ -95,6 +95,16 @@ TEST(parser_parses_if_statement) {
     free_program(program);
 }
 
+TEST(parser_parses_else_branch) {
+    Program* program = parse("proc main() -> int { if 0 { return 1; } else { return 2; } }");
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_IF, stmt->kind);
+    ASSERT_PTR_NOT_NULL(stmt->as.if_stmt.else_block);
+    ASSERT_INT_EQ(1, stmt->as.if_stmt.else_block->stmt_count);
+    free_program(program);
+}
+
 TEST(parser_parses_return_statement) {
     Program* program = parse("proc main() -> int { return 42; }");
     ASSERT_PTR_NOT_NULL(program);
@@ -147,6 +157,7 @@ int main(void) {
     RUN_TEST(parser_parses_procedure_and_var_decl);
     RUN_TEST(parser_parses_assignment);
     RUN_TEST(parser_parses_if_statement);
+    RUN_TEST(parser_parses_else_branch);
     RUN_TEST(parser_parses_return_statement);
     RUN_TEST(parser_parses_for_sql_loop);
     RUN_TEST(parser_parses_call_expression);

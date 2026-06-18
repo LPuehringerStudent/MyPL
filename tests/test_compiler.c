@@ -74,6 +74,18 @@ TEST(compiler_compiles_if_true_branch) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_else_branch) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 0 { return 13; } else { return 42; } }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(42, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_procedure_call) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -141,6 +153,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_comparison);
     RUN_TEST(compiler_compiles_if_statement);
     RUN_TEST(compiler_compiles_if_true_branch);
+    RUN_TEST(compiler_compiles_else_branch);
     RUN_TEST(compiler_compiles_procedure_call);
     RUN_TEST(compiler_compiles_forward_procedure_call);
     RUN_TEST(compiler_compiles_procedure_with_parameters);
