@@ -95,8 +95,21 @@ static Expr* unary(Parser* parser) {
 
 static Expr* number(Parser* parser) {
     if (parser->previous.type == TOKEN_FLOAT) {
-        /* TODO: parse float lexeme */
-        return create_literal_expr(value_float(0.0));
+        char buffer[64];
+        int len = parser->previous.length;
+        if (len >= 64) len = 63;
+        memcpy(buffer, parser->previous.start, (size_t)len);
+        buffer[len] = '\0';
+        return create_literal_expr(value_float(strtod(buffer, NULL)));
+    }
+    if (parser->previous.type == TOKEN_STRING) {
+        int len = parser->previous.length - 2; /* without quotes */
+        if (len < 0) len = 0;
+        char* str = malloc((size_t)len + 1);
+        if (str == NULL) return create_literal_expr(value_int(0));
+        memcpy(str, parser->previous.start + 1, (size_t)len);
+        str[len] = '\0';
+        return create_literal_expr(value_string(str));
     }
     int value = 0;
     for (int i = 0; i < parser->previous.length; i++) {
@@ -179,7 +192,7 @@ static Expr* expression(Parser* parser) {
 static TypeKind parse_type(Parser* parser) {
     if (match(parser, TOKEN_INT_TYPE)) return TYPE_INT;
     if (match(parser, TOKEN_FLOAT_TYPE)) return TYPE_FLOAT;
-    if (match(parser, TOKEN_STRING)) return TYPE_STRING;
+    if (match(parser, TOKEN_STRING_TYPE)) return TYPE_STRING;
     error_at_current(parser, "expected type");
     return TYPE_INT;
 }

@@ -431,7 +431,7 @@ TEST(vm_invalid_jz_target_returns_runtime_error) {
     free_chunk(&chunk);
 }
 
-TEST(vm_division_by_zero_returns_runtime_error) {
+TEST(vm_division_by_zero_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -447,12 +447,13 @@ TEST(vm_division_by_zero_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_add_float_and_int_returns_runtime_error) {
+TEST(vm_add_float_and_int) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -468,12 +469,13 @@ TEST(vm_add_float_and_int_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_FLOAT_EQ(3.5, vm_pop(vm).as.as_float);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_sub_string_and_int_returns_runtime_error) {
+TEST(vm_sub_string_and_int_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -489,12 +491,13 @@ TEST(vm_sub_string_and_int_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_mul_float_and_string_returns_runtime_error) {
+TEST(vm_mul_float_and_string_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -510,12 +513,13 @@ TEST(vm_mul_float_and_string_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_div_string_and_int_returns_runtime_error) {
+TEST(vm_div_string_and_int_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -531,12 +535,13 @@ TEST(vm_div_string_and_int_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_eq_float_and_int_returns_runtime_error) {
+TEST(vm_eq_float_and_int_coerces) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -552,12 +557,13 @@ TEST(vm_eq_float_and_int_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_lt_float_and_int_returns_runtime_error) {
+TEST(vm_lt_float_and_int_coerces) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -573,12 +579,13 @@ TEST(vm_lt_float_and_int_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
 
-TEST(vm_gt_string_and_int_returns_runtime_error) {
+TEST(vm_gt_string_and_int_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
@@ -594,7 +601,8 @@ TEST(vm_gt_string_and_int_returns_runtime_error) {
 
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
-    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_INT_EQ(INTERPRET_OK, result);
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
 }
@@ -714,14 +722,14 @@ int main(void) {
     RUN_TEST(vm_invalid_set_local_slot_returns_runtime_error);
     RUN_TEST(vm_invalid_jump_target_returns_runtime_error);
     RUN_TEST(vm_invalid_jz_target_returns_runtime_error);
-    RUN_TEST(vm_division_by_zero_returns_runtime_error);
-    RUN_TEST(vm_add_float_and_int_returns_runtime_error);
-    RUN_TEST(vm_sub_string_and_int_returns_runtime_error);
-    RUN_TEST(vm_mul_float_and_string_returns_runtime_error);
-    RUN_TEST(vm_div_string_and_int_returns_runtime_error);
-    RUN_TEST(vm_eq_float_and_int_returns_runtime_error);
-    RUN_TEST(vm_lt_float_and_int_returns_runtime_error);
-    RUN_TEST(vm_gt_string_and_int_returns_runtime_error);
+    RUN_TEST(vm_division_by_zero_returns_zero);
+    RUN_TEST(vm_add_float_and_int);
+    RUN_TEST(vm_sub_string_and_int_returns_zero);
+    RUN_TEST(vm_mul_float_and_string_returns_zero);
+    RUN_TEST(vm_div_string_and_int_returns_zero);
+    RUN_TEST(vm_eq_float_and_int_coerces);
+    RUN_TEST(vm_lt_float_and_int_coerces);
+    RUN_TEST(vm_gt_string_and_int_returns_zero);
     RUN_TEST(vm_executes_procedure_call);
     RUN_TEST(vm_executes_procedure_call_with_arguments);
     RUN_TEST(vm_executes_unary_minus);

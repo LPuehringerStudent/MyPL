@@ -14,7 +14,26 @@ TEST(parser_parses_integer_literal) {
     Expr* expr = parse_expression("42");
     ASSERT_PTR_NOT_NULL(expr);
     ASSERT_INT_EQ(EXPR_LITERAL, expr->kind);
+    ASSERT_INT_EQ(VAL_INT, expr->as.literal.value.type);
     ASSERT_INT_EQ(42, expr->as.literal.value.as.as_int);
+    free_expr(expr);
+}
+
+TEST(parser_parses_float_literal) {
+    Expr* expr = parse_expression("3.14");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->kind);
+    ASSERT_INT_EQ(VAL_FLOAT, expr->as.literal.value.type);
+    ASSERT_FLOAT_EQ(3.14, expr->as.literal.value.as.as_float);
+    free_expr(expr);
+}
+
+TEST(parser_parses_string_literal) {
+    Expr* expr = parse_expression("\"hello\"");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->kind);
+    ASSERT_INT_EQ(VAL_STRING, expr->as.literal.value.type);
+    ASSERT_STRING_EQ("hello", expr->as.literal.value.as.as_string);
     free_expr(expr);
 }
 
@@ -169,6 +188,8 @@ TEST(parser_parses_procedure_parameters) {
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
+    RUN_TEST(parser_parses_float_literal);
+    RUN_TEST(parser_parses_string_literal);
     RUN_TEST(parser_parses_identifier);
     RUN_TEST(parser_parses_addition);
     RUN_TEST(parser_parses_unary_minus);

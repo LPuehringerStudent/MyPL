@@ -59,53 +59,55 @@ TEST(value_types_use_enum_constants) {
     ASSERT_INT_EQ(VAL_STRING, s.type);
 }
 
-TEST(add_mismatched_types_returns_zero) {
+TEST(add_int_and_float_returns_float) {
     Value a = value_int(3);
     Value b = value_float(4.0);
     Value r = value_add(a, b);
-    ASSERT_INT_EQ(0, r.as.as_int);
+    ASSERT_INT_EQ(VAL_FLOAT, r.type);
+    ASSERT_FLOAT_EQ(7.0, r.as.as_float);
 }
 
-TEST(sub_mismatched_types_returns_zero) {
+TEST(sub_int_and_string_returns_zero) {
     Value a = value_int(3);
     Value b = value_string("x");
     Value r = value_sub(a, b);
     ASSERT_INT_EQ(0, r.as.as_int);
 }
 
-TEST(mul_mismatched_types_returns_zero) {
+TEST(mul_float_and_int_returns_float) {
     Value a = value_float(3.0);
     Value b = value_int(4);
     Value r = value_mul(a, b);
-    ASSERT_INT_EQ(0, r.as.as_int);
+    ASSERT_INT_EQ(VAL_FLOAT, r.type);
+    ASSERT_FLOAT_EQ(12.0, r.as.as_float);
 }
 
-TEST(div_mismatched_types_returns_zero) {
+TEST(div_string_and_int_returns_zero) {
     Value a = value_string("x");
     Value b = value_int(4);
     Value r = value_div(a, b);
     ASSERT_INT_EQ(0, r.as.as_int);
 }
 
-TEST(eq_mismatched_types_returns_zero) {
+TEST(eq_int_and_float_coerces) {
     Value a = value_int(3);
     Value b = value_float(3.0);
     Value r = value_eq(a, b);
-    ASSERT_INT_EQ(0, r.as.as_int);
+    ASSERT_INT_EQ(1, r.as.as_int);
 }
 
-TEST(lt_mismatched_types_returns_zero) {
+TEST(lt_int_and_float_coerces) {
     Value a = value_int(3);
     Value b = value_float(4.0);
     Value r = value_lt(a, b);
-    ASSERT_INT_EQ(0, r.as.as_int);
+    ASSERT_INT_EQ(1, r.as.as_int);
 }
 
-TEST(gt_mismatched_types_returns_zero) {
+TEST(gt_float_and_int_coerces) {
     Value a = value_float(7.0);
     Value b = value_int(2);
     Value r = value_gt(a, b);
-    ASSERT_INT_EQ(0, r.as.as_int);
+    ASSERT_INT_EQ(1, r.as.as_int);
 }
 
 TEST(is_truthy_int_zero_is_false) {
@@ -141,13 +143,13 @@ int main(void) {
     RUN_TEST(lt_ints);
     RUN_TEST(gt_ints);
     RUN_TEST(value_types_use_enum_constants);
-    RUN_TEST(add_mismatched_types_returns_zero);
-    RUN_TEST(sub_mismatched_types_returns_zero);
-    RUN_TEST(mul_mismatched_types_returns_zero);
-    RUN_TEST(div_mismatched_types_returns_zero);
-    RUN_TEST(eq_mismatched_types_returns_zero);
-    RUN_TEST(lt_mismatched_types_returns_zero);
-    RUN_TEST(gt_mismatched_types_returns_zero);
+    RUN_TEST(add_int_and_float_returns_float);
+    RUN_TEST(sub_int_and_string_returns_zero);
+    RUN_TEST(mul_float_and_int_returns_float);
+    RUN_TEST(div_string_and_int_returns_zero);
+    RUN_TEST(eq_int_and_float_coerces);
+    RUN_TEST(lt_int_and_float_coerces);
+    RUN_TEST(gt_float_and_int_coerces);
     RUN_TEST(is_truthy_int_zero_is_false);
     RUN_TEST(is_truthy_int_nonzero_is_true);
     RUN_TEST(is_truthy_float_zero_is_false);

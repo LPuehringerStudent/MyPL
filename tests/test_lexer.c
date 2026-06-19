@@ -85,6 +85,10 @@ TEST(lexer_scans_keywords) {
     lexer_init(&lexer, "float");
     ASSERT_INT_EQ(TOKEN_FLOAT_TYPE, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "string");
+    ASSERT_INT_EQ(TOKEN_STRING_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 }
 
 TEST(lexer_distinguishes_type_keywords_from_literals) {

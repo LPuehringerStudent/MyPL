@@ -120,6 +120,9 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'S':
             if (length == 6 && memcmp(lexer->start, "SELECT", 6) == 0) return TOKEN_SQL_QUERY;
             break;
+        case 's':
+            if (length == 6 && memcmp(lexer->start, "string", 6) == 0) return TOKEN_STRING_TYPE;
+            break;
     }
     return TOKEN_IDENT;
 }

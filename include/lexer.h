@@ -13,6 +13,7 @@ typedef enum {
     /* types */
     TOKEN_INT_TYPE,
     TOKEN_FLOAT_TYPE,
+    TOKEN_STRING_TYPE,
 
     /* literals */
     TOKEN_IDENT,

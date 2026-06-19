@@ -54,14 +54,11 @@ static int pop(VM* vm, Value* out) {
     return 1;
 }
 
-static int binary_op(VM* vm, Value (*op)(Value, Value), int require_ints) {
+static int binary_op(VM* vm, Value (*op)(Value, Value)) {
     Value b;
     Value a;
     if (!pop(vm, &b)) return 0;
     if (!pop(vm, &a)) return 0;
-    if (require_ints && (a.type != VAL_INT || b.type != VAL_INT)) {
-        return 0;
-    }
     return push(vm, op(a, b));
 }
 
@@ -113,44 +110,43 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_ADD: {
-                if (!binary_op(vm, value_add, 1)) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_add)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_SUB: {
-                if (!binary_op(vm, value_sub, 1)) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_sub)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_MUL: {
-                if (!binary_op(vm, value_mul, 1)) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_mul)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_DIV: {
-                Value b;
-                Value a;
-                if (!pop(vm, &b)) return INTERPRET_RUNTIME_ERROR;
-                if (!pop(vm, &a)) return INTERPRET_RUNTIME_ERROR;
-                if (a.type != VAL_INT || b.type != VAL_INT) return INTERPRET_RUNTIME_ERROR;
-                if (b.as.as_int == 0) return INTERPRET_RUNTIME_ERROR;
-                if (!push(vm, value_div(a, b))) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_div)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_EQ: {
-                if (!binary_op(vm, value_eq, 1)) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_eq)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_LT: {
-                if (!binary_op(vm, value_lt, 1)) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_lt)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_GT: {
-                if (!binary_op(vm, value_gt, 1)) return INTERPRET_RUNTIME_ERROR;
+                if (!binary_op(vm, value_gt)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_NEGATE: {
                 Value value;
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
-                if (value.type != VAL_INT) return INTERPRET_RUNTIME_ERROR;
-                if (!push(vm, value_int(-value.as.as_int))) return INTERPRET_RUNTIME_ERROR;
+                if (value.type == VAL_FLOAT) {
+                    if (!push(vm, value_float(-value.as.as_float))) return INTERPRET_RUNTIME_ERROR;
+                } else if (value.type == VAL_INT) {
+                    if (!push(vm, value_int(-value.as.as_int))) return INTERPRET_RUNTIME_ERROR;
+                } else {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 break;
             }
             case OP_NOT: {

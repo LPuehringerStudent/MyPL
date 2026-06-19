@@ -123,6 +123,56 @@ TEST(compiler_compiles_unary_not_true) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_float_return) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return 3.14; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_FLOAT_EQ(3.14, vm_pop(vm).as.as_float);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_float_arithmetic) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return 1.5 + 2.5; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_FLOAT_EQ(4.0, vm_pop(vm).as.as_float);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_mixed_int_float_arithmetic) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return 1 + 2.5; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_FLOAT_EQ(3.5, vm_pop(vm).as.as_float);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_string_return) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> string { return \"hello\"; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("hello", result.as.as_string);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_procedure_call) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -226,6 +276,10 @@ int main(void) {
     RUN_TEST(compiler_compiles_unary_minus);
     RUN_TEST(compiler_compiles_unary_not);
     RUN_TEST(compiler_compiles_unary_not_true);
+    RUN_TEST(compiler_compiles_float_return);
+    RUN_TEST(compiler_compiles_float_arithmetic);
+    RUN_TEST(compiler_compiles_mixed_int_float_arithmetic);
+    RUN_TEST(compiler_compiles_string_return);
     RUN_TEST(compiler_compiles_procedure_call);
     RUN_TEST(compiler_compiles_forward_procedure_call);
     RUN_TEST(compiler_compiles_procedure_with_parameters);
