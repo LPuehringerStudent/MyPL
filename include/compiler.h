@@ -17,6 +17,7 @@ typedef enum {
     OP_GT,
     OP_NEGATE,
     OP_NOT,
+    OP_POP,
     OP_JZ,
     OP_JMP,
     OP_SQL,

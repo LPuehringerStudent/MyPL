@@ -700,6 +700,26 @@ TEST(vm_executes_unary_not) {
     free_chunk(&chunk);
 }
 
+TEST(vm_executes_pop) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(1));
+    int b = add_constant(&chunk, value_int(2));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_POP);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -734,5 +754,6 @@ int main(void) {
     RUN_TEST(vm_executes_procedure_call_with_arguments);
     RUN_TEST(vm_executes_unary_minus);
     RUN_TEST(vm_executes_unary_not);
+    RUN_TEST(vm_executes_pop);
     TEST_SUMMARY();
 }

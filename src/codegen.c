@@ -33,7 +33,16 @@ typedef struct {
     int proc_count;
     CallPatch patches[MAX_CALL_PATCHES];
     int patch_count;
+    int had_error;
+    char error_message[256];
 } Compiler;
+
+static void error(Compiler* compiler, const char* message) {
+    if (compiler->had_error) return;
+    compiler->had_error = 1;
+    strncpy(compiler->error_message, message, sizeof(compiler->error_message) - 1);
+    compiler->error_message[sizeof(compiler->error_message) - 1] = '\0';
+}
 
 static void emit_byte(Compiler* compiler, uint8_t byte) {
     write_chunk(compiler->chunk, byte);
@@ -118,9 +127,16 @@ static void compile_expr(Compiler* compiler, Expr* expr);
 static void compile_stmt(Compiler* compiler, Stmt* stmt);
 
 static void compile_block(Compiler* compiler, Block* block) {
+    int previous_count = compiler->local_count;
     for (int i = 0; i < block->stmt_count; i++) {
         compile_stmt(compiler, block->stmts[i]);
+        if (compiler->had_error) return;
     }
+    int pops = compiler->local_count - previous_count;
+    for (int i = 0; i < pops; i++) {
+        emit_byte(compiler, OP_POP);
+    }
+    compiler->local_count = previous_count;
 }
 
 static void compile_expr(Compiler* compiler, Expr* expr) {
@@ -129,7 +145,10 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             Value v = expr->as.literal.value;
             if (v.type == VAL_STRING && v.as.as_string != NULL) {
                 char* copy = malloc(strlen(v.as.as_string) + 1);
-                if (copy == NULL) return;
+                if (copy == NULL) {
+                    error(compiler, "out of memory");
+                    return;
+                }
                 strcpy(copy, v.as.as_string);
                 v.as.as_string = copy;
             }
@@ -141,7 +160,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             int length = (int)strlen(name);
             int slot = resolve_local(compiler, name, length);
             if (slot < 0) {
-                /* Unknown variable: silently produce no value for now. */
+                error(compiler, "undefined variable");
                 return;
             }
             emit_byte(compiler, OP_GET_LOCAL);
@@ -151,7 +170,9 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         case EXPR_BINARY: {
             BinaryExpr* b = &expr->as.binary;
             compile_expr(compiler, b->left);
+            if (compiler->had_error) return;
             compile_expr(compiler, b->right);
+            if (compiler->had_error) return;
             switch (b->op) {
                 case TOKEN_PLUS:  emit_byte(compiler, OP_ADD); break;
                 case TOKEN_MINUS: emit_byte(compiler, OP_SUB); break;
@@ -160,7 +181,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 case TOKEN_EQ:    emit_byte(compiler, OP_EQ);  break;
                 case TOKEN_LT:    emit_byte(compiler, OP_LT);  break;
                 case TOKEN_GT:    emit_byte(compiler, OP_GT);  break;
-                default: break;
+                default: error(compiler, "unsupported binary operator"); break;
             }
             break;
         }
@@ -168,6 +189,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             CallExpr* c = &expr->as.call;
             for (int i = 0; i < c->arg_count; i++) {
                 compile_expr(compiler, c->args[i]);
+                if (compiler->had_error) return;
             }
             emit_call(compiler, c->name, c->arg_count);
             break;
@@ -175,11 +197,15 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         case EXPR_FIELD: {
             FieldExpr* f = &expr->as.field;
             char* field_name = malloc((size_t)strlen(f->field) + 1);
-            if (field_name == NULL) return;
+            if (field_name == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
             strcpy(field_name, f->field);
             int field_idx = add_constant(compiler->chunk, value_string(field_name));
             if (field_idx < 0) {
                 free(field_name);
+                error(compiler, "too many constants");
                 return;
             }
             emit_byte(compiler, OP_GET_FIELD);
@@ -189,15 +215,16 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         case EXPR_UNARY: {
             UnaryExpr* u = &expr->as.unary;
             compile_expr(compiler, u->operand);
+            if (compiler->had_error) return;
             switch (u->op) {
                 case TOKEN_MINUS: emit_byte(compiler, OP_NEGATE); break;
                 case TOKEN_BANG:  emit_byte(compiler, OP_NOT); break;
-                default: break;
+                default: error(compiler, "unsupported unary operator"); break;
             }
             break;
         }
         default:
-            /* Unsupported expression kind. */
+            error(compiler, "unsupported expression");
             break;
     }
 }
@@ -207,8 +234,12 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_VAR_DECL: {
             VarDeclStmt* d = &stmt->as.var_decl;
             compile_expr(compiler, d->initializer);
+            if (compiler->had_error) return;
             int slot = add_local(compiler, d->name, (int)strlen(d->name));
-            if (slot < 0) return;
+            if (slot < 0) {
+                error(compiler, "too many locals");
+                return;
+            }
             emit_byte(compiler, OP_SET_LOCAL);
             emit_byte(compiler, (uint8_t)slot);
             break;
@@ -216,25 +247,33 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_ASSIGN: {
             AssignStmt* a = &stmt->as.assign;
             compile_expr(compiler, a->value);
+            if (compiler->had_error) return;
             int slot = resolve_local(compiler, a->name, (int)strlen(a->name));
-            if (slot < 0) return;
+            if (slot < 0) {
+                error(compiler, "undefined variable");
+                return;
+            }
             emit_byte(compiler, OP_SET_LOCAL);
             emit_byte(compiler, (uint8_t)slot);
             break;
         }
         case STMT_RETURN:
             compile_expr(compiler, stmt->as.return_stmt.value);
+            if (compiler->had_error) return;
             emit_byte(compiler, OP_RETURN);
             break;
         case STMT_IF: {
             IfStmt* i = &stmt->as.if_stmt;
             compile_expr(compiler, i->condition);
+            if (compiler->had_error) return;
             int else_jump = emit_jump(compiler, OP_JZ);
             compile_block(compiler, i->then_block);
+            if (compiler->had_error) return;
             int end_jump = emit_jump(compiler, OP_JMP);
             patch_jump(compiler, else_jump);
             if (i->else_block != NULL) {
                 compile_block(compiler, i->else_block);
+                if (compiler->had_error) return;
             }
             patch_jump(compiler, end_jump);
             break;
@@ -242,11 +281,15 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_FOR: {
             ForStmt* f = &stmt->as.for_stmt;
             char* query = malloc((size_t)strlen(f->sql_query) + 1);
-            if (query == NULL) return;
+            if (query == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
             strcpy(query, f->sql_query);
             int query_idx = add_constant(compiler->chunk, value_string(query));
             if (query_idx < 0) {
                 free(query);
+                error(compiler, "too many constants");
                 return;
             }
             emit_byte(compiler, OP_SQL);
@@ -259,21 +302,29 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                because fields are read with OP_GET_FIELD, but we need a slot
                so any nested locals keep correct offsets. */
             int slot = add_local(compiler, f->var_name, (int)strlen(f->var_name));
-            if (slot < 0) return;
+            if (slot < 0) {
+                error(compiler, "too many locals");
+                return;
+            }
             emit_byte(compiler, OP_CONST);
             emit_u16(compiler, (uint16_t)add_constant(compiler->chunk, value_int(0)));
             emit_byte(compiler, OP_SET_LOCAL);
             emit_byte(compiler, (uint8_t)slot);
 
             compile_block(compiler, f->body);
+            if (compiler->had_error) return;
 
             int back = emit_jump(compiler, OP_JMP);
             patch_jump_to(compiler, back, loop_start);
             patch_jump(compiler, exit_jump);
+
+            /* Pop the iterator local at loop exit so it does not leak. */
+            emit_byte(compiler, OP_POP);
+            compiler->local_count--;
             break;
         }
         default:
-            /* Unsupported statement kind. */
+            error(compiler, "unsupported statement");
             break;
     }
 }
@@ -288,6 +339,8 @@ int compile(const char* source, Chunk* chunk) {
     compiler.scope_depth = 0;
     compiler.proc_count = 0;
     compiler.patch_count = 0;
+    compiler.had_error = 0;
+    compiler.error_message[0] = '\0';
 
     if (program->proc_count == 0) {
         emit_byte(&compiler, OP_RETURN);
@@ -320,6 +373,10 @@ int compile(const char* source, Chunk* chunk) {
             add_local(&compiler, param->name, (int)strlen(param->name));
         }
         compile_block(&compiler, program->procs[i].body);
+        if (compiler.had_error) {
+            free_program(program);
+            return 0;
+        }
         emit_byte(&compiler, OP_RETURN);
         compiler.local_count = 0;
     }

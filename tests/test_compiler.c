@@ -265,6 +265,25 @@ TEST(compiler_compiles_for_sql_loop_sum) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_block_scope_does_not_leak_locals) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 1 { int x = 10; } int y = 5; return y; }", &chunk));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(5, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_reports_undefined_variable) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(0, compile("proc main() -> int { return unknown; }", &chunk));
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -287,5 +306,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_forward_call_with_arguments);
     RUN_TEST(compiler_compiles_for_sql_loop);
     RUN_TEST(compiler_compiles_for_sql_loop_sum);
+    RUN_TEST(compiler_block_scope_does_not_leak_locals);
+    RUN_TEST(compiler_reports_undefined_variable);
     TEST_SUMMARY();
 }

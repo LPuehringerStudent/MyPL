@@ -155,6 +155,11 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!push(vm, value_int(!value_is_truthy(value)))) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
+            case OP_POP: {
+                Value value;
+                if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
             case OP_SQL: {
                 if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t idx = read_u16(vm->ip);
