@@ -192,6 +192,53 @@ TEST(parser_reports_error_for_missing_brace) {
     ASSERT_PTR_NOT_NULL(strstr(error, "line"));
 }
 
+TEST(parser_parses_bool_literal_true) {
+    Expr* expr = parse_expression("true");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->kind);
+    ASSERT_INT_EQ(VAL_BOOL, expr->as.literal.value.type);
+    ASSERT_INT_EQ(1, expr->as.literal.value.as.as_int);
+    free_expr(expr);
+}
+
+TEST(parser_parses_bool_literal_false) {
+    Expr* expr = parse_expression("false");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->kind);
+    ASSERT_INT_EQ(VAL_BOOL, expr->as.literal.value.type);
+    ASSERT_INT_EQ(0, expr->as.literal.value.as.as_int);
+    free_expr(expr);
+}
+
+TEST(parser_parses_array_literal) {
+    Program* program = parse("proc main() -> array { array a = [1, 2, 3]; return a; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_VAR_DECL, stmt->kind);
+    ASSERT_INT_EQ(TYPE_ARRAY, stmt->as.var_decl.type);
+    ASSERT_INT_EQ(EXPR_ARRAY, stmt->as.var_decl.initializer->kind);
+    ASSERT_INT_EQ(3, stmt->as.var_decl.initializer->as.array.count);
+    free_program(program);
+}
+
+TEST(parser_parses_index_expression) {
+    Expr* expr = parse_expression("a[0]");
+    ASSERT_PTR_NOT_NULL(expr);
+    ASSERT_INT_EQ(EXPR_INDEX, expr->kind);
+    ASSERT_INT_EQ(EXPR_VARIABLE, expr->as.index.array->kind);
+    ASSERT_INT_EQ(EXPR_LITERAL, expr->as.index.index->kind);
+    free_expr(expr);
+}
+
+TEST(parser_parses_index_assignment) {
+    Program* program = parse("proc main() -> int { a[0] = 1; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_INDEX_ASSIGN, stmt->kind);
+    ASSERT_INT_EQ(EXPR_VARIABLE, stmt->as.index_assign.array->kind);
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -213,5 +260,10 @@ int main(void) {
     RUN_TEST(parser_parses_call_expression);
     RUN_TEST(parser_parses_procedure_parameters);
     RUN_TEST(parser_reports_error_for_missing_brace);
+    RUN_TEST(parser_parses_bool_literal_true);
+    RUN_TEST(parser_parses_bool_literal_false);
+    RUN_TEST(parser_parses_array_literal);
+    RUN_TEST(parser_parses_index_expression);
+    RUN_TEST(parser_parses_index_assignment);
     TEST_SUMMARY();
 }

@@ -97,6 +97,11 @@ static Expr* unary(Parser* parser) {
     return create_unary_expr(op, operand);
 }
 
+static Expr* literal_bool(Parser* parser) {
+    int v = parser->previous.type == TOKEN_TRUE ? 1 : 0;
+    return create_literal_expr(value_bool(v));
+}
+
 static Expr* number(Parser* parser) {
     if (parser->previous.type == TOKEN_FLOAT) {
         char buffer[64];
@@ -163,6 +168,33 @@ static Expr* call(Parser* parser, Expr* left) {
     return expr;
 }
 
+static Expr* array_literal(Parser* parser) {
+    Expr** elements = NULL;
+    int count = 0;
+    if (!check(parser, TOKEN_RBRACKET)) {
+        do {
+            Expr** new_elements = realloc(elements, sizeof(Expr*) * (size_t)(count + 1));
+            if (new_elements == NULL) {
+                for (int i = 0; i < count; i++) {
+                    free_expr(elements[i]);
+                }
+                free(elements);
+                return NULL;
+            }
+            elements = new_elements;
+            elements[count++] = expression(parser);
+        } while (match(parser, TOKEN_COMMA));
+    }
+    advance(parser); /* ] */
+    return create_array_expr(elements, count);
+}
+
+static Expr* index_expr(Parser* parser, Expr* left) {
+    Expr* idx = expression(parser);
+    advance(parser); /* ] */
+    return create_index_expr(left, idx);
+}
+
 static Expr* binary(Parser* parser, Expr* left) {
     TokenType op = parser->previous.type;
     ParseRule* rule = get_rule(op);
@@ -197,6 +229,8 @@ static TypeKind parse_type(Parser* parser) {
     if (match(parser, TOKEN_INT_TYPE)) return TYPE_INT;
     if (match(parser, TOKEN_FLOAT_TYPE)) return TYPE_FLOAT;
     if (match(parser, TOKEN_STRING_TYPE)) return TYPE_STRING;
+    if (match(parser, TOKEN_BOOL_TYPE)) return TYPE_BOOL;
+    if (match(parser, TOKEN_ARRAY_TYPE)) return TYPE_ARRAY;
     error_at_current(parser, "expected type");
     return TYPE_INT;
 }
@@ -239,6 +273,19 @@ static Stmt* var_decl(Parser* parser) {
 static Stmt* assignment(Parser* parser) {
     advance(parser); /* identifier */
     char* name = copy_token_lexeme(&parser->previous);
+
+    if (match(parser, TOKEN_LBRACKET)) {
+        Expr* array_expr = create_variable_expr(name);
+        Expr* index_expr = expression(parser);
+        advance(parser); /* ] */
+        advance(parser); /* = */
+        Expr* value = expression(parser);
+        advance(parser); /* ; */
+        Stmt* stmt = create_index_assign_stmt(array_expr, index_expr, value);
+        free(name);
+        return stmt;
+    }
+
     advance(parser); /* = */
     Expr* value = expression(parser);
     advance(parser); /* ; */
@@ -301,7 +348,11 @@ static Stmt* print_statement(Parser* parser) {
 }
 
 static Stmt* statement(Parser* parser) {
-    if (check(parser, TOKEN_INT_TYPE) || check(parser, TOKEN_FLOAT_TYPE)) {
+    if (check(parser, TOKEN_INT_TYPE) ||
+        check(parser, TOKEN_FLOAT_TYPE) ||
+        check(parser, TOKEN_STRING_TYPE) ||
+        check(parser, TOKEN_BOOL_TYPE) ||
+        check(parser, TOKEN_ARRAY_TYPE)) {
         return var_decl(parser);
     }
     if (match(parser, TOKEN_IF)) return if_statement(parser);
@@ -377,45 +428,53 @@ static void parse_proc(Parser* parser, Program* program) {
 }
 
 static ParseRule rules[] = {
-    [TOKEN_PROC]       = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_FOR]        = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_IF]         = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_RETURN]     = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_IN]         = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_INT_TYPE]   = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_FLOAT_TYPE] = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_IDENT]      = {variable, NULL,   PREC_NONE},
-    [TOKEN_INT]        = {number,   NULL,   PREC_NONE},
-    [TOKEN_FLOAT]      = {number,   NULL,   PREC_NONE},
-    [TOKEN_STRING]     = {number,   NULL,   PREC_NONE},
-    [TOKEN_SQL_QUERY]  = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_PROC]       = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_FOR]        = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_IF]         = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_RETURN]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_IN]         = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_PRINT]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_INT_TYPE]   = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_FLOAT_TYPE] = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_STRING_TYPE]= {NULL,        NULL,   PREC_NONE},
+    [TOKEN_BOOL_TYPE]  = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_ARRAY_TYPE] = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_TRUE]       = {literal_bool,NULL,   PREC_NONE},
+    [TOKEN_FALSE]      = {literal_bool,NULL,   PREC_NONE},
+    [TOKEN_IDENT]      = {variable,    NULL,   PREC_NONE},
+    [TOKEN_INT]        = {number,      NULL,   PREC_NONE},
+    [TOKEN_FLOAT]      = {number,      NULL,   PREC_NONE},
+    [TOKEN_STRING]     = {number,      NULL,   PREC_NONE},
+    [TOKEN_SQL_QUERY]  = {NULL,        NULL,   PREC_NONE},
 
-    [TOKEN_ARROW]      = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_EQ]         = {NULL,     binary, PREC_EQUALITY},
-    [TOKEN_NE]         = {NULL,     binary, PREC_EQUALITY},
-    [TOKEN_GE]         = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_LE]         = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_ASSIGN]     = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_LT]         = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_GT]         = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_BANG]       = {unary,    NULL,   PREC_NONE},
+    [TOKEN_ARROW]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_EQ]         = {NULL,        binary, PREC_EQUALITY},
+    [TOKEN_NE]         = {NULL,        binary, PREC_EQUALITY},
+    [TOKEN_GE]         = {NULL,        binary, PREC_COMPARISON},
+    [TOKEN_LE]         = {NULL,        binary, PREC_COMPARISON},
+    [TOKEN_ASSIGN]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_LT]         = {NULL,        binary, PREC_COMPARISON},
+    [TOKEN_GT]         = {NULL,        binary, PREC_COMPARISON},
+    [TOKEN_BANG]       = {unary,       NULL,   PREC_NONE},
 
-    [TOKEN_PLUS]       = {NULL,     binary, PREC_TERM},
-    [TOKEN_MINUS]      = {unary,    binary, PREC_TERM},
-    [TOKEN_STAR]       = {NULL,     binary, PREC_FACTOR},
-    [TOKEN_SLASH]      = {NULL,     binary, PREC_FACTOR},
-    [TOKEN_DOT]        = {NULL,     field,  PREC_CALL},
+    [TOKEN_PLUS]       = {NULL,        binary, PREC_TERM},
+    [TOKEN_MINUS]      = {unary,       binary, PREC_TERM},
+    [TOKEN_STAR]       = {NULL,        binary, PREC_FACTOR},
+    [TOKEN_SLASH]      = {NULL,        binary, PREC_FACTOR},
+    [TOKEN_DOT]        = {NULL,        field,  PREC_CALL},
 
-    [TOKEN_LPAREN]     = {grouping, call,   PREC_CALL},
-    [TOKEN_RPAREN]     = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_LBRACE]     = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_RBRACE]     = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_COMMA]      = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_SEMICOLON]  = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_COLON]      = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_LPAREN]     = {grouping,    call,   PREC_CALL},
+    [TOKEN_RPAREN]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_LBRACE]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_RBRACE]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_LBRACKET]   = {array_literal, index_expr, PREC_CALL},
+    [TOKEN_RBRACKET]   = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_COMMA]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_SEMICOLON]  = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_COLON]      = {NULL,        NULL,   PREC_NONE},
 
-    [TOKEN_ERROR]      = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_EOF]        = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_ERROR]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_EOF]        = {NULL,        NULL,   PREC_NONE},
 };
 
 static ParseRule* get_rule(TokenType type) {
