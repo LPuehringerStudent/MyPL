@@ -780,13 +780,19 @@ TEST(vm_executes_array_index_set) {
     write_chunk_u16(&chunk, (uint16_t)b);
     write_chunk(&chunk, OP_ARRAY_BUILD);
     write_chunk_u16(&chunk, 2);
+    write_chunk(&chunk, OP_SET_LOCAL);
+    write_chunk(&chunk, 0);
 
+    write_chunk(&chunk, OP_GET_LOCAL);
+    write_chunk(&chunk, 0);
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)idx0);
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)c);
     write_chunk(&chunk, OP_INDEX_SET);
 
+    write_chunk(&chunk, OP_GET_LOCAL);
+    write_chunk(&chunk, 0);
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)idx0);
     write_chunk(&chunk, OP_INDEX_GET);

@@ -369,7 +369,6 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 array_set(arr_val.as.as_array, idx_val.as.as_int, val);
-                if (!push(vm, arr_val)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_ARRAY_LENGTH: {
