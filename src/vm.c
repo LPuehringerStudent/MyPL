@@ -47,6 +47,7 @@ const char* vm_get_error(VM* vm) {
 void vm_free(VM* vm) {
     if (vm == NULL) return;
     result_free(vm->result);
+    array_pool_free_all();
     free(vm);
 }
 
@@ -307,6 +308,93 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
                 value_print(value);
                 printf("\n");
+                break;
+            }
+            case OP_ARRAY_BUILD: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t count = read_u16(vm->ip);
+                vm->ip += 2;
+                if (count > (size_t)(vm->stack_top - vm->frame_base)) {
+                    set_runtime_error(vm, "Not enough values for array");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ArrayObj* array = array_new();
+                if (array == NULL) {
+                    set_runtime_error(vm, "Out of memory");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value* temp = NULL;
+                if (count > 0) {
+                    temp = malloc(sizeof(Value) * count);
+                    if (temp == NULL) {
+                        set_runtime_error(vm, "Out of memory");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    for (int i = (int)count - 1; i >= 0; i--) {
+                        if (!pop(vm, &temp[i])) {
+                            free(temp);
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                    }
+                    for (int i = 0; i < count; i++) {
+                        array_append(array, temp[i]);
+                    }
+                    free(temp);
+                }
+                if (!push(vm, value_array(array))) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
+            case OP_INDEX_GET: {
+                Value idx_val;
+                Value arr_val;
+                if (!pop(vm, &idx_val)) return INTERPRET_RUNTIME_ERROR;
+                if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
+                if (arr_val.type != VAL_ARRAY || idx_val.type != VAL_INT) {
+                    set_runtime_error(vm, "Invalid array index");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value result = array_get(arr_val.as.as_array, idx_val.as.as_int);
+                if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
+            case OP_INDEX_SET: {
+                Value val;
+                Value idx_val;
+                Value arr_val;
+                if (!pop(vm, &val)) return INTERPRET_RUNTIME_ERROR;
+                if (!pop(vm, &idx_val)) return INTERPRET_RUNTIME_ERROR;
+                if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
+                if (arr_val.type != VAL_ARRAY || idx_val.type != VAL_INT) {
+                    set_runtime_error(vm, "Invalid array index assignment");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                array_set(arr_val.as.as_array, idx_val.as.as_int, val);
+                if (!push(vm, arr_val)) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
+            case OP_ARRAY_LENGTH: {
+                Value arr_val;
+                if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
+                if (arr_val.type != VAL_ARRAY) {
+                    set_runtime_error(vm, "length expects an array");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!push(vm, value_int(array_length(arr_val.as.as_array)))) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_ARRAY_APPEND: {
+                Value val;
+                Value arr_val;
+                if (!pop(vm, &val)) return INTERPRET_RUNTIME_ERROR;
+                if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
+                if (arr_val.type != VAL_ARRAY) {
+                    set_runtime_error(vm, "append expects an array");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                array_append(arr_val.as.as_array, val);
+                if (!push(vm, arr_val)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             default:

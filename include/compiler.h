@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct ArrayObj ArrayObj;
+
 typedef enum {
     OP_CONST,
     OP_GET_LOCAL,
@@ -25,22 +27,30 @@ typedef enum {
     OP_GET_FIELD,
     OP_CALL,
     OP_RETURN,
-    OP_PRINT
+    OP_PRINT,
+    OP_ARRAY_BUILD,
+    OP_INDEX_GET,
+    OP_INDEX_SET,
+    OP_ARRAY_LENGTH,
+    OP_ARRAY_APPEND
 } OpCode;
 
 typedef enum {
     VAL_INT,
     VAL_FLOAT,
-    VAL_STRING
+    VAL_STRING,
+    VAL_BOOL,
+    VAL_ARRAY
 } ValueType;
 
 typedef struct {
     int type;
     union {
-        int    as_int;
-        double as_float;
-        char*  as_string;
-        void*  as_row_handle;
+        int       as_int;
+        double    as_float;
+        char*     as_string;
+        void*     as_row_handle;
+        ArrayObj* as_array;
     } as;
 } Value;
 
@@ -65,7 +75,17 @@ uint16_t read_u16(const uint8_t* bytes);
 Value value_int(int v);
 Value value_float(double v);
 Value value_string(char* s);
+Value value_bool(int v);
+Value value_array(ArrayObj* array);
 void value_print(Value value);
+
+ArrayObj* array_new(void);
+void      array_free(ArrayObj* array);
+void      array_append(ArrayObj* array, Value value);
+Value     array_get(ArrayObj* array, int index);
+void      array_set(ArrayObj* array, int index, Value value);
+int       array_length(ArrayObj* array);
+void      array_pool_free_all(void);
 
 Value value_add(Value a, Value b);
 Value value_sub(Value a, Value b);

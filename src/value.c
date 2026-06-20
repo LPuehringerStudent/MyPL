@@ -1,8 +1,18 @@
 #include <stdio.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "compiler.h"
+
+struct ArrayObj {
+    Value* items;
+    int count;
+    int capacity;
+    ArrayObj* next;
+};
+
+static ArrayObj* array_pool = NULL;
 
 Value value_int(int v) {
     Value value;
@@ -22,6 +32,20 @@ Value value_string(char* s) {
     Value value;
     value.type = VAL_STRING;
     value.as.as_string = s;
+    return value;
+}
+
+Value value_bool(int v) {
+    Value value;
+    value.type = VAL_BOOL;
+    value.as.as_int = v ? 1 : 0;
+    return value;
+}
+
+Value value_array(ArrayObj* array) {
+    Value value;
+    value.type = VAL_ARRAY;
+    value.as.as_array = array;
     return value;
 }
 
@@ -123,6 +147,10 @@ int value_is_truthy(Value value) {
             return value.as.as_float != 0.0;
         case VAL_STRING:
             return value.as.as_string != NULL;
+        case VAL_BOOL:
+            return value.as.as_int != 0;
+        case VAL_ARRAY:
+            return value.as.as_array != NULL;
         default:
             /* VAL_ROW_HANDLE and any future types: treat non-NULL as truthy. */
             return value.as.as_row_handle != NULL;
@@ -140,8 +168,76 @@ void value_print(Value value) {
         case VAL_STRING:
             printf("%s", value.as.as_string ? value.as.as_string : "");
             break;
+        case VAL_BOOL:
+            printf("%s", value.as.as_int ? "true" : "false");
+            break;
+        case VAL_ARRAY: {
+            ArrayObj* array = value.as.as_array;
+            printf("[");
+            if (array != NULL) {
+                for (int i = 0; i < array->count; i++) {
+                    value_print(array->items[i]);
+                    if (i < array->count - 1) printf(", ");
+                }
+            }
+            printf("]");
+            break;
+        }
         default:
             printf("?");
             break;
     }
+}
+
+ArrayObj* array_new(void) {
+    ArrayObj* array = malloc(sizeof(ArrayObj));
+    if (array == NULL) return NULL;
+    array->items = NULL;
+    array->count = 0;
+    array->capacity = 0;
+    array->next = array_pool;
+    array_pool = array;
+    return array;
+}
+
+void array_free(ArrayObj* array) {
+    if (array == NULL) return;
+    free(array->items);
+    free(array);
+}
+
+void array_pool_free_all(void) {
+    while (array_pool != NULL) {
+        ArrayObj* next = array_pool->next;
+        array_free(array_pool);
+        array_pool = next;
+    }
+}
+
+void array_append(ArrayObj* array, Value value) {
+    if (array->count >= array->capacity) {
+        int new_capacity = array->capacity == 0 ? 4 : array->capacity * 2;
+        Value* new_items = realloc(array->items, sizeof(Value) * (size_t)new_capacity);
+        if (new_items == NULL) return;
+        array->items = new_items;
+        array->capacity = new_capacity;
+    }
+    array->items[array->count++] = value;
+}
+
+Value array_get(ArrayObj* array, int index) {
+    if (array == NULL || index < 0 || index >= array->count) {
+        return value_int(0);
+    }
+    return array->items[index];
+}
+
+void array_set(ArrayObj* array, int index, Value value) {
+    if (array == NULL || index < 0 || index >= array->count) return;
+    array->items[index] = value;
+}
+
+int array_length(ArrayObj* array) {
+    if (array == NULL) return 0;
+    return array->count;
 }
