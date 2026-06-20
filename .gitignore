@@ -20,3 +20,6 @@ mydb
 docs/
 ARCHITECTURE.md
 AGENTS.md
+
+# Worktrees
+.worktrees/
