@@ -64,6 +64,7 @@ uint16_t read_u16(const uint8_t* bytes);
 Value value_int(int v);
 Value value_float(double v);
 Value value_string(char* s);
+void value_print(Value value);
 
 Value value_add(Value a, Value b);
 Value value_sub(Value a, Value b);

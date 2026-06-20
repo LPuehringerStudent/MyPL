@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -125,5 +126,22 @@ int value_is_truthy(Value value) {
         default:
             /* VAL_ROW_HANDLE and any future types: treat non-NULL as truthy. */
             return value.as.as_row_handle != NULL;
+    }
+}
+
+void value_print(Value value) {
+    switch (value.type) {
+        case VAL_INT:
+            printf("%d", value.as.as_int);
+            break;
+        case VAL_FLOAT:
+            printf("%g", value.as.as_float);
+            break;
+        case VAL_STRING:
+            printf("%s", value.as.as_string ? value.as.as_string : "");
+            break;
+        default:
+            printf("?");
+            break;
     }
 }

@@ -1,0 +1,3 @@
+proc main() -> float {
+    return 3.14;
+}
