@@ -7,7 +7,9 @@
 typedef enum {
     TYPE_INT,
     TYPE_FLOAT,
-    TYPE_STRING
+    TYPE_STRING,
+    TYPE_BOOL,
+    TYPE_ARRAY
 } TypeKind;
 
 typedef enum {
@@ -16,7 +18,9 @@ typedef enum {
     EXPR_BINARY,
     EXPR_UNARY,
     EXPR_FIELD,
-    EXPR_CALL
+    EXPR_CALL,
+    EXPR_ARRAY,
+    EXPR_INDEX
 } ExprKind;
 
 typedef enum {
@@ -25,7 +29,8 @@ typedef enum {
     STMT_IF,
     STMT_FOR,
     STMT_RETURN,
-    STMT_PRINT
+    STMT_PRINT,
+    STMT_INDEX_ASSIGN
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -86,6 +91,12 @@ typedef struct {
     Expr* value;
 } PrintStmt;
 
+typedef struct {
+    Expr* array;
+    Expr* index;
+    Expr* value;
+} IndexAssignStmt;
+
 struct Stmt {
     StmtKind kind;
     union {
@@ -95,6 +106,7 @@ struct Stmt {
         ForStmt for_stmt;
         ReturnStmt return_stmt;
         PrintStmt print_stmt;
+        IndexAssignStmt index_assign;
     } as;
 };
 
@@ -128,6 +140,16 @@ typedef struct {
     int arg_count;
 } CallExpr;
 
+typedef struct {
+    Expr** elements;
+    int count;
+} ArrayExpr;
+
+typedef struct {
+    Expr* array;
+    Expr* index;
+} IndexExpr;
+
 struct Expr {
     ExprKind kind;
     union {
@@ -137,6 +159,8 @@ struct Expr {
         UnaryExpr unary;
         FieldExpr field;
         CallExpr call;
+        ArrayExpr array;
+        IndexExpr index;
     } as;
 };
 
@@ -164,5 +188,9 @@ Expr* create_binary_expr(TokenType op, Expr* left, Expr* right);
 Expr* create_unary_expr(TokenType op, Expr* operand);
 Expr* create_field_expr(const char* row, const char* field);
 Expr* create_call_expr(const char* name, Expr** args, int arg_count);
+
+Expr* create_array_expr(Expr** elements, int count);
+Expr* create_index_expr(Expr* array, Expr* index);
+Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value);
 
 #endif

@@ -43,6 +43,16 @@ void free_expr(Expr* expr) {
             }
             free(expr->as.call.args);
             break;
+        case EXPR_ARRAY:
+            for (int i = 0; i < expr->as.array.count; i++) {
+                free_expr(expr->as.array.elements[i]);
+            }
+            free(expr->as.array.elements);
+            break;
+        case EXPR_INDEX:
+            free_expr(expr->as.index.array);
+            free_expr(expr->as.index.index);
+            break;
         default:
             break;
     }
@@ -120,6 +130,11 @@ static void free_stmt(Stmt* stmt) {
             break;
         case STMT_PRINT:
             free_expr(stmt->as.print_stmt.value);
+            break;
+        case STMT_INDEX_ASSIGN:
+            free_expr(stmt->as.index_assign.array);
+            free_expr(stmt->as.index_assign.index);
+            free_expr(stmt->as.index_assign.value);
             break;
     }
     free(stmt);
@@ -299,4 +314,47 @@ Expr* create_call_expr(const char* name, Expr** args, int arg_count) {
     expr->as.call.args = args;
     expr->as.call.arg_count = arg_count;
     return expr;
+}
+
+Expr* create_array_expr(Expr** elements, int count) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        for (int i = 0; i < count; i++) {
+            free_expr(elements[i]);
+        }
+        free(elements);
+        return NULL;
+    }
+    expr->kind = EXPR_ARRAY;
+    expr->as.array.elements = elements;
+    expr->as.array.count = count;
+    return expr;
+}
+
+Expr* create_index_expr(Expr* array, Expr* index) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        free_expr(array);
+        free_expr(index);
+        return NULL;
+    }
+    expr->kind = EXPR_INDEX;
+    expr->as.index.array = array;
+    expr->as.index.index = index;
+    return expr;
+}
+
+Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(array);
+        free_expr(index);
+        free_expr(value);
+        return NULL;
+    }
+    stmt->kind = STMT_INDEX_ASSIGN;
+    stmt->as.index_assign.array = array;
+    stmt->as.index_assign.index = index;
+    stmt->as.index_assign.value = value;
+    return stmt;
 }
