@@ -1,37 +1,61 @@
-#include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "os.h"
 
 char* os_read_file(const char* path) {
-    FILE* file = fopen(path, "rb");
-    if (file == NULL) return NULL;
+    int fd = os_open(path);
+    if (fd < 0) return NULL;
 
-    if (fseek(file, 0, SEEK_END) != 0) {
-        fclose(file);
-        return NULL;
-    }
-
-    long size = ftell(file);
+    off_t size = lseek(fd, 0, SEEK_END);
     if (size < 0) {
-        fclose(file);
+        os_close(fd);
         return NULL;
     }
-
-    if (fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        os_close(fd);
         return NULL;
     }
 
     char* buffer = malloc((size_t)size + 1);
     if (buffer == NULL) {
-        fclose(file);
+        os_close(fd);
         return NULL;
     }
 
-    size_t read = fread(buffer, 1, (size_t)size, file);
-    fclose(file);
-
-    buffer[read] = '\0';
+    ssize_t total = 0;
+    while (total < size) {
+        ssize_t n = read(fd, buffer + total, (size_t)(size - total));
+        if (n <= 0) {
+            free(buffer);
+            os_close(fd);
+            return NULL;
+        }
+        total += n;
+    }
+    buffer[size] = '\0';
+    os_close(fd);
     return buffer;
+}
+
+int os_open(const char* path) {
+    return open(path, O_RDWR | O_CREAT, 0644);
+}
+
+int os_close(int fd) {
+    return close(fd);
+}
+
+int os_read(int fd, void* buf, size_t count, off_t offset) {
+    return (int)pread(fd, buf, count, offset);
+}
+
+int os_write(int fd, const void* buf, size_t count, off_t offset) {
+    return (int)pwrite(fd, buf, count, offset);
+}
+
+int os_ftruncate(int fd, off_t length) {
+    return ftruncate(fd, length);
 }

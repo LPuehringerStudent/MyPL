@@ -3,6 +3,8 @@
 #include "vm.h"
 #include "sql_engine.h"
 
+#include <unistd.h>
+
 TEST(compiler_compiles_integer_return) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -234,39 +236,55 @@ TEST(compiler_compiles_forward_call_with_arguments) {
 }
 
 TEST(compiler_compiles_for_sql_loop) {
-    catalog_clear();
+    char path[] = "/tmp/mydb_test_compiler_1_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
     const char* cols[] = {"id"};
     int types[] = {VAL_INT};
-    Table* t = catalog_create_table("users", cols, types, 1);
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
 
     Cell cells[1];
     cells[0].type = VAL_INT;
     cells[0].as.as_int = 1;
-    catalog_insert(t, cells);
+    catalog_insert(&ctx, t, cells);
 
     Chunk chunk;
     init_chunk(&chunk);
     ASSERT_INT_EQ(1, compile("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", &chunk));
 
     VM* vm = vm_init();
+    vm_set_context(vm, &ctx);
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
     ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
-    catalog_clear();
+    catalog_close(&ctx);
+    unlink(path);
 }
 
 TEST(compiler_compiles_for_sql_loop_sum) {
-    catalog_clear();
+    char path[] = "/tmp/mydb_test_compiler_2_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
     const char* cols[] = {"id"};
     int types[] = {VAL_INT};
-    Table* t = catalog_create_table("users", cols, types, 1);
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
 
     Cell cells[1];
     for (int i = 1; i <= 3; i++) {
         cells[0].type = VAL_INT;
         cells[0].as.as_int = i;
-        catalog_insert(t, cells);
+        catalog_insert(&ctx, t, cells);
     }
 
     Chunk chunk;
@@ -274,11 +292,13 @@ TEST(compiler_compiles_for_sql_loop_sum) {
     ASSERT_INT_EQ(1, compile("proc main() -> int { int sum = 0; for row in SELECT id FROM users { sum = sum + row.id; } return sum; }", &chunk));
 
     VM* vm = vm_init();
+    vm_set_context(vm, &ctx);
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
     ASSERT_INT_EQ(6, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
-    catalog_clear();
+    catalog_close(&ctx);
+    unlink(path);
 }
 
 TEST(compiler_block_scope_does_not_leak_locals) {

@@ -1,6 +1,8 @@
 #ifndef MYDB_SQL_ENGINE_H
 #define MYDB_SQL_ENGINE_H
 
+#include <sys/types.h>
+
 #include "mydb.h"
 #include "compiler.h"
 
@@ -38,39 +40,54 @@ typedef struct Table {
     char*    name;
     Column*  columns;
     int      column_count;
-    Row*     rows;
-    int      row_count;
-    int      row_capacity;
+    int      first_row_page;
+    int      last_row_page;
 } Table;
 
 struct Context {
-    const char* db_path;
+    const char*    db_path;
+    struct Pager*  pager;
 };
 
-/* Catalog */
-void   catalog_clear(void);
-Table* catalog_create_table(const char* name, const char** columns, int* types, int column_count);
-Table* catalog_find_table(const char* name);
-void   catalog_insert(Table* table, Cell* cells);
+/* Catalog lifecycle */
+int    catalog_open(Context* ctx);
+void   catalog_close(Context* ctx);
+void   catalog_clear(Context* ctx);
 
-/* Execution */
+/* Catalog DDL/DML */
+Table* catalog_create_table(Context* ctx, const char* name, const char** columns, int* types, int column_count);
+Table* catalog_find_table(Context* ctx, const char* name);
+void   catalog_insert(Context* ctx, Table* table, Cell* cells);
+
+/* SQL execution */
 Result* sql_exec(const char* query, Context* ctx);
+int     sql_exec_ddl(const char* query, Context* ctx);
 Row*    result_next(Result* res);
 void    result_free(Result* res);
 Cell    row_get_field(Row* row, const char* name);
 
-/* Storage layer stubs */
+/* Storage layer */
+#define PAGE_SIZE 4096
+
 typedef struct Cursor Cursor;
 typedef struct Pager Pager;
 typedef struct BTree BTree;
 
 Pager* pager_open(const char* filename);
 void   pager_close(Pager* pager);
+int    pager_page_count(Pager* pager);
+int    pager_allocate_page(Pager* pager);
+void   pager_free_page(Pager* pager, int page_num);
+void   pager_read_page(Pager* pager, int page_num, uint8_t* out);
+void   pager_write_page(Pager* pager, int page_num, const uint8_t* data);
 
 BTree* btree_create(Pager* pager);
 void   btree_destroy(BTree* tree);
 
-int os_open(const char* path);
-int os_close(int fd);
+int    os_open(const char* path);
+int    os_close(int fd);
+int    os_read(int fd, void* buf, size_t count, off_t offset);
+int    os_write(int fd, const void* buf, size_t count, off_t offset);
+int    os_ftruncate(int fd, off_t length);
 
 #endif

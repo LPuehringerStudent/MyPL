@@ -1,6 +1,5 @@
-#define _GNU_SOURCE
-
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,46 +7,165 @@
 #include "sql_engine.h"
 
 /* -------------------------------------------------------------------------- */
-/* Catalog                                                                    */
+/* In-memory catalog cache                                                    */
 /* -------------------------------------------------------------------------- */
 
 #define MAX_CATALOG_TABLES 64
+#define MAX_NAME_LEN       255
 
 static Table* g_catalog[MAX_CATALOG_TABLES];
 static int    g_catalog_count = 0;
+static int    g_catalog_page  = -1;
 
-void catalog_clear(void) {
+static void free_table(Table* t) {
+    if (t == NULL) return;
+    for (int i = 0; i < t->column_count; i++) {
+        free(t->columns[i].name);
+    }
+    free(t->columns);
+    free(t->name);
+    free(t);
+}
+
+void catalog_clear(Context* ctx) {
+    (void)ctx;
     for (int i = 0; i < g_catalog_count; i++) {
-        Table* t = g_catalog[i];
-        if (t == NULL) continue;
-
-        for (int c = 0; c < t->column_count; c++) {
-            free(t->columns[c].name);
-        }
-        free(t->columns);
-
-        for (int r = 0; r < t->row_count; r++) {
-            Row* row = &t->rows[r];
-            for (int f = 0; f < row->field_count; f++) {
-                free(row->fields[f].name);
-                if (row->fields[f].value.type == VAL_STRING) {
-                    free(row->fields[f].value.as.as_string);
-                }
-            }
-            free(row->fields);
-        }
-        free(t->rows);
-
-        free(t->name);
-        free(t);
+        free_table(g_catalog[i]);
         g_catalog[i] = NULL;
     }
     g_catalog_count = 0;
+    g_catalog_page = -1;
 }
 
-Table* catalog_create_table(const char* name, const char** columns, int* types, int column_count) {
+/* -------------------------------------------------------------------------- */
+/* Catalog serialization                                                      */
+/* -------------------------------------------------------------------------- */
+
+static int catalog_read_page(Context* ctx) {
+    Pager* pager = ctx->pager;
+    /* Page 1 is reserved for the catalog. */
+    g_catalog_page = 1;
+
+    uint8_t page[PAGE_SIZE];
+    pager_read_page(pager, g_catalog_page, page);
+
+    int offset = 0;
+    uint32_t table_count = 0;
+    memcpy(&table_count, page + offset, sizeof(table_count));
+    offset += 4;
+
+    for (uint32_t t = 0; t < table_count && g_catalog_count < MAX_CATALOG_TABLES; t++) {
+        Table* table = calloc(1, sizeof(Table));
+        if (table == NULL) return 0;
+
+        uint8_t name_len = page[offset++];
+        table->name = malloc((size_t)name_len + 1);
+        if (table->name == NULL) {
+            free(table);
+            return 0;
+        }
+        memcpy(table->name, page + offset, name_len);
+        table->name[name_len] = '\0';
+        offset += name_len;
+
+        uint8_t column_count = page[offset++];
+        table->column_count = (int)column_count;
+        table->columns = calloc((size_t)column_count, sizeof(Column));
+        if (table->columns == NULL) {
+            free_table(table);
+            return 0;
+        }
+
+        for (int c = 0; c < (int)column_count; c++) {
+            uint8_t col_name_len = page[offset++];
+            table->columns[c].name = malloc((size_t)col_name_len + 1);
+            if (table->columns[c].name == NULL) {
+                free_table(table);
+                return 0;
+            }
+            memcpy(table->columns[c].name, page + offset, col_name_len);
+            table->columns[c].name[col_name_len] = '\0';
+            offset += col_name_len;
+            table->columns[c].type = page[offset++];
+        }
+
+        memcpy(&table->first_row_page, page + offset, sizeof(table->first_row_page));
+        offset += 4;
+        table->last_row_page = table->first_row_page;
+
+        g_catalog[g_catalog_count++] = table;
+    }
+
+    return 1;
+}
+
+static int catalog_write_page(Context* ctx) {
+    Pager* pager = ctx->pager;
+    /* Page 1 is reserved for the catalog. */
+    g_catalog_page = 1;
+
+    uint8_t page[PAGE_SIZE];
+    memset(page, 0, PAGE_SIZE);
+
+    int offset = 0;
+    uint32_t table_count = (uint32_t)g_catalog_count;
+    memcpy(page + offset, &table_count, sizeof(table_count));
+    offset += 4;
+
+    for (int t = 0; t < g_catalog_count; t++) {
+        Table* table = g_catalog[t];
+
+        size_t name_len = strlen(table->name);
+        if (name_len > MAX_NAME_LEN) name_len = MAX_NAME_LEN;
+        page[offset++] = (uint8_t)name_len;
+        memcpy(page + offset, table->name, name_len);
+        offset += (int)name_len;
+
+        page[offset++] = (uint8_t)table->column_count;
+        for (int c = 0; c < table->column_count; c++) {
+            size_t col_name_len = strlen(table->columns[c].name);
+            if (col_name_len > MAX_NAME_LEN) col_name_len = MAX_NAME_LEN;
+            page[offset++] = (uint8_t)col_name_len;
+            memcpy(page + offset, table->columns[c].name, col_name_len);
+            offset += (int)col_name_len;
+            page[offset++] = (uint8_t)table->columns[c].type;
+        }
+
+        memcpy(page + offset, &table->first_row_page, sizeof(table->first_row_page));
+        offset += 4;
+    }
+
+    pager_write_page(pager, g_catalog_page, page);
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Catalog API                                                                */
+/* -------------------------------------------------------------------------- */
+
+int catalog_open(Context* ctx) {
+    if (ctx == NULL || ctx->db_path == NULL) return 0;
+    ctx->pager = pager_open(ctx->db_path);
+    if (ctx->pager == NULL) return 0;
+    catalog_clear(ctx);
+    return catalog_read_page(ctx);
+}
+
+void catalog_close(Context* ctx) {
+    if (ctx == NULL) return;
+    if (ctx->pager != NULL) {
+        catalog_write_page(ctx);
+        pager_close(ctx->pager);
+        ctx->pager = NULL;
+    }
+    catalog_clear(ctx);
+}
+
+Table* catalog_create_table(Context* ctx, const char* name, const char** columns, int* types, int column_count) {
+    if (ctx == NULL || ctx->pager == NULL) return NULL;
     if (g_catalog_count >= MAX_CATALOG_TABLES) return NULL;
     if (name == NULL || columns == NULL || types == NULL || column_count <= 0) return NULL;
+    if (catalog_find_table(ctx, name) != NULL) return NULL;
 
     Table* t = calloc(1, sizeof(Table));
     if (t == NULL) return NULL;
@@ -55,7 +173,7 @@ Table* catalog_create_table(const char* name, const char** columns, int* types, 
     t->name = strdup(name);
     t->columns = calloc((size_t)column_count, sizeof(Column));
     if (t->columns == NULL) {
-        free(t);
+        free_table(t);
         return NULL;
     }
     t->column_count = column_count;
@@ -65,18 +183,16 @@ Table* catalog_create_table(const char* name, const char** columns, int* types, 
         t->columns[i].type = types[i];
     }
 
-    t->row_capacity = 8;
-    t->rows = calloc((size_t)t->row_capacity, sizeof(Row));
-    if (t->rows == NULL) {
-        catalog_clear();
-        return NULL;
-    }
+    t->first_row_page = 0;
+    t->last_row_page = 0;
 
     g_catalog[g_catalog_count++] = t;
+    catalog_write_page(ctx);
     return t;
 }
 
-Table* catalog_find_table(const char* name) {
+Table* catalog_find_table(Context* ctx, const char* name) {
+    (void)ctx;
     if (name == NULL) return NULL;
     for (int i = 0; i < g_catalog_count; i++) {
         if (g_catalog[i] != NULL && strcmp(g_catalog[i]->name, name) == 0) {
@@ -86,43 +202,292 @@ Table* catalog_find_table(const char* name) {
     return NULL;
 }
 
-static char* strdup_or_null(const char* s) {
-    if (s == NULL) return NULL;
-    return strdup(s);
-}
+/* -------------------------------------------------------------------------- */
+/* Row serialization                                                          */
+/* -------------------------------------------------------------------------- */
 
-void catalog_insert(Table* table, Cell* cells) {
-    if (table == NULL || cells == NULL) return;
-    if (table->row_count >= table->row_capacity) {
-        int new_capacity = table->row_capacity * 2;
-        Row* new_rows = realloc(table->rows, (size_t)new_capacity * sizeof(Row));
-        if (new_rows == NULL) return;
-        table->rows = new_rows;
-        table->row_capacity = new_capacity;
-    }
+#define ROW_PAGE_HEADER_SIZE 8
+#define ROW_PAGE_DATA_SIZE   (PAGE_SIZE - ROW_PAGE_HEADER_SIZE)
 
-    Row* row = &table->rows[table->row_count];
-    row->field_count = table->column_count;
-    row->fields = calloc((size_t)row->field_count, sizeof(Field));
-    if (row->fields == NULL) return;
-
-    for (int i = 0; i < row->field_count; i++) {
-        row->fields[i].name = strdup_or_null(table->columns[i].name);
-        row->fields[i].value.type = cells[i].type;
-        if (cells[i].type == VAL_STRING) {
-            row->fields[i].value.as.as_string = strdup_or_null(cells[i].as.as_string);
-        } else if (cells[i].type == VAL_FLOAT) {
-            row->fields[i].value.as.as_float = cells[i].as.as_float;
-        } else {
-            row->fields[i].value.as.as_int = cells[i].as.as_int;
+static int row_record_size(Table* table, Cell* cells) {
+    int size = 2; /* record length prefix */
+    for (int i = 0; i < table->column_count; i++) {
+        size += 1; /* type tag */
+        switch (cells[i].type) {
+            case VAL_INT:    size += 4; break;
+            case VAL_FLOAT:  size += 8; break;
+            case VAL_STRING: size += 4 + (int)strlen(cells[i].as.as_string); break;
+            default:         size += 4; break;
         }
     }
+    return size;
+}
 
-    table->row_count++;
+static void serialize_row(Table* table, Cell* cells, uint8_t* out) {
+    int offset = 2; /* length prefix */
+    for (int i = 0; i < table->column_count; i++) {
+        out[offset++] = (uint8_t)cells[i].type;
+        switch (cells[i].type) {
+            case VAL_INT: {
+                int32_t v = (int32_t)cells[i].as.as_int;
+                memcpy(out + offset, &v, sizeof(v));
+                offset += sizeof(v);
+                break;
+            }
+            case VAL_FLOAT: {
+                double v = cells[i].as.as_float;
+                memcpy(out + offset, &v, sizeof(v));
+                offset += sizeof(v);
+                break;
+            }
+            case VAL_STRING: {
+                const char* s = cells[i].as.as_string ? cells[i].as.as_string : "";
+                int32_t len = (int32_t)strlen(s);
+                memcpy(out + offset, &len, sizeof(len));
+                offset += sizeof(len);
+                memcpy(out + offset, s, (size_t)len);
+                offset += len;
+                break;
+            }
+            default: {
+                int32_t v = 0;
+                memcpy(out + offset, &v, sizeof(v));
+                offset += sizeof(v);
+                break;
+            }
+        }
+    }
+    int16_t total = (int16_t)offset;
+    memcpy(out, &total, sizeof(total));
+}
+
+static int deserialize_cell(const uint8_t* data, int* offset, Cell* cell) {
+    cell->type = data[(*offset)++];
+    switch (cell->type) {
+        case VAL_INT: {
+            int32_t v = 0;
+            memcpy(&v, data + *offset, sizeof(v));
+            *offset += sizeof(v);
+            cell->as.as_int = (int)v;
+            return 1;
+        }
+        case VAL_FLOAT: {
+            double v = 0;
+            memcpy(&v, data + *offset, sizeof(v));
+            *offset += sizeof(v);
+            cell->as.as_float = v;
+            return 1;
+        }
+        case VAL_STRING: {
+            int32_t len = 0;
+            memcpy(&len, data + *offset, sizeof(len));
+            *offset += sizeof(len);
+            cell->as.as_string = malloc((size_t)len + 1);
+            if (cell->as.as_string == NULL) return 0;
+            memcpy(cell->as.as_string, data + *offset, (size_t)len);
+            cell->as.as_string[len] = '\0';
+            *offset += len;
+            return 1;
+        }
+        default: {
+            *offset += 4;
+            cell->type = VAL_INT;
+            cell->as.as_int = 0;
+            return 1;
+        }
+    }
+}
+
+static Row* deserialize_row(Table* table, const uint8_t* record) {
+    Row* row = malloc(sizeof(Row));
+    if (row == NULL) return NULL;
+    row->field_count = table->column_count;
+    row->fields = calloc((size_t)row->field_count, sizeof(Field));
+    if (row->fields == NULL) {
+        free(row);
+        return NULL;
+    }
+
+    int offset = 2; /* skip length prefix */
+    for (int i = 0; i < row->field_count; i++) {
+        row->fields[i].name = strdup(table->columns[i].name);
+        if (!deserialize_cell(record, &offset, &row->fields[i].value)) {
+            for (int j = 0; j <= i; j++) {
+                free(row->fields[j].name);
+                if (row->fields[j].value.type == VAL_STRING) {
+                    free(row->fields[j].value.as.as_string);
+                }
+            }
+            free(row->fields);
+            free(row);
+            return NULL;
+        }
+    }
+    return row;
 }
 
 /* -------------------------------------------------------------------------- */
-/* SQL parser                                                                 */
+/* Row page storage                                                           */
+/* -------------------------------------------------------------------------- */
+
+static void row_page_init(uint8_t* page) {
+    memset(page, 0, PAGE_SIZE);
+    int16_t count = 0;
+    int32_t free_ptr = ROW_PAGE_HEADER_SIZE;
+    memcpy(page + 2, &count, sizeof(count));
+    memcpy(page + 4, &free_ptr, sizeof(free_ptr));
+}
+
+static int row_page_append(Context* ctx, Table* table, Cell* cells) {
+    Pager* pager = ctx->pager;
+    int record_size = row_record_size(table, cells);
+    if (record_size > ROW_PAGE_DATA_SIZE) return 0;
+
+    uint8_t* record = calloc(1, (size_t)record_size);
+    if (record == NULL) return 0;
+    serialize_row(table, cells, record);
+
+    uint8_t page[PAGE_SIZE];
+    int page_num = table->last_row_page;
+
+    if (page_num == 0) {
+        /* First row for this table. */
+        page_num = pager_allocate_page(pager);
+        if (page_num < 0) {
+            free(record);
+            return 0;
+        }
+        row_page_init(page);
+        table->first_row_page = page_num;
+        table->last_row_page = page_num;
+    } else {
+        pager_read_page(pager, page_num, page);
+    }
+
+    int32_t free_ptr;
+    memcpy(&free_ptr, page + 4, sizeof(free_ptr));
+    int16_t count;
+    memcpy(&count, page + 2, sizeof(count));
+
+    if (free_ptr + record_size > PAGE_SIZE) {
+        /* Page full: allocate next page. */
+        int next_page_num = pager_allocate_page(pager);
+        if (next_page_num < 0) {
+            free(record);
+            return 0;
+        }
+        memcpy(page, &next_page_num, sizeof(next_page_num));
+        pager_write_page(pager, page_num, page);
+
+        page_num = next_page_num;
+        row_page_init(page);
+        free_ptr = ROW_PAGE_HEADER_SIZE;
+        count = 0;
+        table->last_row_page = page_num;
+    }
+
+    memcpy(page + free_ptr, record, (size_t)record_size);
+    free(record);
+    free_ptr += record_size;
+    count++;
+
+    memcpy(page + 2, &count, sizeof(count));
+    memcpy(page + 4, &free_ptr, sizeof(free_ptr));
+    pager_write_page(pager, page_num, page);
+
+    catalog_write_page(ctx);
+    return 1;
+}
+
+void catalog_insert(Context* ctx, Table* table, Cell* cells) {
+    if (ctx == NULL || ctx->pager == NULL || table == NULL || cells == NULL) return;
+    row_page_append(ctx, table, cells);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Row scanning                                                               */
+/* -------------------------------------------------------------------------- */
+
+static int read_all_rows(Context* ctx, Table* table, Row** out_rows, int* out_count) {
+    Pager* pager = ctx->pager;
+    int capacity = 8;
+    int count = 0;
+    Row* rows = calloc((size_t)capacity, sizeof(Row));
+    if (rows == NULL) return 0;
+
+    int page_num = table->first_row_page;
+    while (page_num != 0) {
+        uint8_t page[PAGE_SIZE];
+        pager_read_page(pager, page_num, page);
+
+        int16_t record_count;
+        memcpy(&record_count, page + 2, sizeof(record_count));
+
+        int offset = ROW_PAGE_HEADER_SIZE;
+        for (int r = 0; r < (int)record_count; r++) {
+            int16_t record_size;
+            memcpy(&record_size, page + offset, sizeof(record_size));
+
+            Row* row = deserialize_row(table, page + offset);
+            if (row == NULL) {
+                for (int i = 0; i < count; i++) {
+                    for (int j = 0; j < rows[i].field_count; j++) {
+                        free(rows[i].fields[j].name);
+                        if (rows[i].fields[j].value.type == VAL_STRING) {
+                            free(rows[i].fields[j].value.as.as_string);
+                        }
+                    }
+                    free(rows[i].fields);
+                }
+                free(rows);
+                return 0;
+            }
+
+            if (count >= capacity) {
+                capacity *= 2;
+                Row* new_rows = realloc(rows, (size_t)capacity * sizeof(Row));
+                if (new_rows == NULL) {
+                    /* cleanup */
+                    for (int j = 0; j < row->field_count; j++) {
+                        free(row->fields[j].name);
+                        if (row->fields[j].value.type == VAL_STRING) {
+                            free(row->fields[j].value.as.as_string);
+                        }
+                    }
+                    free(row->fields);
+                    free(row);
+                    for (int i = 0; i < count; i++) {
+                        for (int j = 0; j < rows[i].field_count; j++) {
+                            free(rows[i].fields[j].name);
+                            if (rows[i].fields[j].value.type == VAL_STRING) {
+                                free(rows[i].fields[j].value.as.as_string);
+                            }
+                        }
+                        free(rows[i].fields);
+                    }
+                    free(rows);
+                    return 0;
+                }
+                rows = new_rows;
+            }
+
+            rows[count++] = *row;
+            free(row);
+            offset += (int)record_size;
+        }
+
+        int32_t next_page;
+        memcpy(&next_page, page, sizeof(next_page));
+        page_num = (int)next_page;
+    }
+
+    *out_rows = rows;
+    *out_count = count;
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* SQL parser (lexer + SELECT/CREATE/INSERT)                                  */
 /* -------------------------------------------------------------------------- */
 
 typedef enum {
@@ -132,10 +497,19 @@ typedef enum {
     TOK_STRING,
     TOK_STAR,
     TOK_COMMA,
+    TOK_LPAREN,
+    TOK_RPAREN,
     TOK_SELECT,
     TOK_FROM,
     TOK_WHERE,
-    TOK_AND,
+    TOK_CREATE,
+    TOK_TABLE,
+    TOK_INSERT,
+    TOK_INTO,
+    TOK_VALUES,
+    TOK_INT,
+    TOK_FLOAT,
+    TOK_STRING_KW,
     TOK_EQ,
     TOK_LT,
     TOK_GT,
@@ -182,7 +556,14 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 6 && strncasecmp(start, "SELECT", 6) == 0) return TOK_SELECT;
     if (length == 4 && strncasecmp(start, "FROM", 4) == 0) return TOK_FROM;
     if (length == 5 && strncasecmp(start, "WHERE", 5) == 0) return TOK_WHERE;
-    if (length == 3 && strncasecmp(start, "AND", 3) == 0) return TOK_AND;
+    if (length == 6 && strncasecmp(start, "CREATE", 6) == 0) return TOK_CREATE;
+    if (length == 5 && strncasecmp(start, "TABLE", 5) == 0) return TOK_TABLE;
+    if (length == 6 && strncasecmp(start, "INSERT", 6) == 0) return TOK_INSERT;
+    if (length == 4 && strncasecmp(start, "INTO", 4) == 0) return TOK_INTO;
+    if (length == 6 && strncasecmp(start, "VALUES", 6) == 0) return TOK_VALUES;
+    if (length == 3 && strncasecmp(start, "INT", 3) == 0) return TOK_INT;
+    if (length == 5 && strncasecmp(start, "FLOAT", 5) == 0) return TOK_FLOAT;
+    if (length == 6 && strncasecmp(start, "STRING", 6) == 0) return TOK_STRING_KW;
     return TOK_IDENT;
 }
 
@@ -229,6 +610,8 @@ static SqlToken sql_next_token(SqlLexer* lex) {
     switch (c) {
         case '*': return sql_make_token(lex, TOK_STAR);
         case ',': return sql_make_token(lex, TOK_COMMA);
+        case '(': return sql_make_token(lex, TOK_LPAREN);
+        case ')': return sql_make_token(lex, TOK_RPAREN);
         case '=': return sql_make_token(lex, TOK_EQ);
         case '<':
             if (*lex->current == '=') { lex->current++; return sql_make_token(lex, TOK_LE); }
@@ -242,7 +625,19 @@ static SqlToken sql_next_token(SqlLexer* lex) {
     }
 }
 
+static void sql_token_text(SqlToken* tok, char* out, size_t out_size) {
+    size_t len = (size_t)tok->length;
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, tok->text, len);
+    out[len] = '\0';
+}
+
+/* -------------------------------------------------------------------------- */
+/* SELECT parsing & execution                                                 */
+/* -------------------------------------------------------------------------- */
+
 #define MAX_SELECT_COLUMNS 16
+#define MAX_COLUMNS        16
 
 typedef struct {
     char column_names[MAX_SELECT_COLUMNS][64];
@@ -254,13 +649,6 @@ typedef struct {
     Cell where_value;
 } SelectStmt;
 
-static void sql_token_text(SqlToken* tok, char* out, size_t out_size) {
-    size_t len = (size_t)tok->length;
-    if (len >= out_size) len = out_size - 1;
-    memcpy(out, tok->text, len);
-    out[len] = '\0';
-}
-
 static int sql_parse_select(const char* query, SelectStmt* stmt) {
     memset(stmt, 0, sizeof(*stmt));
     stmt->where_op = -1;
@@ -271,7 +659,6 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
     SqlToken tok = sql_next_token(&lex);
     if (tok.type != TOK_SELECT) return 0;
 
-    /* column list */
     tok = sql_next_token(&lex);
     if (tok.type == TOK_STAR) {
         stmt->column_count = 0;
@@ -353,10 +740,6 @@ static void sql_free_select_stmt(SelectStmt* stmt) {
         free(stmt->where_value.as.as_string);
     }
 }
-
-/* -------------------------------------------------------------------------- */
-/* Executor                                                                   */
-/* -------------------------------------------------------------------------- */
 
 static Cell cell_from_int(int v) {
     Cell c;
@@ -455,7 +838,6 @@ static void result_append(Result* res, Row* src, Table* table, SelectStmt* stmt)
                 }
             }
             if (value == NULL) {
-                /* Unknown column: leave as int 0 */
                 dst->fields[i].name = strdup(name);
                 dst->fields[i].value = cell_from_int(0);
                 continue;
@@ -474,39 +856,235 @@ static void result_append(Result* res, Row* src, Table* table, SelectStmt* stmt)
     }
 }
 
-static Result* execute_select(SelectStmt* stmt) {
-    Table* table = catalog_find_table(stmt->table_name);
+static Result* execute_select(Context* ctx, SelectStmt* stmt) {
+    Table* table = catalog_find_table(ctx, stmt->table_name);
     if (table == NULL) {
         return result_create(0);
     }
 
-    Result* res = result_create(table->row_count);
-    if (res == NULL) return NULL;
+    Row* rows = NULL;
+    int row_count = 0;
+    if (!read_all_rows(ctx, table, &rows, &row_count)) {
+        return result_create(0);
+    }
 
-    for (int i = 0; i < table->row_count; i++) {
-        Row* row = &table->rows[i];
-        if (stmt->has_where && !evaluate_where(row, stmt)) {
+    Result* res = result_create(row_count);
+    if (res == NULL) {
+        for (int i = 0; i < row_count; i++) {
+            for (int j = 0; j < rows[i].field_count; j++) {
+                free(rows[i].fields[j].name);
+                if (rows[i].fields[j].value.type == VAL_STRING) {
+                    free(rows[i].fields[j].value.as.as_string);
+                }
+            }
+            free(rows[i].fields);
+        }
+        free(rows);
+        return NULL;
+    }
+
+    for (int i = 0; i < row_count; i++) {
+        if (stmt->has_where && !evaluate_where(&rows[i], stmt)) {
             continue;
         }
-        result_append(res, row, table, stmt);
+        result_append(res, &rows[i], table, stmt);
     }
+
+    for (int i = 0; i < row_count; i++) {
+        for (int j = 0; j < rows[i].field_count; j++) {
+            free(rows[i].fields[j].name);
+            if (rows[i].fields[j].value.type == VAL_STRING) {
+                free(rows[i].fields[j].value.as.as_string);
+            }
+        }
+        free(rows[i].fields);
+    }
+    free(rows);
 
     return res;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Public API                                                                 */
+/* CREATE TABLE / INSERT parsing and execution                                */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    char        table_name[64];
+    char*       column_names[MAX_COLUMNS];
+    int         column_types[MAX_COLUMNS];
+    int         column_count;
+    Cell        values[MAX_COLUMNS];
+    int         value_count;
+} DdlStmt;
+
+static int sql_parse_type(SqlToken* tok, int* out_type) {
+    if (tok->type == TOK_INT) {
+        *out_type = VAL_INT;
+        return 1;
+    }
+    if (tok->type == TOK_FLOAT) {
+        *out_type = VAL_FLOAT;
+        return 1;
+    }
+    if (tok->type == TOK_STRING_KW) {
+        *out_type = VAL_STRING;
+        return 1;
+    }
+    return 0;
+}
+
+static int sql_parse_create_table(const char* query, DdlStmt* stmt) {
+    memset(stmt, 0, sizeof(*stmt));
+
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_CREATE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_TABLE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_LPAREN) return 0;
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    char buf[64];
+    sql_token_text(&tok, buf, sizeof(buf));
+    stmt->column_names[stmt->column_count] = strdup(buf);
+    if (stmt->column_names[stmt->column_count] == NULL) return 0;
+    tok = sql_next_token(&lex);
+    if (!sql_parse_type(&tok, &stmt->column_types[stmt->column_count])) return 0;
+    stmt->column_count++;
+
+    while (1) {
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_RPAREN) break;
+        if (tok.type != TOK_COMMA) return 0;
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        sql_token_text(&tok, buf, sizeof(buf));
+        stmt->column_names[stmt->column_count] = strdup(buf);
+        if (stmt->column_names[stmt->column_count] == NULL) return 0;
+        tok = sql_next_token(&lex);
+        if (!sql_parse_type(&tok, &stmt->column_types[stmt->column_count])) return 0;
+        stmt->column_count++;
+    }
+
+    tok = sql_next_token(&lex);
+    return tok.type == TOK_EOF;
+}
+
+static int sql_parse_insert(const char* query, DdlStmt* stmt) {
+    memset(stmt, 0, sizeof(*stmt));
+
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_INSERT) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_INTO) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_VALUES) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_LPAREN) return 0;
+
+    tok = sql_next_token(&lex);
+    while (tok.type != TOK_RPAREN && tok.type != TOK_EOF) {
+        if (stmt->value_count >= MAX_COLUMNS) return 0;
+        if (tok.type == TOK_NUMBER) {
+            char buf[64];
+            sql_token_text(&tok, buf, sizeof(buf));
+            if (strchr(buf, '.') != NULL) {
+                stmt->values[stmt->value_count].type = VAL_FLOAT;
+                stmt->values[stmt->value_count].as.as_float = strtod(buf, NULL);
+            } else {
+                stmt->values[stmt->value_count].type = VAL_INT;
+                stmt->values[stmt->value_count].as.as_int = atoi(buf);
+            }
+        } else if (tok.type == TOK_STRING) {
+            stmt->values[stmt->value_count].type = VAL_STRING;
+            stmt->values[stmt->value_count].as.as_string = malloc((size_t)tok.length + 1);
+            if (stmt->values[stmt->value_count].as.as_string == NULL) return 0;
+            memcpy(stmt->values[stmt->value_count].as.as_string, tok.text, (size_t)tok.length);
+            stmt->values[stmt->value_count].as.as_string[tok.length] = '\0';
+        } else {
+            return 0;
+        }
+        stmt->value_count++;
+
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_COMMA) {
+            tok = sql_next_token(&lex);
+        }
+    }
+
+    if (tok.type != TOK_RPAREN) return 0;
+    tok = sql_next_token(&lex);
+    return tok.type == TOK_EOF;
+}
+
+static void sql_free_ddl_stmt(DdlStmt* stmt) {
+    for (int i = 0; i < stmt->column_count; i++) {
+        free(stmt->column_names[i]);
+        stmt->column_names[i] = NULL;
+    }
+    for (int i = 0; i < stmt->value_count; i++) {
+        if (stmt->values[i].type == VAL_STRING) {
+            free(stmt->values[i].as.as_string);
+        }
+    }
+}
+
+int sql_exec_ddl(const char* query, Context* ctx) {
+    DdlStmt stmt;
+    if (sql_parse_create_table(query, &stmt)) {
+        Table* t = catalog_create_table(ctx, stmt.table_name,
+                                        (const char**)stmt.column_names,
+                                        stmt.column_types,
+                                        stmt.column_count);
+        return t != NULL ? 1 : 0;
+    }
+
+    if (sql_parse_insert(query, &stmt)) {
+        Table* t = catalog_find_table(ctx, stmt.table_name);
+        if (t == NULL) {
+            sql_free_ddl_stmt(&stmt);
+            return 0;
+        }
+        if (t->column_count != stmt.value_count) {
+            sql_free_ddl_stmt(&stmt);
+            return 0;
+        }
+        catalog_insert(ctx, t, stmt.values);
+        sql_free_ddl_stmt(&stmt);
+        return 1;
+    }
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Public query API                                                           */
 /* -------------------------------------------------------------------------- */
 
 Result* sql_exec(const char* query, Context* ctx) {
-    (void)ctx;
+    if (ctx == NULL || ctx->pager == NULL) return NULL;
 
     SelectStmt stmt;
     if (!sql_parse_select(query, &stmt)) {
         return result_create(0);
     }
 
-    Result* res = execute_select(&stmt);
+    Result* res = execute_select(ctx, &stmt);
     sql_free_select_stmt(&stmt);
     return res;
 }

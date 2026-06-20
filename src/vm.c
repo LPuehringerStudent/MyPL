@@ -5,16 +5,17 @@
 #include "sql_engine.h"
 
 struct VM {
-    Chunk*   chunk;
-    uint8_t* ip;
-    Value    stack[STACK_MAX];
-    Value*   stack_top;
-    Value*   frames[STACK_MAX];
-    uint8_t* return_ips[STACK_MAX];
-    int      frame_count;
-    Value*   frame_base;
-    Result*  result;
-    Row*     row;
+    Chunk*        chunk;
+    uint8_t*      ip;
+    Value         stack[STACK_MAX];
+    Value*        stack_top;
+    Value*        frames[STACK_MAX];
+    uint8_t*      return_ips[STACK_MAX];
+    int           frame_count;
+    Value*        frame_base;
+    Result*       result;
+    Row*          row;
+    struct Context* context;
 };
 
 VM* vm_init(void) {
@@ -27,6 +28,7 @@ VM* vm_init(void) {
     vm->frame_base = vm->stack;
     vm->result = NULL;
     vm->row = NULL;
+    vm->context = NULL;
     return vm;
 }
 
@@ -66,6 +68,11 @@ Value vm_pop(VM* vm) {
     Value value;
     pop(vm, &value);
     return value;
+}
+
+void vm_set_context(VM* vm, struct Context* ctx) {
+    if (vm == NULL) return;
+    vm->context = ctx;
 }
 
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
@@ -169,8 +176,10 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (query_value.type != VAL_STRING || query_value.as.as_string == NULL) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                Context* ctx = vm->context;
+                if (ctx == NULL || ctx->pager == NULL) return INTERPRET_RUNTIME_ERROR;
                 result_free(vm->result);
-                vm->result = sql_exec(query_value.as.as_string, NULL);
+                vm->result = sql_exec(query_value.as.as_string, ctx);
                 if (vm->result == NULL) return INTERPRET_RUNTIME_ERROR;
                 vm->row = NULL;
                 break;
