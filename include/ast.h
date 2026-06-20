@@ -24,7 +24,8 @@ typedef enum {
     STMT_ASSIGN,
     STMT_IF,
     STMT_FOR,
-    STMT_RETURN
+    STMT_RETURN,
+    STMT_PRINT
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -81,6 +82,10 @@ typedef struct {
     Expr* value;
 } ReturnStmt;
 
+typedef struct {
+    Expr* value;
+} PrintStmt;
+
 struct Stmt {
     StmtKind kind;
     union {
@@ -89,6 +94,7 @@ struct Stmt {
         IfStmt if_stmt;
         ForStmt for_stmt;
         ReturnStmt return_stmt;
+        PrintStmt print_stmt;
     } as;
 };
 
@@ -137,6 +143,8 @@ struct Expr {
 Program* create_program(void);
 void free_program(Program* program);
 
+void free_block(Block* block);
+
 void free_expr(Expr* expr);
 
 ProcDecl* create_proc_decl(const char* name, TypeKind return_type);
@@ -148,6 +156,7 @@ Stmt* create_assign_stmt(const char* name, Expr* value);
 Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body);
 Stmt* create_return_stmt(Expr* value);
+Stmt* create_print_stmt(Expr* value);
 
 Expr* create_literal_expr(Value value);
 Expr* create_variable_expr(const char* name);

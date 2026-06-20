@@ -319,6 +319,7 @@ TEST(vm_stack_overflow_returns_runtime_error) {
     VM* vm = vm_init();
     InterpretResult result = vm_interpret(vm, &chunk);
     ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, result);
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
     vm_free(vm);
     free_chunk(&chunk);
 }

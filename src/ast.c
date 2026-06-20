@@ -51,7 +51,7 @@ void free_expr(Expr* expr) {
 
 static void free_stmt(Stmt* stmt);
 
-static void free_block(Block* block) {
+void free_block(Block* block) {
     if (block == NULL) return;
     for (int i = 0; i < block->stmt_count; i++) {
         free_stmt(block->stmts[i]);
@@ -117,6 +117,9 @@ static void free_stmt(Stmt* stmt) {
             break;
         case STMT_RETURN:
             free_expr(stmt->as.return_stmt.value);
+            break;
+        case STMT_PRINT:
+            free_expr(stmt->as.print_stmt.value);
             break;
     }
     free(stmt);
@@ -196,6 +199,17 @@ Stmt* create_return_stmt(Expr* value) {
     }
     stmt->kind = STMT_RETURN;
     stmt->as.return_stmt.value = value;
+    return stmt;
+}
+
+Stmt* create_print_stmt(Expr* value) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(value);
+        return NULL;
+    }
+    stmt->kind = STMT_PRINT;
+    stmt->as.print_stmt.value = value;
     return stmt;
 }
 

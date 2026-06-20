@@ -165,7 +165,7 @@ TEST(sql_compiler_loop_uses_persisted_table) {
 
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", &chunk, NULL, 0));
 
     ASSERT_INT_EQ(1, catalog_open(&ctx));
     Result* check = sql_exec("SELECT id FROM users", &ctx);

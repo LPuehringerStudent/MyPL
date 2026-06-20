@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,6 +17,7 @@ struct VM {
     Result*       result;
     Row*          row;
     struct Context* context;
+    char          error_message[256];
 };
 
 VM* vm_init(void) {
@@ -29,7 +31,17 @@ VM* vm_init(void) {
     vm->result = NULL;
     vm->row = NULL;
     vm->context = NULL;
+    vm->error_message[0] = '\0';
     return vm;
+}
+
+static void set_runtime_error(VM* vm, const char* message) {
+    snprintf(vm->error_message, sizeof(vm->error_message), "%s", message);
+}
+
+const char* vm_get_error(VM* vm) {
+    if (vm == NULL) return NULL;
+    return vm->error_message[0] != '\0' ? vm->error_message : NULL;
 }
 
 void vm_free(VM* vm) {
@@ -78,10 +90,12 @@ void vm_set_context(VM* vm, struct Context* ctx) {
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
     vm->chunk = chunk;
     vm->ip = chunk->code;
+    vm->error_message[0] = '\0';
     uint8_t* end = chunk->code + chunk->count;
 
     for (;;) {
         if (vm->ip >= end) {
+            set_runtime_error(vm, "Runtime error");
             return INTERPRET_RUNTIME_ERROR;
         }
         uint8_t op = *vm->ip++;
@@ -91,9 +105,11 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 uint16_t idx = read_u16(vm->ip);
                 vm->ip += 2;
                 if (idx >= (uint16_t)vm->chunk->constants_count) {
+                    set_runtime_error(vm, "Invalid constant index");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (!push(vm, vm->chunk->constants[idx])) {
+                    set_runtime_error(vm, "Stack overflow");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -104,6 +120,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
                 if (!push(vm, vm->frame_base[slot])) {
+                    set_runtime_error(vm, "Invalid local variable slot");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -152,6 +169,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 } else if (value.type == VAL_INT) {
                     if (!push(vm, value_int(-value.as.as_int))) return INTERPRET_RUNTIME_ERROR;
                 } else {
+                    set_runtime_error(vm, "Cannot negate non-numeric value");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -174,6 +192,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
                 Value query_value = vm->chunk->constants[idx];
                 if (query_value.type != VAL_STRING || query_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid SQL query");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 Context* ctx = vm->context;
@@ -192,6 +211,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (next == NULL) {
                     uint8_t* target = vm->ip + offset;
                     if (target < vm->chunk->code || target > end) {
+                        set_runtime_error(vm, "Invalid SQL query");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     vm->ip = target;
@@ -207,6 +227,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
                 Value name_value = vm->chunk->constants[idx];
                 if (name_value.type != VAL_STRING || name_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid field access");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 Cell cell = row_get_field(vm->row, name_value.as.as_string);
@@ -231,6 +252,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!value_is_truthy(cond)) {
                     uint8_t* target = vm->ip + offset;
                     if (target < vm->chunk->code || target > end) {
+                        set_runtime_error(vm, "Invalid jump target");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     vm->ip = target;
@@ -243,6 +265,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 vm->ip += 2;
                 uint8_t* target = vm->ip + offset;
                 if (target < vm->chunk->code || target > end) {
+                    set_runtime_error(vm, "Invalid jump target");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 vm->ip = target;
@@ -255,6 +278,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 uint8_t arg_count = *vm->ip++;
                 if (target > (uint16_t)vm->chunk->count) return INTERPRET_RUNTIME_ERROR;
                 if (arg_count > (size_t)(vm->stack_top - vm->frame_base)) {
+                    set_runtime_error(vm, "Invalid argument count");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
@@ -278,7 +302,15 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
+            case OP_PRINT: {
+                Value value;
+                if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
+                value_print(value);
+                printf("\n");
+                break;
+            }
             default:
+                set_runtime_error(vm, "Unknown opcode");
                 return INTERPRET_RUNTIME_ERROR;
         }
     }

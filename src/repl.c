@@ -11,8 +11,9 @@
 static int run_source(const char* source) {
     Chunk chunk;
     init_chunk(&chunk);
-    if (!compile(source, &chunk)) {
-        fprintf(stderr, "Compile error\n");
+    char error[256];
+    if (!compile(source, &chunk, error, sizeof(error))) {
+        fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
         free_chunk(&chunk);
         return 1;
     }
@@ -31,7 +32,8 @@ static int run_source(const char* source) {
         value_print(v);
         printf("\n");
     } else {
-        fprintf(stderr, "Runtime error\n");
+        const char* err = vm_get_error(vm);
+        fprintf(stderr, "Runtime error: %s\n", err != NULL ? err : "unknown error");
         rc = 1;
     }
 
@@ -40,9 +42,16 @@ static int run_source(const char* source) {
     return rc;
 }
 
+static void print_repl_help(void) {
+    printf("MyPL REPL commands:\n");
+    printf("  .exit  Quit the REPL\n");
+    printf("  .help  Show this help message\n");
+    printf("  .quit  Same as .exit\n");
+}
+
 void repl_run(void) {
     char line[LINE_SIZE];
-    printf("MyPL REPL (type 'exit' to quit)\n");
+    printf("MyPL REPL (type '.help' for commands, '.exit' to quit)\n");
     for (;;) {
         printf("> ");
         if (fgets(line, LINE_SIZE, stdin) == NULL) {
@@ -53,12 +62,18 @@ void repl_run(void) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') {
             line[len - 1] = '\0';
+            len--;
         }
 
-        if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
+        if (len == 0) {
+            continue;
+        }
+
+        if (strcmp(line, ".exit") == 0 || strcmp(line, ".quit") == 0) {
             break;
         }
-        if (strlen(line) == 0) {
+        if (strcmp(line, ".help") == 0) {
+            print_repl_help();
             continue;
         }
 

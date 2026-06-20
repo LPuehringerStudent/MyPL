@@ -9,6 +9,7 @@ typedef enum {
     TOKEN_ELSE,
     TOKEN_RETURN,
     TOKEN_IN,
+    TOKEN_PRINT,
 
     /* types */
     TOKEN_INT_TYPE,
@@ -58,11 +59,13 @@ typedef struct {
     const char* start;
     int length;
     int line;
+    int column;
 } Token;
 
 typedef struct {
     const char* start;
     const char* current;
+    const char* line_start;
     int line;
 } Lexer;
 

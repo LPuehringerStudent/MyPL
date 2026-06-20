@@ -207,6 +207,17 @@ TEST(lexer_tracks_lines) {
     ASSERT_INT_EQ(2, lexer_next_token(&lexer).line);
 }
 
+TEST(lexer_tracks_columns) {
+    Lexer lexer;
+    lexer_init(&lexer, "  proc  foo");
+    ASSERT_INT_EQ(3, lexer_next_token(&lexer).column);
+    ASSERT_INT_EQ(9, lexer_next_token(&lexer).column);
+
+    lexer_init(&lexer, "proc\nfoo");
+    ASSERT_INT_EQ(1, lexer_next_token(&lexer).column);
+    ASSERT_INT_EQ(1, lexer_next_token(&lexer).column);
+}
+
 TEST(lexer_reports_unexpected_character) {
     Lexer lexer;
     lexer_init(&lexer, "@");
@@ -229,6 +240,7 @@ int main(void) {
     RUN_TEST(lexer_reports_unterminated_string);
     RUN_TEST(lexer_skips_whitespace);
     RUN_TEST(lexer_tracks_lines);
+    RUN_TEST(lexer_tracks_columns);
     RUN_TEST(lexer_reports_unexpected_character);
     TEST_SUMMARY();
 }

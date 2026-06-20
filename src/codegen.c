@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -160,7 +161,9 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             int length = (int)strlen(name);
             int slot = resolve_local(compiler, name, length);
             if (slot < 0) {
-                error(compiler, "undefined variable");
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", name);
+                error(compiler, msg);
                 return;
             }
             emit_byte(compiler, OP_GET_LOCAL);
@@ -250,7 +253,9 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             if (compiler->had_error) return;
             int slot = resolve_local(compiler, a->name, (int)strlen(a->name));
             if (slot < 0) {
-                error(compiler, "undefined variable");
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", a->name);
+                error(compiler, msg);
                 return;
             }
             emit_byte(compiler, OP_SET_LOCAL);
@@ -323,15 +328,28 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             compiler->local_count--;
             break;
         }
+        case STMT_PRINT: {
+            compile_expr(compiler, stmt->as.print_stmt.value);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_PRINT);
+            break;
+        }
         default:
             error(compiler, "unsupported statement");
             break;
     }
 }
 
-int compile(const char* source, Chunk* chunk) {
-    Program* program = parse(source);
-    if (program == NULL) return 0;
+int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
+    char parse_error[256] = {0};
+    Program* program = parse(source, parse_error, sizeof(parse_error));
+    if (program == NULL) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, parse_error, error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
 
     Compiler compiler;
     compiler.chunk = chunk;
@@ -374,6 +392,10 @@ int compile(const char* source, Chunk* chunk) {
         }
         compile_block(&compiler, program->procs[i].body);
         if (compiler.had_error) {
+            if (error != NULL && error_size > 0) {
+                strncpy(error, compiler.error_message, error_size - 1);
+                error[error_size - 1] = '\0';
+            }
             free_program(program);
             return 0;
         }
@@ -388,6 +410,10 @@ int compile(const char* source, Chunk* chunk) {
     for (int i = 0; i < compiler.patch_count; i++) {
         int idx = find_proc(&compiler, compiler.patches[i].name);
         if (idx < 0) {
+            if (error != NULL && error_size > 0) {
+                snprintf(error, error_size, "Undefined procedure '%s'",
+                         compiler.patches[i].name);
+            }
             free_program(program);
             return 0;
         }

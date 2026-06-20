@@ -24,7 +24,8 @@ typedef enum {
     OP_SQL_NEXT,
     OP_GET_FIELD,
     OP_CALL,
-    OP_RETURN
+    OP_RETURN,
+    OP_PRINT
 } OpCode;
 
 typedef enum {
@@ -75,6 +76,6 @@ Value value_lt(Value a, Value b);
 Value value_gt(Value a, Value b);
 int   value_is_truthy(Value value);
 
-int compile(const char* source, Chunk* chunk);
+int compile(const char* source, Chunk* chunk, char* error, size_t error_size);
 
 #endif

@@ -10,6 +10,7 @@ typedef struct {
     Token current;
     Token previous;
     int had_error;
+    char error_message[256];
 } Parser;
 
 typedef enum {
@@ -39,8 +40,11 @@ static ParseRule* get_rule(TokenType type);
 static Expr* parse_precedence(Parser* parser, Precedence precedence);
 
 static void error_at_current(Parser* parser, const char* message) {
-    fprintf(stderr, "Parse error at line %d: %s (got token %d)\n",
-            parser->current.line, message, parser->current.type);
+    snprintf(parser->error_message, sizeof(parser->error_message),
+             "Parse error at line %d:%d: %s (got token %d)",
+             parser->current.line, parser->current.column, message,
+             parser->current.type);
+    fprintf(stderr, "%s\n", parser->error_message);
     parser->had_error = 1;
 }
 
@@ -209,6 +213,11 @@ static Block* block(Parser* parser) {
         result->stmts = new_stmts;
         result->stmts[result->stmt_count++] = statement(parser);
     }
+    if (!check(parser, TOKEN_RBRACE)) {
+        error_at_current(parser, "expected '}'");
+        free_block(result);
+        return NULL;
+    }
     advance(parser); /* } */
     return result;
 }
@@ -242,9 +251,18 @@ static Stmt* if_statement(Parser* parser) {
     /* 'if' was already consumed by the statement dispatcher */
     Expr* cond = expression(parser);
     Block* then_block = block(parser);
+    if (then_block == NULL) {
+        free_expr(cond);
+        return NULL;
+    }
     Block* else_block = NULL;
     if (match(parser, TOKEN_ELSE)) {
         else_block = block(parser);
+        if (else_block == NULL) {
+            free_expr(cond);
+            free_block(then_block);
+            return NULL;
+        }
     }
     return create_if_stmt(cond, then_block, else_block);
 }
@@ -257,6 +275,11 @@ static Stmt* for_statement(Parser* parser) {
     advance(parser); /* SQL query */
     char* sql_query = copy_token_lexeme_trimmed(&parser->previous);
     Block* body = block(parser);
+    if (body == NULL) {
+        free(var_name);
+        free(sql_query);
+        return NULL;
+    }
     Stmt* stmt = create_for_stmt(var_name, sql_query, body);
     free(var_name);
     free(sql_query);
@@ -270,6 +293,13 @@ static Stmt* return_statement(Parser* parser) {
     return create_return_stmt(value);
 }
 
+static Stmt* print_statement(Parser* parser) {
+    /* 'print' was already consumed by the statement dispatcher */
+    Expr* value = expression(parser);
+    advance(parser); /* ; */
+    return create_print_stmt(value);
+}
+
 static Stmt* statement(Parser* parser) {
     if (check(parser, TOKEN_INT_TYPE) || check(parser, TOKEN_FLOAT_TYPE)) {
         return var_decl(parser);
@@ -277,6 +307,7 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_IF)) return if_statement(parser);
     if (match(parser, TOKEN_FOR)) return for_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
+    if (match(parser, TOKEN_PRINT)) return print_statement(parser);
     if (check(parser, TOKEN_IDENT)) return assignment(parser);
     error_at_current(parser, "expected statement");
     return NULL;
@@ -331,6 +362,12 @@ static void parse_proc(Parser* parser, Program* program) {
     proc->params = params;
     proc->param_count = param_count;
     proc->body = block(parser);
+    if (proc->body == NULL) {
+        free(proc->name);
+        free(proc->params);
+        free(proc);
+        return;
+    }
 
     ProcDecl* new_procs = realloc(program->procs,
         sizeof(ProcDecl) * (size_t)(program->proc_count + 1));
@@ -397,10 +434,11 @@ Expr* parse_expression(const char* source) {
     return expr;
 }
 
-Program* parse(const char* source) {
+Program* parse(const char* source, char* error, size_t error_size) {
     Parser parser;
     lexer_init(&parser.lexer, source);
     parser.had_error = 0;
+    parser.error_message[0] = '\0';
     advance(&parser);
 
     Program* program = create_program();
@@ -414,6 +452,10 @@ Program* parse(const char* source) {
     }
 
     if (parser.had_error) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, parser.error_message, error_size - 1);
+            error[error_size - 1] = '\0';
+        }
         free_program(program);
         return NULL;
     }

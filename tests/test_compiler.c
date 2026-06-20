@@ -8,7 +8,7 @@
 TEST(compiler_compiles_integer_return) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return 42; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return 42; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -20,7 +20,7 @@ TEST(compiler_compiles_integer_return) {
 TEST(compiler_compiles_local_variables) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { int x = 10; x = 20; return x; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int x = 10; x = 20; return x; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -32,7 +32,7 @@ TEST(compiler_compiles_local_variables) {
 TEST(compiler_compiles_arithmetic) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return 1 + 2 * 3; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return 1 + 2 * 3; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -44,7 +44,7 @@ TEST(compiler_compiles_arithmetic) {
 TEST(compiler_compiles_comparison) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return 5 == 5; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return 5 == 5; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -56,7 +56,7 @@ TEST(compiler_compiles_comparison) {
 TEST(compiler_compiles_if_statement) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { if 0 { return 13; } return 42; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 0 { return 13; } return 42; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -68,7 +68,7 @@ TEST(compiler_compiles_if_statement) {
 TEST(compiler_compiles_if_true_branch) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { if 1 { return 13; } return 42; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 1 { return 13; } return 42; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -80,7 +80,7 @@ TEST(compiler_compiles_if_true_branch) {
 TEST(compiler_compiles_else_branch) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { if 0 { return 13; } else { return 42; } }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 0 { return 13; } else { return 42; } }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -92,7 +92,7 @@ TEST(compiler_compiles_else_branch) {
 TEST(compiler_compiles_unary_minus) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return -7; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return -7; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -104,7 +104,7 @@ TEST(compiler_compiles_unary_minus) {
 TEST(compiler_compiles_unary_not) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return !0; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return !0; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -116,7 +116,7 @@ TEST(compiler_compiles_unary_not) {
 TEST(compiler_compiles_unary_not_true) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return !1; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return !1; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -128,7 +128,7 @@ TEST(compiler_compiles_unary_not_true) {
 TEST(compiler_compiles_float_return) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> float { return 3.14; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return 3.14; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -140,7 +140,7 @@ TEST(compiler_compiles_float_return) {
 TEST(compiler_compiles_float_arithmetic) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> float { return 1.5 + 2.5; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return 1.5 + 2.5; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -152,7 +152,7 @@ TEST(compiler_compiles_float_arithmetic) {
 TEST(compiler_compiles_mixed_int_float_arithmetic) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> float { return 1 + 2.5; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return 1 + 2.5; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -164,7 +164,7 @@ TEST(compiler_compiles_mixed_int_float_arithmetic) {
 TEST(compiler_compiles_string_return) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> string { return \"hello\"; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> string { return \"hello\"; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -178,7 +178,7 @@ TEST(compiler_compiles_string_return) {
 TEST(compiler_compiles_procedure_call) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc seven() -> int { return 7; } proc main() -> int { return seven(); }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc seven() -> int { return 7; } proc main() -> int { return seven(); }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -190,7 +190,7 @@ TEST(compiler_compiles_procedure_call) {
 TEST(compiler_compiles_forward_procedure_call) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return later(); } proc later() -> int { return 9; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return later(); } proc later() -> int { return 9; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -202,7 +202,7 @@ TEST(compiler_compiles_forward_procedure_call) {
 TEST(compiler_compiles_procedure_with_parameters) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc add(a int, b int) -> int { return a + b; } proc main() -> int { return add(3, 4); }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc add(a int, b int) -> int { return a + b; } proc main() -> int { return add(3, 4); }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -214,7 +214,7 @@ TEST(compiler_compiles_procedure_with_parameters) {
 TEST(compiler_compiles_procedure_with_parameter_and_local) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc f(x int) -> int { int y = 10; return x + y; } proc main() -> int { return f(5); }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc f(x int) -> int { int y = 10; return x + y; } proc main() -> int { return f(5); }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -226,7 +226,7 @@ TEST(compiler_compiles_procedure_with_parameter_and_local) {
 TEST(compiler_compiles_forward_call_with_arguments) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return later(2, 3); } proc later(a int, b int) -> int { return a * b; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return later(2, 3); } proc later(a int, b int) -> int { return a * b; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -255,7 +255,7 @@ TEST(compiler_compiles_for_sql_loop) {
 
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     vm_set_context(vm, &ctx);
@@ -289,7 +289,7 @@ TEST(compiler_compiles_for_sql_loop_sum) {
 
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { int sum = 0; for row in SELECT id FROM users { sum = sum + row.id; } return sum; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int sum = 0; for row in SELECT id FROM users { sum = sum + row.id; } return sum; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     vm_set_context(vm, &ctx);
@@ -304,7 +304,7 @@ TEST(compiler_compiles_for_sql_loop_sum) {
 TEST(compiler_block_scope_does_not_leak_locals) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { if 1 { int x = 10; } int y = 5; return y; }", &chunk));
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 1 { int x = 10; } int y = 5; return y; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -316,7 +316,38 @@ TEST(compiler_block_scope_does_not_leak_locals) {
 TEST(compiler_reports_undefined_variable) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(0, compile("proc main() -> int { return unknown; }", &chunk));
+    ASSERT_INT_EQ(0, compile("proc main() -> int { return unknown; }", &chunk, NULL, 0));
+    free_chunk(&chunk);
+}
+
+TEST(compiler_returns_error_message_for_undefined_variable) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    ASSERT_INT_EQ(0, compile("proc main() -> int { return unknown; }", &chunk, error, sizeof(error)));
+    ASSERT_STRING_EQ("Undefined variable 'unknown'", error);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_print_statement) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { print(42); return 0; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_print_string_statement) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { print(\"hello\"); return 0; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    vm_free(vm);
     free_chunk(&chunk);
 }
 
@@ -344,5 +375,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_for_sql_loop_sum);
     RUN_TEST(compiler_block_scope_does_not_leak_locals);
     RUN_TEST(compiler_reports_undefined_variable);
+    RUN_TEST(compiler_returns_error_message_for_undefined_variable);
+    RUN_TEST(compiler_compiles_print_statement);
+    RUN_TEST(compiler_compiles_print_string_statement);
     TEST_SUMMARY();
 }

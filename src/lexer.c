@@ -5,6 +5,7 @@
 void lexer_init(Lexer* lexer, const char* source) {
     lexer->start = source;
     lexer->current = source;
+    lexer->line_start = source;
     lexer->line = 1;
 }
 
@@ -113,6 +114,7 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 'p':
             if (length == 4 && memcmp(lexer->start, "proc", 4) == 0) return TOKEN_PROC;
+            if (length == 5 && memcmp(lexer->start, "print", 5) == 0) return TOKEN_PRINT;
             break;
         case 'r':
             if (length == 6 && memcmp(lexer->start, "return", 6) == 0) return TOKEN_RETURN;
@@ -133,6 +135,7 @@ static Token make_token(Lexer* lexer, TokenType type) {
     token.start = lexer->start;
     token.length = (int)(lexer->current - lexer->start);
     token.line = lexer->line;
+    token.column = (int)(lexer->start - lexer->line_start) + 1;
     return token;
 }
 
@@ -142,6 +145,7 @@ static Token error_token(Lexer* lexer, const char* message) {
     token.start = message;
     token.length = 0;
     token.line = lexer->line;
+    token.column = (int)(lexer->start - lexer->line_start) + 1;
     return token;
 }
 
@@ -157,6 +161,7 @@ static void skip_whitespace(Lexer* lexer) {
             case '\n':
                 lexer->line++;
                 advance(lexer);
+                lexer->line_start = lexer->current;
                 break;
             case '/':
                 if (peek_next(lexer) == '/') {

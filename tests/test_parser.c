@@ -4,7 +4,7 @@
 #include "parser.h"
 
 TEST(parser_returns_empty_program_for_empty_source) {
-    Program* program = parse("");
+    Program* program = parse("", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     ASSERT_INT_EQ(0, program->proc_count);
     free_program(program);
@@ -101,7 +101,7 @@ TEST(parser_parses_field_expression) {
 }
 
 TEST(parser_parses_procedure_and_var_decl) {
-    Program* program = parse("proc main() -> int { int x = 42; }");
+    Program* program = parse("proc main() -> int { int x = 42; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     ASSERT_INT_EQ(1, program->proc_count);
     ProcDecl* proc = &program->procs[0];
@@ -118,7 +118,7 @@ TEST(parser_parses_procedure_and_var_decl) {
 }
 
 TEST(parser_parses_assignment) {
-    Program* program = parse("proc main() -> int { x = 1; }");
+    Program* program = parse("proc main() -> int { x = 1; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     Stmt* stmt = program->procs[0].body->stmts[0];
     ASSERT_INT_EQ(STMT_ASSIGN, stmt->kind);
@@ -127,7 +127,7 @@ TEST(parser_parses_assignment) {
 }
 
 TEST(parser_parses_if_statement) {
-    Program* program = parse("proc main() -> int { if x == 1 { return 0; } }");
+    Program* program = parse("proc main() -> int { if x == 1 { return 0; } }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     Stmt* stmt = program->procs[0].body->stmts[0];
     ASSERT_INT_EQ(STMT_IF, stmt->kind);
@@ -135,7 +135,7 @@ TEST(parser_parses_if_statement) {
 }
 
 TEST(parser_parses_else_branch) {
-    Program* program = parse("proc main() -> int { if 0 { return 1; } else { return 2; } }");
+    Program* program = parse("proc main() -> int { if 0 { return 1; } else { return 2; } }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     Stmt* stmt = program->procs[0].body->stmts[0];
     ASSERT_INT_EQ(STMT_IF, stmt->kind);
@@ -145,7 +145,7 @@ TEST(parser_parses_else_branch) {
 }
 
 TEST(parser_parses_return_statement) {
-    Program* program = parse("proc main() -> int { return 42; }");
+    Program* program = parse("proc main() -> int { return 42; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     Stmt* stmt = program->procs[0].body->stmts[0];
     ASSERT_INT_EQ(STMT_RETURN, stmt->kind);
@@ -154,7 +154,7 @@ TEST(parser_parses_return_statement) {
 }
 
 TEST(parser_parses_for_sql_loop) {
-    Program* program = parse("proc main() -> int { for row in SELECT * FROM users { return 0; } }");
+    Program* program = parse("proc main() -> int { for row in SELECT * FROM users { return 0; } }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     Stmt* stmt = program->procs[0].body->stmts[0];
     ASSERT_INT_EQ(STMT_FOR, stmt->kind);
@@ -173,7 +173,7 @@ TEST(parser_parses_call_expression) {
 }
 
 TEST(parser_parses_procedure_parameters) {
-    Program* program = parse("proc add(a int, b int) -> int { return a + b; }");
+    Program* program = parse("proc add(a int, b int) -> int { return a + b; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
     ASSERT_INT_EQ(1, program->proc_count);
     ProcDecl* proc = &program->procs[0];
@@ -183,6 +183,13 @@ TEST(parser_parses_procedure_parameters) {
     ASSERT_INT_EQ(0, strcmp("b", proc->params[1].name));
     ASSERT_INT_EQ(TYPE_INT, proc->params[1].type);
     free_program(program);
+}
+
+TEST(parser_reports_error_for_missing_brace) {
+    char error[256];
+    Program* program = parse("proc main() -> int { return 1; ", error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "line"));
 }
 
 int main(void) {
@@ -205,5 +212,6 @@ int main(void) {
     RUN_TEST(parser_parses_for_sql_loop);
     RUN_TEST(parser_parses_call_expression);
     RUN_TEST(parser_parses_procedure_parameters);
+    RUN_TEST(parser_reports_error_for_missing_brace);
     TEST_SUMMARY();
 }
