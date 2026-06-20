@@ -156,6 +156,25 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             emit_constant(compiler, v);
             break;
         }
+        case EXPR_ARRAY: {
+            ArrayExpr* a = &expr->as.array;
+            for (int i = 0; i < a->count; i++) {
+                compile_expr(compiler, a->elements[i]);
+                if (compiler->had_error) return;
+            }
+            emit_byte(compiler, OP_ARRAY_BUILD);
+            emit_u16(compiler, (uint16_t)a->count);
+            break;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* idx = &expr->as.index;
+            compile_expr(compiler, idx->array);
+            if (compiler->had_error) return;
+            compile_expr(compiler, idx->index);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_INDEX_GET);
+            break;
+        }
         case EXPR_VARIABLE: {
             const char* name = expr->as.variable.name;
             int length = (int)strlen(name);
@@ -190,11 +209,23 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         }
         case EXPR_CALL: {
             CallExpr* c = &expr->as.call;
-            for (int i = 0; i < c->arg_count; i++) {
-                compile_expr(compiler, c->args[i]);
+            if (strcmp(c->name, "length") == 0 && c->arg_count == 1) {
+                compile_expr(compiler, c->args[0]);
                 if (compiler->had_error) return;
+                emit_byte(compiler, OP_ARRAY_LENGTH);
+            } else if (strcmp(c->name, "append") == 0 && c->arg_count == 2) {
+                compile_expr(compiler, c->args[0]);
+                if (compiler->had_error) return;
+                compile_expr(compiler, c->args[1]);
+                if (compiler->had_error) return;
+                emit_byte(compiler, OP_ARRAY_APPEND);
+            } else {
+                for (int i = 0; i < c->arg_count; i++) {
+                    compile_expr(compiler, c->args[i]);
+                    if (compiler->had_error) return;
+                }
+                emit_call(compiler, c->name, c->arg_count);
             }
-            emit_call(compiler, c->name, c->arg_count);
             break;
         }
         case EXPR_FIELD: {
@@ -332,6 +363,17 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             compile_expr(compiler, stmt->as.print_stmt.value);
             if (compiler->had_error) return;
             emit_byte(compiler, OP_PRINT);
+            break;
+        }
+        case STMT_INDEX_ASSIGN: {
+            IndexAssignStmt* ia = &stmt->as.index_assign;
+            compile_expr(compiler, ia->array);
+            if (compiler->had_error) return;
+            compile_expr(compiler, ia->index);
+            if (compiler->had_error) return;
+            compile_expr(compiler, ia->value);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_INDEX_SET);
             break;
         }
         default:
