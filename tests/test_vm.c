@@ -858,6 +858,112 @@ TEST(vm_executes_array_append) {
     free_chunk(&chunk);
 }
 
+TEST(vm_array_index_out_of_bounds_get_returns_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(1));
+    int idx = add_constant(&chunk, value_int(5));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_ARRAY_BUILD);
+    write_chunk_u16(&chunk, 1);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)idx);
+    write_chunk(&chunk, OP_INDEX_GET);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_array_index_out_of_bounds_set_returns_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(1));
+    int idx = add_constant(&chunk, value_int(5));
+    int val = add_constant(&chunk, value_int(99));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_ARRAY_BUILD);
+    write_chunk_u16(&chunk, 1);
+    write_chunk(&chunk, OP_SET_LOCAL);
+    write_chunk(&chunk, 0);
+    write_chunk(&chunk, OP_GET_LOCAL);
+    write_chunk(&chunk, 0);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)idx);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)val);
+    write_chunk(&chunk, OP_INDEX_SET);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_index_get_on_non_array_returns_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(5));
+    int idx = add_constant(&chunk, value_int(0));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)idx);
+    write_chunk(&chunk, OP_INDEX_GET);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_append_on_non_array_returns_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int a = add_constant(&chunk, value_int(5));
+    int b = add_constant(&chunk, value_int(1));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)a);
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)b);
+    write_chunk(&chunk, OP_ARRAY_APPEND);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(vm_not_false_returns_true_bool) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int idx = add_constant(&chunk, value_bool(0));
+    write_chunk(&chunk, OP_CONST);
+    write_chunk_u16(&chunk, (uint16_t)idx);
+    write_chunk(&chunk, OP_NOT);
+    write_chunk(&chunk, OP_RETURN);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(vm_init_and_free);
     RUN_TEST(vm_executes_constant_and_return);
@@ -898,5 +1004,10 @@ int main(void) {
     RUN_TEST(vm_executes_array_index_set);
     RUN_TEST(vm_executes_array_length);
     RUN_TEST(vm_executes_array_append);
+    RUN_TEST(vm_array_index_out_of_bounds_get_returns_error);
+    RUN_TEST(vm_array_index_out_of_bounds_set_returns_error);
+    RUN_TEST(vm_index_get_on_non_array_returns_error);
+    RUN_TEST(vm_append_on_non_array_returns_error);
+    RUN_TEST(vm_not_false_returns_true_bool);
     TEST_SUMMARY();
 }

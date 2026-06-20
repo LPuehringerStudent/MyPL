@@ -105,6 +105,12 @@ Value value_div(Value a, Value b) {
 }
 
 Value value_eq(Value a, Value b) {
+    if (a.type == VAL_BOOL && b.type == VAL_BOOL) {
+        return value_int(a.as.as_int == b.as.as_int ? 1 : 0);
+    }
+    if (a.type == VAL_BOOL || b.type == VAL_BOOL) {
+        return value_int(0);
+    }
     if (either_float(a, b)) {
         return value_int(as_number(a) == as_number(b) ? 1 : 0);
     }
@@ -120,6 +126,12 @@ Value value_eq(Value a, Value b) {
 }
 
 Value value_lt(Value a, Value b) {
+    if (a.type == VAL_BOOL && b.type == VAL_BOOL) {
+        return value_int(a.as.as_int < b.as.as_int ? 1 : 0);
+    }
+    if (a.type == VAL_BOOL || b.type == VAL_BOOL) {
+        return value_int(0);
+    }
     if (either_float(a, b)) {
         return value_int(as_number(a) < as_number(b) ? 1 : 0);
     }
@@ -130,6 +142,12 @@ Value value_lt(Value a, Value b) {
 }
 
 Value value_gt(Value a, Value b) {
+    if (a.type == VAL_BOOL && b.type == VAL_BOOL) {
+        return value_int(a.as.as_int > b.as.as_int ? 1 : 0);
+    }
+    if (a.type == VAL_BOOL || b.type == VAL_BOOL) {
+        return value_int(0);
+    }
     if (either_float(a, b)) {
         return value_int(as_number(a) > as_number(b) ? 1 : 0);
     }

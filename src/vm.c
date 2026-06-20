@@ -178,7 +178,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_NOT: {
                 Value value;
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
-                if (!push(vm, value_int(!value_is_truthy(value)))) return INTERPRET_RUNTIME_ERROR;
+                if (!push(vm, value_bool(!value_is_truthy(value)))) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_POP: {
@@ -353,7 +353,12 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     set_runtime_error(vm, "Invalid array index");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                Value result = array_get(arr_val.as.as_array, idx_val.as.as_int);
+                int idx = idx_val.as.as_int;
+                if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                    set_runtime_error(vm, "Array index out of bounds");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value result = array_get(arr_val.as.as_array, idx);
                 if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
@@ -368,7 +373,12 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     set_runtime_error(vm, "Invalid array index assignment");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                array_set(arr_val.as.as_array, idx_val.as.as_int, val);
+                int idx = idx_val.as.as_int;
+                if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                    set_runtime_error(vm, "Array index out of bounds");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                array_set(arr_val.as.as_array, idx, val);
                 break;
             }
             case OP_ARRAY_LENGTH: {
