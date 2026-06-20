@@ -232,15 +232,16 @@ void array_pool_free_all(void) {
     }
 }
 
-void array_append(ArrayObj* array, Value value) {
+int array_append(ArrayObj* array, Value value) {
     if (array->count >= array->capacity) {
         int new_capacity = array->capacity == 0 ? 4 : array->capacity * 2;
         Value* new_items = realloc(array->items, sizeof(Value) * (size_t)new_capacity);
-        if (new_items == NULL) return;
+        if (new_items == NULL) return 0;
         array->items = new_items;
         array->capacity = new_capacity;
     }
     array->items[array->count++] = value;
+    return 1;
 }
 
 Value array_get(ArrayObj* array, int index) {

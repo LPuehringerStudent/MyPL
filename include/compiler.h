@@ -81,7 +81,7 @@ void value_print(Value value);
 
 ArrayObj* array_new(void);
 void      array_free(ArrayObj* array);
-void      array_append(ArrayObj* array, Value value);
+int       array_append(ArrayObj* array, Value value);
 Value     array_get(ArrayObj* array, int index);
 void      array_set(ArrayObj* array, int index, Value value);
 int       array_length(ArrayObj* array);

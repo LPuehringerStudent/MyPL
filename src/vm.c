@@ -337,7 +337,11 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         }
                     }
                     for (int i = 0; i < count; i++) {
-                        array_append(array, temp[i]);
+                        if (!array_append(array, temp[i])) {
+                            free(temp);
+                            set_runtime_error(vm, "Out of memory");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
                     }
                     free(temp);
                 }
@@ -402,7 +406,10 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     set_runtime_error(vm, "append expects an array");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                array_append(arr_val.as.as_array, val);
+                if (!array_append(arr_val.as.as_array, val)) {
+                    set_runtime_error(vm, "Out of memory");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 if (!push(vm, arr_val)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
