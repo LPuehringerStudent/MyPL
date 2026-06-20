@@ -100,9 +100,16 @@ static Token sql_query(Lexer* lexer) {
 static TokenType identifier_type(Lexer* lexer) {
     int length = (int)(lexer->current - lexer->start);
     switch (lexer->start[0]) {
+        case 'a':
+            if (length == 5 && memcmp(lexer->start, "array", 5) == 0) return TOKEN_ARRAY_TYPE;
+            break;
+        case 'b':
+            if (length == 4 && memcmp(lexer->start, "bool", 4) == 0) return TOKEN_BOOL_TYPE;
+            break;
         case 'f':
             if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
             if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
+            if (length == 5 && memcmp(lexer->start, "false", 5) == 0) return TOKEN_FALSE;
             break;
         case 'e':
             if (length == 4 && memcmp(lexer->start, "else", 4) == 0) return TOKEN_ELSE;
@@ -124,6 +131,9 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 's':
             if (length == 6 && memcmp(lexer->start, "string", 6) == 0) return TOKEN_STRING_TYPE;
+            break;
+        case 't':
+            if (length == 4 && memcmp(lexer->start, "true", 4) == 0) return TOKEN_TRUE;
             break;
     }
     return TOKEN_IDENT;
@@ -193,6 +203,8 @@ Token lexer_next_token(Lexer* lexer) {
         case ')': return make_token(lexer, TOKEN_RPAREN);
         case '{': return make_token(lexer, TOKEN_LBRACE);
         case '}': return make_token(lexer, TOKEN_RBRACE);
+        case '[': return make_token(lexer, TOKEN_LBRACKET);
+        case ']': return make_token(lexer, TOKEN_RBRACKET);
         case '+': return make_token(lexer, TOKEN_PLUS);
         case '-':
             if (match(lexer, '>')) return make_token(lexer, TOKEN_ARROW);

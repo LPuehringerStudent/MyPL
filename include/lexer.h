@@ -15,6 +15,8 @@ typedef enum {
     TOKEN_INT_TYPE,
     TOKEN_FLOAT_TYPE,
     TOKEN_STRING_TYPE,
+    TOKEN_BOOL_TYPE,
+    TOKEN_ARRAY_TYPE,
 
     /* literals */
     TOKEN_IDENT,
@@ -22,6 +24,8 @@ typedef enum {
     TOKEN_FLOAT,
     TOKEN_STRING,
     TOKEN_SQL_QUERY,
+    TOKEN_TRUE,
+    TOKEN_FALSE,
 
     /* multi-char operators */
     TOKEN_ARROW,
@@ -46,6 +50,8 @@ typedef enum {
     TOKEN_RPAREN,
     TOKEN_LBRACE,
     TOKEN_RBRACE,
+    TOKEN_LBRACKET,
+    TOKEN_RBRACKET,
     TOKEN_COMMA,
     TOKEN_SEMICOLON,
     TOKEN_COLON,

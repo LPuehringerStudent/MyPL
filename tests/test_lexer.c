@@ -225,6 +225,34 @@ TEST(lexer_reports_unexpected_character) {
     ASSERT_INT_EQ(TOKEN_ERROR, t.type);
 }
 
+TEST(lexer_scans_brackets) {
+    Lexer lexer;
+    lexer_init(&lexer, "[]");
+    ASSERT_INT_EQ(TOKEN_LBRACKET, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_RBRACKET, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
+TEST(lexer_scans_bool_keywords_and_literals) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "bool");
+    ASSERT_INT_EQ(TOKEN_BOOL_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "array");
+    ASSERT_INT_EQ(TOKEN_ARRAY_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "true");
+    ASSERT_INT_EQ(TOKEN_TRUE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "false");
+    ASSERT_INT_EQ(TOKEN_FALSE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
@@ -242,5 +270,7 @@ int main(void) {
     RUN_TEST(lexer_tracks_lines);
     RUN_TEST(lexer_tracks_columns);
     RUN_TEST(lexer_reports_unexpected_character);
+    RUN_TEST(lexer_scans_brackets);
+    RUN_TEST(lexer_scans_bool_keywords_and_literals);
     TEST_SUMMARY();
 }
