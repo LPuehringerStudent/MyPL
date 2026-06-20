@@ -1,5 +1,5 @@
 CC      = cc
-CFLAGS  = -Wall -Wextra -std=c99 -Iinclude
+CFLAGS  = -Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude
 LDFLAGS =
 
 SRCDIR  = src
@@ -31,6 +31,7 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_compiler tests/test_compiler.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_vm tests/test_vm.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sql tests/test_sql.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sql_engine tests/test_sql_engine.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_lexer tests/test_lexer.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_parser tests/test_parser.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_cli tests/test_cli.c $(LIB_OBJECTS) $(LDFLAGS)
@@ -39,6 +40,7 @@ test: $(TARGET)
 	$(BINDIR)/test_compiler
 	$(BINDIR)/test_vm
 	$(BINDIR)/test_sql
+	$(BINDIR)/test_sql_engine
 	$(BINDIR)/test_lexer
 	$(BINDIR)/test_parser
 	$(BINDIR)/test_cli

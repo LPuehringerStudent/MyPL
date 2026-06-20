@@ -200,8 +200,17 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (name_value.type != VAL_STRING || name_value.as.as_string == NULL) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                int field_value = row_get_field(vm->row, name_value.as.as_string);
-                if (!push(vm, value_int(field_value))) return INTERPRET_RUNTIME_ERROR;
+                Cell cell = row_get_field(vm->row, name_value.as.as_string);
+                Value field_value;
+                field_value.type = cell.type;
+                if (cell.type == VAL_STRING) {
+                    field_value.as.as_string = strdup(cell.as.as_string);
+                } else if (cell.type == VAL_FLOAT) {
+                    field_value.as.as_float = cell.as.as_float;
+                } else {
+                    field_value.as.as_int = cell.as.as_int;
+                }
+                if (!push(vm, field_value)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_JZ: {

@@ -234,9 +234,15 @@ TEST(compiler_compiles_forward_call_with_arguments) {
 }
 
 TEST(compiler_compiles_for_sql_loop) {
-    MockField fields[] = { {"id", 1} };
-    MockRow rows[] = { { fields, 1 } };
-    sql_engine_set_mock(rows, 1);
+    catalog_clear();
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table("users", cols, types, 1);
+
+    Cell cells[1];
+    cells[0].type = VAL_INT;
+    cells[0].as.as_int = 1;
+    catalog_insert(t, cells);
 
     Chunk chunk;
     init_chunk(&chunk);
@@ -247,12 +253,21 @@ TEST(compiler_compiles_for_sql_loop) {
     ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
+    catalog_clear();
 }
 
 TEST(compiler_compiles_for_sql_loop_sum) {
-    MockField fields[] = { {"id", 1}, {"id", 2}, {"id", 3} };
-    MockRow rows[] = { { &fields[0], 1 }, { &fields[1], 1 }, { &fields[2], 1 } };
-    sql_engine_set_mock(rows, 3);
+    catalog_clear();
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table("users", cols, types, 1);
+
+    Cell cells[1];
+    for (int i = 1; i <= 3; i++) {
+        cells[0].type = VAL_INT;
+        cells[0].as.as_int = i;
+        catalog_insert(t, cells);
+    }
 
     Chunk chunk;
     init_chunk(&chunk);
@@ -263,6 +278,7 @@ TEST(compiler_compiles_for_sql_loop_sum) {
     ASSERT_INT_EQ(6, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
+    catalog_clear();
 }
 
 TEST(compiler_block_scope_does_not_leak_locals) {
