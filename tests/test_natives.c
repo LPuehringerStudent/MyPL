@@ -75,5 +75,5 @@ int main(void) {
     RUN_TEST(natives_append_adds_element);
     RUN_TEST(natives_clock_returns_non_negative_int);
     RUN_TEST(natives_wrong_arity_fails);
-    return 0;
+    TEST_SUMMARY();
 }
