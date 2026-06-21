@@ -136,6 +136,9 @@ static void free_stmt(Stmt* stmt) {
             free_expr(stmt->as.index_assign.index);
             free_expr(stmt->as.index_assign.value);
             break;
+        case STMT_EXPR:
+            free_expr(stmt->as.expr_stmt.value);
+            break;
     }
     free(stmt);
 }
@@ -225,6 +228,17 @@ Stmt* create_print_stmt(Expr* value) {
     }
     stmt->kind = STMT_PRINT;
     stmt->as.print_stmt.value = value;
+    return stmt;
+}
+
+Stmt* create_expr_stmt(Expr* value) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(value);
+        return NULL;
+    }
+    stmt->kind = STMT_EXPR;
+    stmt->as.expr_stmt.value = value;
     return stmt;
 }
 

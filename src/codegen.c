@@ -383,6 +383,12 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_byte(compiler, OP_INDEX_SET);
             break;
         }
+        case STMT_EXPR: {
+            compile_expr(compiler, stmt->as.expr_stmt.value);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_POP);
+            break;
+        }
         default:
             error(compiler, "unsupported statement");
             break;

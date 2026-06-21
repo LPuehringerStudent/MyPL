@@ -30,7 +30,8 @@ typedef enum {
     STMT_FOR,
     STMT_RETURN,
     STMT_PRINT,
-    STMT_INDEX_ASSIGN
+    STMT_INDEX_ASSIGN,
+    STMT_EXPR
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -97,6 +98,10 @@ typedef struct {
     Expr* value;
 } IndexAssignStmt;
 
+typedef struct {
+    Expr* value;
+} ExprStmt;
+
 struct Stmt {
     StmtKind kind;
     union {
@@ -107,6 +112,7 @@ struct Stmt {
         ReturnStmt return_stmt;
         PrintStmt print_stmt;
         IndexAssignStmt index_assign;
+        ExprStmt expr_stmt;
     } as;
 };
 
@@ -181,6 +187,7 @@ Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body);
 Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
+Stmt* create_expr_stmt(Expr* value);
 
 Expr* create_literal_expr(Value value);
 Expr* create_variable_expr(const char* name);

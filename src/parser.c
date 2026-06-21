@@ -274,6 +274,15 @@ static Stmt* assignment(Parser* parser) {
     advance(parser); /* identifier */
     char* name = copy_token_lexeme(&parser->previous);
 
+    if (check(parser, TOKEN_LPAREN)) {
+        advance(parser); /* ( */
+        Expr* call_expr = call(parser, create_variable_expr(name));
+        advance(parser); /* ; */
+        Stmt* stmt = create_expr_stmt(call_expr);
+        free(name);
+        return stmt;
+    }
+
     if (match(parser, TOKEN_LBRACKET)) {
         Expr* array_expr = create_variable_expr(name);
         Expr* index_expr = expression(parser);

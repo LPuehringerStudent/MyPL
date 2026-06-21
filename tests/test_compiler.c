@@ -411,6 +411,32 @@ TEST(compiler_compiles_array_append) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_println) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { println(42); return 0; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_clock) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int t = clock(); return t; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int >= 0);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -443,5 +469,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_index_assignment);
     RUN_TEST(compiler_compiles_array_length);
     RUN_TEST(compiler_compiles_array_append);
+    RUN_TEST(compiler_compiles_println);
+    RUN_TEST(compiler_compiles_clock);
     TEST_SUMMARY();
 }
