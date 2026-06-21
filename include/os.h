@@ -5,6 +5,7 @@
 #include <sys/types.h>
 
 char* os_read_file(const char* path);
+int os_file_exists(const char* path);
 
 int os_open(const char* path);
 int os_close(int fd);

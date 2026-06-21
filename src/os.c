@@ -5,6 +5,11 @@
 
 #include "os.h"
 
+int os_file_exists(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
 char* os_read_file(const char* path) {
     int fd = os_open(path);
     if (fd < 0) return NULL;

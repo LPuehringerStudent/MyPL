@@ -4,11 +4,14 @@
 
 #include "compiler.h"
 #include "natives.h"
+#include "os.h"
 #include "parser.h"
 
 #define MAX_LOCALS 256
 #define MAX_PROCS 256
 #define MAX_CALL_PATCHES 1024
+#define MAX_MODULES 64
+#define MAX_LOADING 64
 
 typedef struct {
     const char* name;
@@ -37,7 +40,39 @@ typedef struct {
     int patch_count;
     int had_error;
     char error_message[256];
+    int entry_index;
+    int entry_patch;
+    char* loaded_paths[MAX_MODULES];
+    int loaded_count;
+    const char* loading_stack[MAX_LOADING];
+    int loading_count;
 } Compiler;
+
+static int add_proc_entry(Compiler* compiler, const char* name, int offset) {
+    if (compiler->proc_count >= MAX_PROCS) return -1;
+    for (int i = 0; i < compiler->proc_count; i++) {
+        if (strcmp(compiler->procs[i].name, name) == 0) {
+            return -2;
+        }
+    }
+    char* copy = malloc(strlen(name) + 1);
+    if (copy == NULL) return -1;
+    strcpy(copy, name);
+    compiler->procs[compiler->proc_count].name = copy;
+    compiler->procs[compiler->proc_count].offset = offset;
+    return compiler->proc_count++;
+}
+
+static int add_call_patch(Compiler* compiler, const char* name, int offset) {
+    if (compiler->patch_count >= MAX_CALL_PATCHES) return 0;
+    char* copy = malloc(strlen(name) + 1);
+    if (copy == NULL) return 0;
+    strcpy(copy, name);
+    compiler->patches[compiler->patch_count].offset = offset;
+    compiler->patches[compiler->patch_count].name = copy;
+    compiler->patch_count++;
+    return 1;
+}
 
 static void error(Compiler* compiler, const char* message) {
     if (compiler->had_error) return;
@@ -112,14 +147,15 @@ static void patch_call(Chunk* chunk, int offset, int target) {
 }
 
 static void emit_call(Compiler* compiler, const char* name, int arg_count) {
-    int idx = find_proc(compiler, name);
     emit_byte(compiler, OP_CALL);
+    int idx = find_proc(compiler, name);
     if (idx >= 0) {
         emit_u16(compiler, (uint16_t)compiler->procs[idx].offset);
     } else {
-        int patch = compiler->patch_count++;
-        compiler->patches[patch].offset = compiler->chunk->count;
-        compiler->patches[patch].name = name;
+        if (!add_call_patch(compiler, name, compiler->chunk->count)) {
+            error(compiler, "too many call patches");
+            return;
+        }
         emit_u16(compiler, 0);
     }
     emit_byte(compiler, (uint8_t)arg_count);
@@ -127,6 +163,9 @@ static void emit_call(Compiler* compiler, const char* name, int arg_count) {
 
 static void compile_expr(Compiler* compiler, Expr* expr);
 static void compile_stmt(Compiler* compiler, Stmt* stmt);
+
+static int compiler_load_module(Compiler* compiler, const char* path, char* error, size_t error_size);
+static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size);
 
 static void compile_block(Compiler* compiler, Block* block) {
     int previous_count = compiler->local_count;
@@ -395,7 +434,70 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
     }
 }
 
-int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
+static int is_module_loaded(Compiler* compiler, const char* path) {
+    for (int i = 0; i < compiler->loaded_count; i++) {
+        if (strcmp(compiler->loaded_paths[i], path) == 0) return 1;
+    }
+    return 0;
+}
+
+static int is_module_loading(Compiler* compiler, const char* path) {
+    for (int i = 0; i < compiler->loading_count; i++) {
+        if (strcmp(compiler->loading_stack[i], path) == 0) return 1;
+    }
+    return 0;
+}
+
+static int compiler_load_module(Compiler* compiler, const char* path, char* error, size_t error_size) {
+    if (is_module_loading(compiler, path)) {
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Circular import of '%s'", path);
+        }
+        return 0;
+    }
+    if (is_module_loaded(compiler, path)) return 1;
+    if (compiler->loaded_count >= MAX_MODULES) {
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Too many imported modules");
+        }
+        return 0;
+    }
+    if (!os_file_exists(path)) {
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Module not found: %s", path);
+        }
+        return 0;
+    }
+
+    char* source = os_read_file(path);
+    if (source == NULL) {
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Could not read module: %s", path);
+        }
+        return 0;
+    }
+
+    char* path_copy = malloc(strlen(path) + 1);
+    if (path_copy == NULL) {
+        free(source);
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "out of memory", error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+    strcpy(path_copy, path);
+    compiler->loaded_paths[compiler->loaded_count++] = path_copy;
+    compiler->loading_stack[compiler->loading_count++] = path_copy;
+
+    int ok = compiler_compile_source(compiler, source, 0, error, error_size);
+
+    compiler->loading_count--;
+    free(source);
+    return ok;
+}
+
+static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
     char parse_error[256] = {0};
     Program* program = parse(source, parse_error, sizeof(parse_error));
     if (program == NULL) {
@@ -406,6 +508,54 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
         return 0;
     }
 
+    for (int i = 0; i < program->import_count; i++) {
+        const char* path = program->imports[i]->as.import_stmt.path;
+        if (!compiler_load_module(compiler, path, error, error_size)) {
+            free_program(program);
+            return 0;
+        }
+    }
+
+    for (int i = 0; i < program->proc_count; i++) {
+        ProcDecl* proc = &program->procs[i];
+        int proc_idx = add_proc_entry(compiler, proc->name, compiler->chunk->count);
+        if (proc_idx < 0) {
+            if (error != NULL && error_size > 0) {
+                if (proc_idx == -2) {
+                    snprintf(error, error_size, "Duplicate procedure '%s'", proc->name);
+                } else {
+                    strncpy(error, "too many procedures", error_size - 1);
+                    error[error_size - 1] = '\0';
+                }
+            }
+            free_program(program);
+            return 0;
+        }
+        if (is_main && strcmp(proc->name, "main") == 0) {
+            compiler->entry_index = proc_idx;
+        }
+        for (int p = 0; p < proc->param_count; p++) {
+            Param* param = &proc->params[p];
+            add_local(compiler, param->name, (int)strlen(param->name));
+        }
+        compile_block(compiler, proc->body);
+        if (compiler->had_error) {
+            if (error != NULL && error_size > 0) {
+                strncpy(error, compiler->error_message, error_size - 1);
+                error[error_size - 1] = '\0';
+            }
+            free_program(program);
+            return 0;
+        }
+        emit_byte(compiler, OP_RETURN);
+        compiler->local_count = 0;
+    }
+
+    free_program(program);
+    return 1;
+}
+
+int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
     Compiler compiler;
     compiler.chunk = chunk;
     compiler.local_count = 0;
@@ -414,67 +564,56 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
     compiler.patch_count = 0;
     compiler.had_error = 0;
     compiler.error_message[0] = '\0';
+    compiler.entry_index = -1;
+    compiler.loaded_count = 0;
+    compiler.loading_count = 0;
 
-    if (program->proc_count == 0) {
+    if (chunk->count == 0) {
+        emit_byte(&compiler, OP_CALL);
+        emit_u16(&compiler, 0);
+        emit_byte(&compiler, 0); /* arg count */
         emit_byte(&compiler, OP_RETURN);
-        free_program(program);
-        return 1;
+        compiler.entry_patch = chunk->count - 4;
+    } else {
+        compiler.entry_patch = -1;
     }
 
-    int entry_index = 0;
-    for (int i = 0; i < program->proc_count; i++) {
-        if (strcmp(program->procs[i].name, "main") == 0) {
-            entry_index = i;
-            break;
-        }
+    if (!compiler_compile_source(&compiler, source, 1, error, error_size)) {
+        for (int i = 0; i < compiler.proc_count; i++) free((void*)compiler.procs[i].name);
+        for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
+        for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
+        return 0;
     }
 
-    /* Top-level: call entry procedure, then halt. */
-    int entry_patch = chunk->count + 1;
-    emit_byte(&compiler, OP_CALL);
-    emit_u16(&compiler, 0);
-    emit_byte(&compiler, 0); /* arg count */
-    emit_byte(&compiler, OP_RETURN);
-
-    /* Emit procedure bodies and record their offsets. */
-    for (int i = 0; i < program->proc_count; i++) {
-        compiler.procs[compiler.proc_count].name = program->procs[i].name;
-        compiler.procs[compiler.proc_count].offset = chunk->count;
-        compiler.proc_count++;
-        for (int p = 0; p < program->procs[i].param_count; p++) {
-            Param* param = &program->procs[i].params[p];
-            add_local(&compiler, param->name, (int)strlen(param->name));
+    if (compiler.entry_index < 0) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "No main procedure", error_size - 1);
+            error[error_size - 1] = '\0';
         }
-        compile_block(&compiler, program->procs[i].body);
-        if (compiler.had_error) {
-            if (error != NULL && error_size > 0) {
-                strncpy(error, compiler.error_message, error_size - 1);
-                error[error_size - 1] = '\0';
-            }
-            free_program(program);
-            return 0;
-        }
-        emit_byte(&compiler, OP_RETURN);
-        compiler.local_count = 0;
+        for (int i = 0; i < compiler.proc_count; i++) free((void*)compiler.procs[i].name);
+        for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
+        for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
+        return 0;
     }
 
-    /* Patch top-level entry call. */
-    patch_call(chunk, entry_patch, compiler.procs[entry_index].offset);
+    patch_call(chunk, compiler.entry_patch, compiler.procs[compiler.entry_index].offset);
 
-    /* Patch forward/out-of-order procedure calls. */
     for (int i = 0; i < compiler.patch_count; i++) {
         int idx = find_proc(&compiler, compiler.patches[i].name);
         if (idx < 0) {
             if (error != NULL && error_size > 0) {
-                snprintf(error, error_size, "Undefined procedure '%s'",
-                         compiler.patches[i].name);
+                snprintf(error, error_size, "Undefined procedure '%s'", compiler.patches[i].name);
             }
-            free_program(program);
+            for (int j = 0; j < compiler.proc_count; j++) free((void*)compiler.procs[j].name);
+            for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);
+            for (int j = 0; j < compiler.loaded_count; j++) free(compiler.loaded_paths[j]);
             return 0;
         }
         patch_call(chunk, compiler.patches[i].offset, compiler.procs[idx].offset);
     }
 
-    free_program(program);
+    for (int i = 0; i < compiler.proc_count; i++) free((void*)compiler.procs[i].name);
+    for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
+    for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
     return 1;
 }
