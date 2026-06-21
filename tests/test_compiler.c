@@ -6,11 +6,13 @@
 #include <unistd.h>
 
 static char s_module_path[256] = {0};
+static char s_bad_module_path[256] = {0};
+static char s_mid_module_path[256] = {0};
 
-static void cleanup_temp_module(void) {
-    if (s_module_path[0] != '\0') {
-        remove(s_module_path);
-    }
+static void cleanup_temp_modules(void) {
+    if (s_module_path[0] != '\0') remove(s_module_path);
+    if (s_bad_module_path[0] != '\0') remove(s_bad_module_path);
+    if (s_mid_module_path[0] != '\0') remove(s_mid_module_path);
 }
 
 TEST(compiler_compiles_integer_return) {
@@ -448,7 +450,7 @@ TEST(compiler_compiles_clock) {
 TEST(compiler_compiles_imported_procedure) {
     static int cleanup_registered = 0;
     if (!cleanup_registered) {
-        atexit(cleanup_temp_module);
+        atexit(cleanup_temp_modules);
         cleanup_registered = 1;
     }
 
@@ -478,6 +480,72 @@ TEST(compiler_compiles_imported_procedure) {
     free_chunk(&chunk);
     remove(s_module_path);
     s_module_path[0] = '\0';
+}
+
+TEST(compiler_reports_original_error_for_bad_import) {
+    static int cleanup_registered = 0;
+    if (!cleanup_registered) {
+        atexit(cleanup_temp_modules);
+        cleanup_registered = 1;
+    }
+
+    snprintf(s_bad_module_path, sizeof(s_bad_module_path), "/tmp/mypl_test_bad_XXXXXX");
+    int fd = mkstemp(s_bad_module_path);
+    ASSERT_INT_EQ(1, fd >= 0);
+    close(fd);
+
+    FILE* f = fopen(s_bad_module_path, "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "proc broken() -> int { return 1;\n");
+    fclose(f);
+
+    snprintf(s_mid_module_path, sizeof(s_mid_module_path), "/tmp/mypl_test_mid_XXXXXX");
+    fd = mkstemp(s_mid_module_path);
+    ASSERT_INT_EQ(1, fd >= 0);
+    close(fd);
+
+    f = fopen(s_mid_module_path, "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "import \"%s\";\n", s_bad_module_path);
+    fclose(f);
+
+    char source[1024];
+    snprintf(source, sizeof(source),
+             "import \"%s\";\nimport \"%s\";\nproc main() -> int { return 0; }\n",
+             s_mid_module_path, s_bad_module_path);
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    ASSERT_INT_EQ(0, compile(source, &chunk, error, sizeof(error)));
+    if (strstr(error, "expected '}'") == NULL) {
+        FAIL("expected parse error from bad module");
+    }
+    free_chunk(&chunk);
+    remove(s_bad_module_path);
+    remove(s_mid_module_path);
+    s_bad_module_path[0] = '\0';
+    s_mid_module_path[0] = '\0';
+}
+
+TEST(compiler_rejects_too_many_imports) {
+    char source[4096];
+    size_t pos = 0;
+    for (int i = 0; i < 65; i++) {
+        pos += (size_t)snprintf(source + pos, sizeof(source) - pos,
+                                "import \"m%d.mypl\";\n", i);
+    }
+    pos += (size_t)snprintf(source + pos, sizeof(source) - pos,
+                            "proc main() -> int { return 0; }\n");
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    ASSERT_INT_EQ(0, compile(source, &chunk, error, sizeof(error)));
+    if (strstr(error, "too many imports") == NULL) {
+        FAIL("expected too many imports error");
+    }
+    free_chunk(&chunk);
 }
 
 int main(void) {
@@ -515,5 +583,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_println);
     RUN_TEST(compiler_compiles_clock);
     RUN_TEST(compiler_compiles_imported_procedure);
+    RUN_TEST(compiler_reports_original_error_for_bad_import);
+    RUN_TEST(compiler_rejects_too_many_imports);
     TEST_SUMMARY();
 }

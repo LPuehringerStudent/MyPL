@@ -5,6 +5,8 @@
 #include "parser.h"
 #include "lexer.h"
 
+#define MAX_IMPORTS 64
+
 typedef struct {
     Lexer lexer;
     Token current;
@@ -357,8 +359,13 @@ static Stmt* print_statement(Parser* parser) {
 }
 
 static int program_add_import(Program* program, Stmt* import_stmt) {
+    if (program->import_count >= MAX_IMPORTS) {
+        free_stmt(import_stmt);
+        return 0;
+    }
     if (program->import_count >= program->import_capacity) {
         int new_capacity = program->import_capacity == 0 ? 4 : program->import_capacity * 2;
+        if (new_capacity > MAX_IMPORTS) new_capacity = MAX_IMPORTS;
         Stmt** new_imports = realloc(program->imports, sizeof(Stmt*) * (size_t)new_capacity);
         if (new_imports == NULL) {
             free_stmt(import_stmt);
@@ -396,7 +403,9 @@ static void parse_import(Parser* parser, Program* program) {
         free_stmt(stmt);
         return;
     }
-    program_add_import(program, stmt);
+    if (!program_add_import(program, stmt)) {
+        error_at_current(parser, "too many imports");
+    }
 }
 
 static Stmt* statement(Parser* parser) {

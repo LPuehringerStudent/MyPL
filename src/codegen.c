@@ -495,12 +495,16 @@ static int compiler_load_module(Compiler* compiler, const char* path, char* erro
         }
         return 0;
     }
-    compiler->loaded_paths[compiler->loaded_count++] = path_copy;
     compiler->loading_stack[compiler->loading_count++] = path_copy;
 
     int ok = compiler_compile_source(compiler, source, 0, error, error_size);
 
     compiler->loading_count--;
+    if (ok) {
+        compiler->loaded_paths[compiler->loaded_count++] = path_copy;
+    } else {
+        free(path_copy);
+    }
     free(source);
     return ok;
 }
