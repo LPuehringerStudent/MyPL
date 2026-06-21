@@ -118,6 +118,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 2 && memcmp(lexer->start, "if", 2) == 0) return TOKEN_IF;
             if (length == 3 && memcmp(lexer->start, "int", 3) == 0) return TOKEN_INT_TYPE;
             if (length == 2 && memcmp(lexer->start, "in", 2) == 0) return TOKEN_IN;
+            if (length == 6 && memcmp(lexer->start, "import", 6) == 0) return TOKEN_IMPORT;
             break;
         case 'p':
             if (length == 4 && memcmp(lexer->start, "proc", 4) == 0) return TOKEN_PROC;

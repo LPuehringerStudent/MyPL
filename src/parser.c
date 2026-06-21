@@ -356,6 +356,49 @@ static Stmt* print_statement(Parser* parser) {
     return create_print_stmt(value);
 }
 
+static int program_add_import(Program* program, Stmt* import_stmt) {
+    if (program->import_count >= program->import_capacity) {
+        int new_capacity = program->import_capacity == 0 ? 4 : program->import_capacity * 2;
+        Stmt** new_imports = realloc(program->imports, sizeof(Stmt*) * (size_t)new_capacity);
+        if (new_imports == NULL) {
+            free_stmt(import_stmt);
+            return 0;
+        }
+        program->imports = new_imports;
+        program->import_capacity = new_capacity;
+    }
+    program->imports[program->import_count++] = import_stmt;
+    return 1;
+}
+
+static void parse_import(Parser* parser, Program* program) {
+    /* 'import' was already consumed by the top-level dispatcher */
+    if (!check(parser, TOKEN_STRING)) {
+        error_at_current(parser, "expected module path string");
+        return;
+    }
+    char* raw_path = copy_token_lexeme(&parser->current);
+    Stmt* stmt = create_import_stmt(raw_path);
+    free(raw_path);
+    if (stmt == NULL) {
+        error_at_current(parser, "out of memory");
+        return;
+    }
+    char* path = stmt->as.import_stmt.path;
+    int len = (int)strlen(path);
+    if (len >= 2 && path[0] == '"' && path[len - 1] == '"') {
+        memmove(path, path + 1, (size_t)(len - 2));
+        path[len - 2] = '\0';
+    }
+    advance(parser); /* string */
+    if (!match(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after import path");
+        free_stmt(stmt);
+        return;
+    }
+    program_add_import(program, stmt);
+}
+
 static Stmt* statement(Parser* parser) {
     if (check(parser, TOKEN_INT_TYPE) ||
         check(parser, TOKEN_FLOAT_TYPE) ||
@@ -443,6 +486,7 @@ static ParseRule rules[] = {
     [TOKEN_RETURN]     = {NULL,        NULL,   PREC_NONE},
     [TOKEN_IN]         = {NULL,        NULL,   PREC_NONE},
     [TOKEN_PRINT]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_IMPORT]     = {NULL,        NULL,   PREC_NONE},
     [TOKEN_INT_TYPE]   = {NULL,        NULL,   PREC_NONE},
     [TOKEN_FLOAT_TYPE] = {NULL,        NULL,   PREC_NONE},
     [TOKEN_STRING_TYPE]= {NULL,        NULL,   PREC_NONE},
@@ -511,10 +555,12 @@ Program* parse(const char* source, char* error, size_t error_size) {
 
     Program* program = create_program();
     while (!check(&parser, TOKEN_EOF)) {
-        if (match(&parser, TOKEN_PROC)) {
+        if (match(&parser, TOKEN_IMPORT)) {
+            parse_import(&parser, program);
+        } else if (match(&parser, TOKEN_PROC)) {
             parse_proc(&parser, program);
         } else {
-            error_at_current(&parser, "expected 'proc'");
+            error_at_current(&parser, "expected 'proc' or 'import'");
             break;
         }
     }

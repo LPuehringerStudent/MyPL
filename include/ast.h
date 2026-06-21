@@ -31,7 +31,8 @@ typedef enum {
     STMT_RETURN,
     STMT_PRINT,
     STMT_INDEX_ASSIGN,
-    STMT_EXPR
+    STMT_EXPR,
+    STMT_IMPORT
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -52,6 +53,13 @@ typedef struct {
 } ProcDecl;
 
 typedef struct {
+    char* path;
+} ImportStmt;
+
+typedef struct {
+    Stmt** imports;
+    int import_count;
+    int import_capacity;
     ProcDecl* procs;
     int proc_count;
 } Program;
@@ -113,6 +121,7 @@ struct Stmt {
         PrintStmt print_stmt;
         IndexAssignStmt index_assign;
         ExprStmt expr_stmt;
+        ImportStmt import_stmt;
     } as;
 };
 
@@ -176,6 +185,7 @@ void free_program(Program* program);
 void free_block(Block* block);
 
 void free_expr(Expr* expr);
+void free_stmt(Stmt* stmt);
 
 ProcDecl* create_proc_decl(const char* name, TypeKind return_type);
 
@@ -188,6 +198,7 @@ Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body);
 Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
 Stmt* create_expr_stmt(Expr* value);
+Stmt* create_import_stmt(const char* path);
 
 Expr* create_literal_expr(Value value);
 Expr* create_variable_expr(const char* name);

@@ -253,6 +253,13 @@ TEST(lexer_scans_bool_keywords_and_literals) {
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 }
 
+TEST(lexer_scans_import_keyword) {
+    Lexer lexer;
+    lexer_init(&lexer, "import");
+    ASSERT_INT_EQ(TOKEN_IMPORT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
 int main(void) {
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
@@ -272,5 +279,6 @@ int main(void) {
     RUN_TEST(lexer_reports_unexpected_character);
     RUN_TEST(lexer_scans_brackets);
     RUN_TEST(lexer_scans_bool_keywords_and_literals);
+    RUN_TEST(lexer_scans_import_keyword);
     TEST_SUMMARY();
 }

@@ -239,6 +239,15 @@ TEST(parser_parses_index_assignment) {
     free_program(program);
 }
 
+TEST(parser_parses_import_statement) {
+    Program* program = parse("import \"foo.mypl\"; proc main() -> int { return 0; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, program->import_count);
+    ASSERT_INT_EQ(STMT_IMPORT, program->imports[0]->kind);
+    ASSERT_STRING_EQ("foo.mypl", program->imports[0]->as.import_stmt.path);
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -265,5 +274,6 @@ int main(void) {
     RUN_TEST(parser_parses_array_literal);
     RUN_TEST(parser_parses_index_expression);
     RUN_TEST(parser_parses_index_assignment);
+    RUN_TEST(parser_parses_import_statement);
     TEST_SUMMARY();
 }

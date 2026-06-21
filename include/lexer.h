@@ -10,6 +10,7 @@ typedef enum {
     TOKEN_RETURN,
     TOKEN_IN,
     TOKEN_PRINT,
+    TOKEN_IMPORT,
 
     /* types */
     TOKEN_INT_TYPE,

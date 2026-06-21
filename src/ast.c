@@ -14,6 +14,9 @@ static char* copy_string(const char* source) {
 Program* create_program(void) {
     Program* program = malloc(sizeof(Program));
     if (program == NULL) return NULL;
+    program->imports = NULL;
+    program->import_count = 0;
+    program->import_capacity = 0;
     program->procs = NULL;
     program->proc_count = 0;
     return program;
@@ -59,7 +62,7 @@ void free_expr(Expr* expr) {
     free(expr);
 }
 
-static void free_stmt(Stmt* stmt);
+void free_stmt(Stmt* stmt);
 
 void free_block(Block* block) {
     if (block == NULL) return;
@@ -87,6 +90,10 @@ ProcDecl* create_proc_decl(const char* name, TypeKind return_type) {
 
 void free_program(Program* program) {
     if (program == NULL) return;
+    for (int i = 0; i < program->import_count; i++) {
+        free_stmt(program->imports[i]);
+    }
+    free(program->imports);
     for (int i = 0; i < program->proc_count; i++) {
         free(program->procs[i].name);
         free_block(program->procs[i].body);
@@ -104,7 +111,7 @@ Block* create_block(void) {
     return block;
 }
 
-static void free_stmt(Stmt* stmt) {
+void free_stmt(Stmt* stmt) {
     if (stmt == NULL) return;
     switch (stmt->kind) {
         case STMT_VAR_DECL:
@@ -138,6 +145,9 @@ static void free_stmt(Stmt* stmt) {
             break;
         case STMT_EXPR:
             free_expr(stmt->as.expr_stmt.value);
+            break;
+        case STMT_IMPORT:
+            free(stmt->as.import_stmt.path);
             break;
     }
     free(stmt);
@@ -239,6 +249,18 @@ Stmt* create_expr_stmt(Expr* value) {
     }
     stmt->kind = STMT_EXPR;
     stmt->as.expr_stmt.value = value;
+    return stmt;
+}
+
+Stmt* create_import_stmt(const char* path) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->kind = STMT_IMPORT;
+    stmt->as.import_stmt.path = copy_string(path);
+    if (stmt->as.import_stmt.path == NULL && path != NULL) {
+        free(stmt);
+        return NULL;
+    }
     return stmt;
 }
 
