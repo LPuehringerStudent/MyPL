@@ -437,6 +437,26 @@ TEST(compiler_compiles_clock) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_imported_procedure) {
+    const char* module_path = "/tmp/mypl_test_module.mypl";
+    FILE* f = fopen(module_path, "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "proc double(n int) -> int { return n * 2; }\n");
+    fclose(f);
+
+    const char* source = "import \"/tmp/mypl_test_module.mypl\"; proc main() -> int { return double(21); }";
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile(source, &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(42, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+    remove(module_path);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -471,5 +491,6 @@ int main(void) {
     RUN_TEST(compiler_compiles_array_append);
     RUN_TEST(compiler_compiles_println);
     RUN_TEST(compiler_compiles_clock);
+    RUN_TEST(compiler_compiles_imported_procedure);
     TEST_SUMMARY();
 }
