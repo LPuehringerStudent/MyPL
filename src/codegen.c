@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "compiler.h"
+#include "natives.h"
 #include "parser.h"
 
 #define MAX_LOCALS 256
@@ -212,13 +213,17 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             if (strcmp(c->name, "length") == 0 && c->arg_count == 1) {
                 compile_expr(compiler, c->args[0]);
                 if (compiler->had_error) return;
-                emit_byte(compiler, OP_ARRAY_LENGTH);
+                emit_byte(compiler, OP_NATIVE_CALL);
+                emit_u16(compiler, (uint16_t)native_find("length"));
+                emit_byte(compiler, 1);
             } else if (strcmp(c->name, "append") == 0 && c->arg_count == 2) {
                 compile_expr(compiler, c->args[0]);
                 if (compiler->had_error) return;
                 compile_expr(compiler, c->args[1]);
                 if (compiler->had_error) return;
-                emit_byte(compiler, OP_ARRAY_APPEND);
+                emit_byte(compiler, OP_NATIVE_CALL);
+                emit_u16(compiler, (uint16_t)native_find("append"));
+                emit_byte(compiler, 2);
             } else {
                 for (int i = 0; i < c->arg_count; i++) {
                     compile_expr(compiler, c->args[i]);

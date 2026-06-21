@@ -20,6 +20,7 @@ void            vm_free(VM* vm);
 void            vm_set_context(VM* vm, struct Context* ctx);
 InterpretResult vm_interpret(VM* vm, Chunk* chunk);
 const char*     vm_get_error(VM* vm);
+void            vm_set_error(VM* vm, const char* message);
 Value           vm_pop(VM* vm);
 
 #endif

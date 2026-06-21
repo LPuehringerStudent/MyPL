@@ -36,6 +36,7 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_lexer tests/test_lexer.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_parser tests/test_parser.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_cli tests/test_cli.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_natives tests/test_natives.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(BINDIR)/test_value
 	$(BINDIR)/test_chunk
 	$(BINDIR)/test_compiler
@@ -46,6 +47,7 @@ test: $(TARGET)
 	$(BINDIR)/test_lexer
 	$(BINDIR)/test_parser
 	$(BINDIR)/test_cli
+	$(BINDIR)/test_natives
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "vm.h"
+#include "natives.h"
 #include "sql_engine.h"
 
 struct VM {
@@ -42,6 +43,11 @@ static void set_runtime_error(VM* vm, const char* message) {
 const char* vm_get_error(VM* vm) {
     if (vm == NULL) return NULL;
     return vm->error_message[0] != '\0' ? vm->error_message : NULL;
+}
+
+void vm_set_error(VM* vm, const char* message) {
+    if (vm == NULL) return;
+    set_runtime_error(vm, message);
 }
 
 void vm_free(VM* vm) {
@@ -303,6 +309,30 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
+            case OP_NATIVE_CALL: {
+                if (vm->ip + 3 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                uint8_t argc = *vm->ip++;
+                if (argc > MAX_NATIVE_ARGS) {
+                    set_runtime_error(vm, "Too many arguments");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (argc > (size_t)(vm->stack_top - vm->frame_base)) {
+                    set_runtime_error(vm, "Invalid argument count");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value argv[MAX_NATIVE_ARGS];
+                for (int i = (int)argc - 1; i >= 0; i--) {
+                    if (!pop(vm, &argv[i])) return INTERPRET_RUNTIME_ERROR;
+                }
+                Value result;
+                if (!native_call(vm, idx, argc, argv, &result)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
             case OP_PRINT: {
                 Value value;
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
@@ -383,34 +413,6 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 array_set(arr_val.as.as_array, idx, val);
-                break;
-            }
-            case OP_ARRAY_LENGTH: {
-                Value arr_val;
-                if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
-                if (arr_val.type != VAL_ARRAY) {
-                    set_runtime_error(vm, "length expects an array");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                if (!push(vm, value_int(array_length(arr_val.as.as_array)))) {
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                break;
-            }
-            case OP_ARRAY_APPEND: {
-                Value val;
-                Value arr_val;
-                if (!pop(vm, &val)) return INTERPRET_RUNTIME_ERROR;
-                if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
-                if (arr_val.type != VAL_ARRAY) {
-                    set_runtime_error(vm, "append expects an array");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                if (!array_append(arr_val.as.as_array, val)) {
-                    set_runtime_error(vm, "Out of memory");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                if (!push(vm, arr_val)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             default:

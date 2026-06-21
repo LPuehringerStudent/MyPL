@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "vm.h"
+#include "natives.h"
 
 TEST(vm_init_and_free) {
     VM* vm = vm_init();
@@ -818,7 +819,9 @@ TEST(vm_executes_array_length) {
     write_chunk_u16(&chunk, (uint16_t)b);
     write_chunk(&chunk, OP_ARRAY_BUILD);
     write_chunk_u16(&chunk, 2);
-    write_chunk(&chunk, OP_ARRAY_LENGTH);
+    write_chunk(&chunk, OP_NATIVE_CALL);
+    write_chunk_u16(&chunk, (uint16_t)native_find("length"));
+    write_chunk(&chunk, 1);
     write_chunk(&chunk, OP_RETURN);
 
     VM* vm = vm_init();
@@ -846,8 +849,12 @@ TEST(vm_executes_array_append) {
 
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)c);
-    write_chunk(&chunk, OP_ARRAY_APPEND);
-    write_chunk(&chunk, OP_ARRAY_LENGTH);
+    write_chunk(&chunk, OP_NATIVE_CALL);
+    write_chunk_u16(&chunk, (uint16_t)native_find("append"));
+    write_chunk(&chunk, 2);
+    write_chunk(&chunk, OP_NATIVE_CALL);
+    write_chunk_u16(&chunk, (uint16_t)native_find("length"));
+    write_chunk(&chunk, 1);
     write_chunk(&chunk, OP_RETURN);
 
     VM* vm = vm_init();
@@ -936,7 +943,9 @@ TEST(vm_append_on_non_array_returns_error) {
     write_chunk_u16(&chunk, (uint16_t)a);
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)b);
-    write_chunk(&chunk, OP_ARRAY_APPEND);
+    write_chunk(&chunk, OP_NATIVE_CALL);
+    write_chunk_u16(&chunk, (uint16_t)native_find("append"));
+    write_chunk(&chunk, 2);
     write_chunk(&chunk, OP_RETURN);
 
     VM* vm = vm_init();

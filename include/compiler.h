@@ -31,8 +31,7 @@ typedef enum {
     OP_ARRAY_BUILD,
     OP_INDEX_GET,
     OP_INDEX_SET,
-    OP_ARRAY_LENGTH,
-    OP_ARRAY_APPEND
+    OP_NATIVE_CALL
 } OpCode;
 
 typedef enum {
