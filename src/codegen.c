@@ -210,20 +210,22 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         }
         case EXPR_CALL: {
             CallExpr* c = &expr->as.call;
-            if (strcmp(c->name, "length") == 0 && c->arg_count == 1) {
-                compile_expr(compiler, c->args[0]);
-                if (compiler->had_error) return;
+            int native_idx = native_find(c->name);
+            if (native_idx >= 0) {
+                int expected_arity = native_arity(native_idx);
+                if (c->arg_count != expected_arity) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "%s expects %d argument(s)", c->name, expected_arity);
+                    error(compiler, msg);
+                    return;
+                }
+                for (int i = 0; i < c->arg_count; i++) {
+                    compile_expr(compiler, c->args[i]);
+                    if (compiler->had_error) return;
+                }
                 emit_byte(compiler, OP_NATIVE_CALL);
-                emit_u16(compiler, (uint16_t)native_find("length"));
-                emit_byte(compiler, 1);
-            } else if (strcmp(c->name, "append") == 0 && c->arg_count == 2) {
-                compile_expr(compiler, c->args[0]);
-                if (compiler->had_error) return;
-                compile_expr(compiler, c->args[1]);
-                if (compiler->had_error) return;
-                emit_byte(compiler, OP_NATIVE_CALL);
-                emit_u16(compiler, (uint16_t)native_find("append"));
-                emit_byte(compiler, 2);
+                emit_u16(compiler, (uint16_t)native_idx);
+                emit_byte(compiler, (uint8_t)c->arg_count);
             } else {
                 for (int i = 0; i < c->arg_count; i++) {
                     compile_expr(compiler, c->args[i]);
