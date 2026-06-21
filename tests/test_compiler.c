@@ -5,6 +5,14 @@
 
 #include <unistd.h>
 
+static char s_module_path[256] = {0};
+
+static void cleanup_temp_module(void) {
+    if (s_module_path[0] != '\0') {
+        remove(s_module_path);
+    }
+}
+
 TEST(compiler_compiles_integer_return) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -438,13 +446,27 @@ TEST(compiler_compiles_clock) {
 }
 
 TEST(compiler_compiles_imported_procedure) {
-    const char* module_path = "/tmp/mypl_test_module.mypl";
-    FILE* f = fopen(module_path, "w");
+    static int cleanup_registered = 0;
+    if (!cleanup_registered) {
+        atexit(cleanup_temp_module);
+        cleanup_registered = 1;
+    }
+
+    snprintf(s_module_path, sizeof(s_module_path), "/tmp/mypl_test_module_XXXXXX");
+    int fd = mkstemp(s_module_path);
+    ASSERT_INT_EQ(1, fd >= 0);
+    close(fd);
+
+    FILE* f = fopen(s_module_path, "w");
     ASSERT_PTR_NOT_NULL(f);
     fprintf(f, "proc double(n int) -> int { return n * 2; }\n");
     fclose(f);
 
-    const char* source = "import \"/tmp/mypl_test_module.mypl\"; proc main() -> int { return double(21); }";
+    char source[512];
+    snprintf(source, sizeof(source),
+             "import \"%s\"; proc main() -> int { return double(21); }",
+             s_module_path);
+
     Chunk chunk;
     init_chunk(&chunk);
     ASSERT_INT_EQ(1, compile(source, &chunk, NULL, 0));
@@ -454,7 +476,8 @@ TEST(compiler_compiles_imported_procedure) {
     ASSERT_INT_EQ(42, vm_pop(vm).as.as_int);
     vm_free(vm);
     free_chunk(&chunk);
-    remove(module_path);
+    remove(s_module_path);
+    s_module_path[0] = '\0';
 }
 
 int main(void) {
