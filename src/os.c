@@ -11,22 +11,22 @@ int os_file_exists(const char* path) {
 }
 
 char* os_read_file(const char* path) {
-    int fd = os_open(path);
+    int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;
 
     off_t size = lseek(fd, 0, SEEK_END);
     if (size < 0) {
-        os_close(fd);
+        close(fd);
         return NULL;
     }
     if (lseek(fd, 0, SEEK_SET) < 0) {
-        os_close(fd);
+        close(fd);
         return NULL;
     }
 
     char* buffer = malloc((size_t)size + 1);
     if (buffer == NULL) {
-        os_close(fd);
+        close(fd);
         return NULL;
     }
 
@@ -35,13 +35,13 @@ char* os_read_file(const char* path) {
         ssize_t n = read(fd, buffer + total, (size_t)(size - total));
         if (n <= 0) {
             free(buffer);
-            os_close(fd);
+            close(fd);
             return NULL;
         }
         total += n;
     }
     buffer[size] = '\0';
-    os_close(fd);
+    close(fd);
     return buffer;
 }
 

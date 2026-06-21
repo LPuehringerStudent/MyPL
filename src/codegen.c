@@ -487,6 +487,14 @@ static int compiler_load_module(Compiler* compiler, const char* path, char* erro
         return 0;
     }
     strcpy(path_copy, path);
+    if (compiler->loading_count >= MAX_LOADING) {
+        free(path_copy);
+        free(source);
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Too many nested imports");
+        }
+        return 0;
+    }
     compiler->loaded_paths[compiler->loaded_count++] = path_copy;
     compiler->loading_stack[compiler->loading_count++] = path_copy;
 
