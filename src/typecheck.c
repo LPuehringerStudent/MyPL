@@ -7,6 +7,7 @@
 
 #define MAX_LOCALS 256
 #define MAX_SCOPES 64
+#define MAX_TRANSIENTS 256
 
 typedef struct {
     const char* name;
@@ -28,7 +29,7 @@ typedef struct {
     char* error;
     size_t error_size;
     int had_error;
-    Type* transient_types[MAX_LOCALS];
+    Type* transient_types[MAX_TRANSIENTS];
     int transient_count;
 } TypeChecker;
 
@@ -122,10 +123,11 @@ static Type* common_numeric_type(Type* left, Type* right) {
 
 static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
     Type* t = type_new(TYPE_ARRAY, element_type);
-    if (t == NULL) return NULL;
-    if (tc->transient_count >= MAX_LOCALS) {
-        /* Cannot track; may leak if element_type is also transient. */
-        return t;
+    if (t == NULL) return &type_unknown;
+    if (tc->transient_count >= MAX_TRANSIENTS) {
+        type_free(t);
+        type_error(tc, (SourceLoc){0, 0}, "too many inferred types");
+        return &type_unknown;
     }
     /* If element_type is a tracked transient, transfer ownership to the new
        type so it is freed exactly once via type_free's recursion. */
@@ -142,7 +144,10 @@ static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
 static void check_stmt(TypeChecker* tc, Stmt* stmt);
 
 static void check_block(TypeChecker* tc, Block* block) {
-    if (!push_scope(tc)) return;
+    if (!push_scope(tc)) {
+        type_error(tc, (SourceLoc){0, 0}, "too many nested scopes");
+        return;
+    }
     for (int i = 0; i < block->stmt_count; i++) {
         check_stmt(tc, block->stmts[i]);
         if (tc->had_error) {
@@ -319,25 +324,27 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
 static void check_stmt(TypeChecker* tc, Stmt* stmt) {
     switch (stmt->kind) {
         case STMT_VAR_DECL: {
-            Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer);
-            if (tc->had_error) return;
-            if (init_type == NULL) {
-                type_error(tc, stmt->loc, "Cannot infer type of initializer");
-                return;
-            }
-
             Type* declared = stmt->as.var_decl.type;
             Type* final_type = declared;
 
-            if (declared != NULL && declared->kind == TYPE_ARRAY &&
-                declared->element_type == NULL &&
-                init_type->kind == TYPE_ARRAY) {
-                final_type = init_type;
-            } else if (!types_assignable(declared, init_type)) {
-                type_error(tc, stmt->loc,
-                           "Cannot assign value of type '%s' to variable of type '%s'",
-                           type_name(init_type), type_name(declared));
-                return;
+            if (stmt->as.var_decl.initializer != NULL) {
+                Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer);
+                if (tc->had_error) return;
+                if (init_type == NULL) {
+                    type_error(tc, stmt->loc, "Cannot infer type of initializer");
+                    return;
+                }
+
+                if (declared != NULL && declared->kind == TYPE_ARRAY &&
+                    declared->element_type == NULL &&
+                    init_type->kind == TYPE_ARRAY) {
+                    final_type = init_type;
+                } else if (!types_assignable(declared, init_type)) {
+                    type_error(tc, stmt->loc,
+                               "Cannot assign value of type '%s' to variable of type '%s'",
+                               type_name(init_type), type_name(declared));
+                    return;
+                }
             }
 
             if (!add_local(tc, stmt->as.var_decl.name, final_type)) {
@@ -497,6 +504,9 @@ int typecheck_program(Program* program,
         }
         for (int i = 0; i < proc_count; i++) {
             combined_procs[program->proc_count + i] = procs[i];
+            if (procs[i].param_count > 0 && procs[i].param_types == NULL) {
+                combined_procs[program->proc_count + i].param_count = 0;
+            }
         }
     }
     tc.procs = combined_procs;
