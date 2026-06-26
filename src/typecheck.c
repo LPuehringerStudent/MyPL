@@ -105,13 +105,13 @@ static int types_assignable(Type* target, Type* value) {
 }
 
 static int is_condition_type(Type* t) {
-    return t != NULL && !type_is_unknown(t) &&
-           (t->kind == TYPE_BOOL || type_is_numeric(t));
+    return t != NULL &&
+           (type_is_unknown(t) || t->kind == TYPE_BOOL || type_is_numeric(t));
 }
 
 static int is_primitive(Type* t) {
-    return t != NULL && !type_is_unknown(t) &&
-           (t->kind == TYPE_INT || t->kind == TYPE_FLOAT ||
+    return t != NULL &&
+           (type_is_unknown(t) || t->kind == TYPE_INT || t->kind == TYPE_FLOAT ||
             t->kind == TYPE_STRING || t->kind == TYPE_BOOL);
 }
 
@@ -122,20 +122,16 @@ static Type* common_numeric_type(Type* left, Type* right) {
 }
 
 static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
-    Type* t = type_new(TYPE_ARRAY, element_type);
-    if (t == NULL) return &type_unknown;
     if (tc->transient_count >= MAX_TRANSIENTS) {
-        type_free(t);
-        type_error(tc, (SourceLoc){0, 0}, "too many inferred types");
+        type_error(tc, (SourceLoc){0,0}, "too many inferred types");
         return &type_unknown;
     }
-    /* If element_type is a tracked transient, transfer ownership to the new
-       type so it is freed exactly once via type_free's recursion. */
-    for (int i = 0; i < tc->transient_count; i++) {
-        if (tc->transient_types[i] == element_type) {
-            tc->transient_types[i] = tc->transient_types[--tc->transient_count];
-            break;
-        }
+    Type* owned_element = type_copy(element_type);
+    Type* t = type_new(TYPE_ARRAY, owned_element);
+    if (t == NULL) {
+        type_free(owned_element);
+        type_error(tc, (SourceLoc){0,0}, "out of memory");
+        return &type_unknown;
     }
     tc->transient_types[tc->transient_count++] = t;
     return t;
@@ -471,6 +467,10 @@ int typecheck_program(Program* program,
     tc.error = error;
     tc.error_size = error_size;
 
+    if (procs == NULL && proc_count > 0) {
+        proc_count = 0;
+    }
+
     ProcSignature* combined_procs = NULL;
     int combined_count = program->proc_count + proc_count;
     if (combined_count > 0) {
@@ -506,6 +506,7 @@ int typecheck_program(Program* program,
             combined_procs[program->proc_count + i] = procs[i];
             if (procs[i].param_count > 0 && procs[i].param_types == NULL) {
                 combined_procs[program->proc_count + i].param_count = 0;
+                combined_procs[program->proc_count + i].param_types = NULL;
             }
         }
     }
