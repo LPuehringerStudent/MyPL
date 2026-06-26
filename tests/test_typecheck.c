@@ -135,6 +135,46 @@ TEST(typecheck_accepts_external_proc_signature_arguments) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_for_row_in_select_loop) {
+    char error[256];
+    Program* program = parse("proc main() -> int { for row in SELECT id FROM users { return 0; } return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_mixed_int_float_comparison) {
+    char error[256];
+    Program* program = parse("proc main() -> int { bool b = 1 < 2.5; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_int_to_float_assignment) {
+    char error[256];
+    Program* program = parse("proc main() -> int { float x = 1; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_int_to_float_return) {
+    char error[256];
+    Program* program = parse("proc f() -> float { return 1; } proc main() -> int { return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_row_field_return) {
+    char error[256];
+    Program* program = parse("proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 TEST(typecheck_rejects_undefined_variable_assignment) {
     char error[256];
     Program* program = parse("proc main() -> int { x = 1; return 0; }", error, sizeof(error));
@@ -168,6 +208,11 @@ int main(void) {
     RUN_TEST(typecheck_rejects_mixed_int_float_array);
     RUN_TEST(typecheck_rejects_out_of_scope_block_variable);
     RUN_TEST(typecheck_accepts_external_proc_signature_arguments);
+    RUN_TEST(typecheck_accepts_for_row_in_select_loop);
+    RUN_TEST(typecheck_accepts_mixed_int_float_comparison);
+    RUN_TEST(typecheck_accepts_int_to_float_assignment);
+    RUN_TEST(typecheck_accepts_int_to_float_return);
+    RUN_TEST(typecheck_accepts_row_field_return);
     RUN_TEST(typecheck_rejects_undefined_variable_assignment);
     RUN_TEST(typecheck_rejects_undefined_procedure_call);
     TEST_SUMMARY();

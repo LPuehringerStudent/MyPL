@@ -84,9 +84,7 @@ static ProcSignature* resolve_proc(TypeChecker* tc, const char* name) {
 
 static int types_compatible(Type* expected, Type* actual) {
     if (expected == NULL || actual == NULL) return 0;
-    if (type_is_unknown(expected) || type_is_unknown(actual)) {
-        return type_is_unknown(expected) && type_is_unknown(actual);
-    }
+    if (type_is_unknown(expected) || type_is_unknown(actual)) return 1;
     if (type_equals(expected, actual)) return 1;
     if (type_is_numeric(expected) && type_is_numeric(actual)) return 1;
     return 0;
@@ -94,6 +92,7 @@ static int types_compatible(Type* expected, Type* actual) {
 
 static int types_assignable(Type* target, Type* value) {
     if (target == NULL || value == NULL) return 0;
+    if (type_is_unknown(target) || type_is_unknown(value)) return 1;
     if (type_equals(target, value)) return 1;
     /* Allow int -> float only. */
     if (target->kind == TYPE_FLOAT && value->kind == TYPE_INT) return 1;
@@ -445,6 +444,10 @@ int typecheck_program(Program* program,
                       struct Context* ctx,
                       char* error,
                       size_t error_size) {
+    if (error != NULL && error_size > 0) {
+        error[0] = '\0';
+    }
+
     if (program == NULL) {
         if (error != NULL && error_size > 0) {
             snprintf(error, error_size, "Type error: program is NULL");
