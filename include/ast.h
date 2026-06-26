@@ -9,7 +9,8 @@ typedef enum {
     TYPE_FLOAT,
     TYPE_STRING,
     TYPE_BOOL,
-    TYPE_ARRAY
+    TYPE_ARRAY,
+    TYPE_UNKNOWN
 } TypeKind;
 
 typedef struct Type {

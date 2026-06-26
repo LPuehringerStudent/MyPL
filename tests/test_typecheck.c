@@ -183,6 +183,17 @@ TEST(typecheck_rejects_undefined_variable_assignment) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_intra_program_call) {
+    char error[256];
+    Program* program = parse(
+        "proc add(a int, b int) -> int { return a + b; } "
+        "proc main() -> int { int x = add(1, 2); return x; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 TEST(typecheck_rejects_undefined_procedure_call) {
     char error[256];
     Program* program = parse("proc main() -> int { foo(); return 0; }", error, sizeof(error));
@@ -215,5 +226,6 @@ int main(void) {
     RUN_TEST(typecheck_accepts_row_field_return);
     RUN_TEST(typecheck_rejects_undefined_variable_assignment);
     RUN_TEST(typecheck_rejects_undefined_procedure_call);
+    RUN_TEST(typecheck_accepts_intra_program_call);
     TEST_SUMMARY();
 }

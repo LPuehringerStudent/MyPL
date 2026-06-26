@@ -34,6 +34,10 @@ typedef struct {
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
     if (tc->had_error) return;
+    if (tc->error == NULL || tc->error_size == 0) {
+        tc->had_error = 1;
+        return;
+    }
     va_list args;
     va_start(args, fmt);
     snprintf(tc->error, tc->error_size,
@@ -456,11 +460,47 @@ int typecheck_program(Program* program,
     }
 
     TypeChecker tc = {0};
-    tc.procs = procs;
-    tc.proc_count = proc_count;
     tc.ctx = ctx;
     tc.error = error;
     tc.error_size = error_size;
+
+    ProcSignature* combined_procs = NULL;
+    int combined_count = program->proc_count + proc_count;
+    if (combined_count > 0) {
+        combined_procs = malloc(sizeof(ProcSignature) * combined_count);
+        if (combined_procs == NULL) {
+            if (error != NULL && error_size > 0) {
+                snprintf(error, error_size, "Type error: out of memory");
+            }
+            return 0;
+        }
+        for (int i = 0; i < program->proc_count; i++) {
+            ProcDecl* proc = &program->procs[i];
+            Type** param_types = malloc(sizeof(Type*) * proc->param_count);
+            if (param_types == NULL && proc->param_count > 0) {
+                for (int j = 0; j < i; j++) {
+                    free(combined_procs[j].param_types);
+                }
+                free(combined_procs);
+                if (error != NULL && error_size > 0) {
+                    snprintf(error, error_size, "Type error: out of memory");
+                }
+                return 0;
+            }
+            for (int p = 0; p < proc->param_count; p++) {
+                param_types[p] = proc->params[p].type;
+            }
+            combined_procs[i].name = proc->name;
+            combined_procs[i].return_type = proc->return_type;
+            combined_procs[i].param_types = param_types;
+            combined_procs[i].param_count = proc->param_count;
+        }
+        for (int i = 0; i < proc_count; i++) {
+            combined_procs[program->proc_count + i] = procs[i];
+        }
+    }
+    tc.procs = combined_procs;
+    tc.proc_count = combined_count;
 
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
@@ -487,6 +527,11 @@ int typecheck_program(Program* program,
     for (int i = 0; i < tc.transient_count; i++) {
         type_free(tc.transient_types[i]);
     }
+
+    for (int i = 0; i < program->proc_count; i++) {
+        free(combined_procs[i].param_types);
+    }
+    free(combined_procs);
 
     return !tc.had_error;
 }

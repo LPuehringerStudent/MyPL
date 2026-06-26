@@ -7,7 +7,7 @@ Type type_int      = { TYPE_INT,    NULL };
 Type type_float    = { TYPE_FLOAT,  NULL };
 Type type_string   = { TYPE_STRING, NULL };
 Type type_bool     = { TYPE_BOOL,   NULL };
-Type type_unknown  = { TYPE_INT,    NULL };  /* internal sentinel; kind value unused */
+Type type_unknown  = { TYPE_UNKNOWN, NULL };
 
 Type* type_new(TypeKind kind, Type* element_type) {
     Type* t = malloc(sizeof(Type));
@@ -61,6 +61,7 @@ const char* type_name(Type* t) {
         case TYPE_STRING: return "string";
         case TYPE_BOOL:   return "bool";
         case TYPE_ARRAY:  return "array";
+        case TYPE_UNKNOWN: return "unknown";
     }
     return "unknown";
 }
