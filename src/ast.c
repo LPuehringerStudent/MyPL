@@ -3,10 +3,11 @@
 
 #include "ast.h"
 
-Type type_int    = { TYPE_INT,    NULL };
-Type type_float  = { TYPE_FLOAT,  NULL };
-Type type_string = { TYPE_STRING, NULL };
-Type type_bool   = { TYPE_BOOL,   NULL };
+Type type_int      = { TYPE_INT,    NULL };
+Type type_float    = { TYPE_FLOAT,  NULL };
+Type type_string   = { TYPE_STRING, NULL };
+Type type_bool     = { TYPE_BOOL,   NULL };
+Type type_unknown  = { TYPE_INT,    NULL };  /* internal sentinel; kind value unused */
 
 Type* type_new(TypeKind kind, Type* element_type) {
     Type* t = malloc(sizeof(Type));
@@ -18,13 +19,19 @@ Type* type_new(TypeKind kind, Type* element_type) {
 
 Type* type_copy(Type* t) {
     if (t == NULL) return NULL;
-    if (t == &type_int || t == &type_float || t == &type_string || t == &type_bool) return t;
+    if (t == &type_int || t == &type_float || t == &type_string ||
+        t == &type_bool || t == &type_unknown) {
+        return t;
+    }
     return type_new(t->kind, type_copy(t->element_type));
 }
 
 void type_free(Type* t) {
     if (t == NULL) return;
-    if (t == &type_int || t == &type_float || t == &type_string || t == &type_bool) return;
+    if (t == &type_int || t == &type_float || t == &type_string ||
+        t == &type_bool || t == &type_unknown) {
+        return;
+    }
     type_free(t->element_type);
     free(t);
 }
@@ -37,11 +44,17 @@ int type_equals(Type* a, Type* b) {
     return 1;
 }
 
-int type_is_numeric(Type* t) { return t != NULL && (t->kind == TYPE_INT || t->kind == TYPE_FLOAT); }
-int type_is_array(Type* t)   { return t != NULL && t->kind == TYPE_ARRAY; }
+int type_is_numeric(Type* t) {
+    return t != NULL && t != &type_unknown &&
+           (t->kind == TYPE_INT || t->kind == TYPE_FLOAT);
+}
+int type_is_array(Type* t) {
+    return t != NULL && t != &type_unknown && t->kind == TYPE_ARRAY;
+}
+int type_is_unknown(Type* t) { return t == &type_unknown; }
 
 const char* type_name(Type* t) {
-    if (t == NULL) return "unknown";
+    if (t == NULL || t == &type_unknown) return "unknown";
     switch (t->kind) {
         case TYPE_INT:    return "int";
         case TYPE_FLOAT:  return "float";

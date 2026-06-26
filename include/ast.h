@@ -21,6 +21,7 @@ extern Type type_int;
 extern Type type_float;
 extern Type type_string;
 extern Type type_bool;
+extern Type type_unknown;
 
 Type* type_new(TypeKind kind, Type* element_type);
 Type* type_copy(Type* type);
@@ -28,6 +29,7 @@ void  type_free(Type* type);
 int   type_equals(Type* a, Type* b);
 int   type_is_numeric(Type* t);
 int   type_is_array(Type* t);
+int   type_is_unknown(Type* t);
 const char* type_name(Type* t);
 
 typedef enum {

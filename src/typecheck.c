@@ -28,6 +28,8 @@ typedef struct {
     char* error;
     size_t error_size;
     int had_error;
+    Type* transient_types[MAX_LOCALS];
+    int transient_count;
 } TypeChecker;
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
@@ -42,9 +44,10 @@ static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
     tc->had_error = 1;
 }
 
-static void push_scope(TypeChecker* tc) {
-    if (tc->scope_count >= MAX_SCOPES) return;
+static int push_scope(TypeChecker* tc) {
+    if (tc->scope_count >= MAX_SCOPES) return 0;
     tc->scopes[tc->scope_count++].count = 0;
+    return 1;
 }
 
 static void pop_scope(TypeChecker* tc) {
@@ -80,18 +83,30 @@ static ProcSignature* resolve_proc(TypeChecker* tc, const char* name) {
 }
 
 static int types_compatible(Type* expected, Type* actual) {
-    if (expected == NULL || actual == NULL) return 1;
+    if (expected == NULL || actual == NULL) return 0;
+    if (type_is_unknown(expected) || type_is_unknown(actual)) {
+        return type_is_unknown(expected) && type_is_unknown(actual);
+    }
     if (type_equals(expected, actual)) return 1;
     if (type_is_numeric(expected) && type_is_numeric(actual)) return 1;
     return 0;
 }
 
+static int types_assignable(Type* target, Type* value) {
+    if (target == NULL || value == NULL) return 0;
+    if (type_equals(target, value)) return 1;
+    /* Allow int -> float only. */
+    if (target->kind == TYPE_FLOAT && value->kind == TYPE_INT) return 1;
+    return 0;
+}
+
 static int is_condition_type(Type* t) {
-    return t != NULL && (t->kind == TYPE_BOOL || type_is_numeric(t));
+    return t != NULL && !type_is_unknown(t) &&
+           (t->kind == TYPE_BOOL || type_is_numeric(t));
 }
 
 static int is_primitive(Type* t) {
-    return t != NULL &&
+    return t != NULL && !type_is_unknown(t) &&
            (t->kind == TYPE_INT || t->kind == TYPE_FLOAT ||
             t->kind == TYPE_STRING || t->kind == TYPE_BOOL);
 }
@@ -102,13 +117,37 @@ static Type* common_numeric_type(Type* left, Type* right) {
     return &type_int;
 }
 
+static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
+    Type* t = type_new(TYPE_ARRAY, element_type);
+    if (t == NULL) return NULL;
+    if (tc->transient_count >= MAX_LOCALS) {
+        /* Cannot track; may leak if element_type is also transient. */
+        return t;
+    }
+    /* If element_type is a tracked transient, transfer ownership to the new
+       type so it is freed exactly once via type_free's recursion. */
+    for (int i = 0; i < tc->transient_count; i++) {
+        if (tc->transient_types[i] == element_type) {
+            tc->transient_types[i] = tc->transient_types[--tc->transient_count];
+            break;
+        }
+    }
+    tc->transient_types[tc->transient_count++] = t;
+    return t;
+}
+
 static void check_stmt(TypeChecker* tc, Stmt* stmt);
 
 static void check_block(TypeChecker* tc, Block* block) {
+    if (!push_scope(tc)) return;
     for (int i = 0; i < block->stmt_count; i++) {
         check_stmt(tc, block->stmts[i]);
-        if (tc->had_error) return;
+        if (tc->had_error) {
+            pop_scope(tc);
+            return;
+        }
     }
+    pop_scope(tc);
 }
 
 static Type* infer_expr(TypeChecker* tc, Expr* expr) {
@@ -207,6 +246,8 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         case EXPR_CALL: {
             ProcSignature* sig = resolve_proc(tc, expr->as.call.name);
             if (sig == NULL) {
+                type_error(tc, expr->loc, "Undefined procedure '%s'",
+                           expr->as.call.name);
                 return NULL;
             }
             if (expr->as.call.arg_count != sig->param_count) {
@@ -219,7 +260,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
             for (int i = 0; i < expr->as.call.arg_count; i++) {
                 Type* arg_type = infer_expr(tc, expr->as.call.args[i]);
                 if (tc->had_error) return sig->return_type;
-                if (!types_compatible(sig->param_types[i], arg_type)) {
+                if (!types_assignable(sig->param_types[i], arg_type)) {
                     type_error(tc, expr->as.call.args[i]->loc,
                                "Argument %d of '%s' has incompatible type",
                                i + 1, expr->as.call.name);
@@ -233,8 +274,8 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
             int count = expr->as.array.count;
             if (count == 0) {
                 type_error(tc, expr->loc,
-                           "cannot infer element type of empty array");
-                return type_new(TYPE_ARRAY, &type_int);
+                           "Cannot infer element type of empty array");
+                return transient_array_type(tc, &type_int);
             }
             Type* elem_type = infer_expr(tc, expr->as.array.elements[0]);
             for (int i = 1; i < count; i++) {
@@ -246,7 +287,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
                     return NULL;
                 }
             }
-            return type_new(TYPE_ARRAY, elem_type);
+            return transient_array_type(tc, elem_type);
         }
 
         case EXPR_INDEX: {
@@ -265,7 +306,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         }
 
         case EXPR_FIELD: {
-            return NULL;
+            return &type_unknown;
         }
     }
 
@@ -277,30 +318,41 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         case STMT_VAR_DECL: {
             Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer);
             if (tc->had_error) return;
+            if (init_type == NULL) {
+                type_error(tc, stmt->loc, "Cannot infer type of initializer");
+                return;
+            }
 
             Type* declared = stmt->as.var_decl.type;
             Type* final_type = declared;
 
             if (declared != NULL && declared->kind == TYPE_ARRAY &&
                 declared->element_type == NULL &&
-                init_type != NULL && init_type->kind == TYPE_ARRAY) {
+                init_type->kind == TYPE_ARRAY) {
                 final_type = init_type;
-            } else if (!types_compatible(declared, init_type)) {
+            } else if (!types_assignable(declared, init_type)) {
                 type_error(tc, stmt->loc,
                            "Cannot assign value of type '%s' to variable of type '%s'",
                            type_name(init_type), type_name(declared));
                 return;
             }
 
-            add_local(tc, stmt->as.var_decl.name, final_type);
+            if (!add_local(tc, stmt->as.var_decl.name, final_type)) {
+                type_error(tc, stmt->loc, "Too many local variables");
+            }
             break;
         }
 
         case STMT_ASSIGN: {
             Type* target = resolve_local(tc, stmt->as.assign.name);
+            if (target == NULL) {
+                type_error(tc, stmt->loc, "Undefined variable '%s'",
+                           stmt->as.assign.name);
+                return;
+            }
             Type* rhs = infer_expr(tc, stmt->as.assign.value);
             if (tc->had_error) return;
-            if (!types_compatible(target, rhs)) {
+            if (!types_assignable(target, rhs)) {
                 type_error(tc, stmt->loc,
                            "Cannot assign value of type '%s' to variable of type '%s'",
                            type_name(rhs), type_name(target));
@@ -311,7 +363,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         case STMT_RETURN: {
             Type* value = infer_expr(tc, stmt->as.return_stmt.value);
             if (tc->had_error) return;
-            if (!types_compatible(tc->return_type, value)) {
+            if (!types_assignable(tc->return_type, value)) {
                 type_error(tc, stmt->loc,
                            "Return value of type '%s' incompatible with return type '%s'",
                            type_name(value), type_name(tc->return_type));
@@ -336,8 +388,15 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         }
 
         case STMT_FOR: {
-            push_scope(tc);
-            add_local(tc, stmt->as.for_stmt.var_name, NULL);
+            if (!push_scope(tc)) {
+                type_error(tc, stmt->loc, "Too many nested scopes");
+                return;
+            }
+            if (!add_local(tc, stmt->as.for_stmt.var_name, &type_unknown)) {
+                type_error(tc, stmt->loc, "Too many local variables");
+                pop_scope(tc);
+                return;
+            }
             check_block(tc, stmt->as.for_stmt.body);
             pop_scope(tc);
             break;
@@ -365,7 +424,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 type_error(tc, stmt->loc, "Array index must be int");
                 return;
             }
-            if (!types_compatible(base->element_type, val)) {
+            if (!types_assignable(base->element_type, val)) {
                 type_error(tc, stmt->loc,
                            "Cannot assign value of type '%s' to array element of type '%s'",
                            type_name(val), type_name(base->element_type));
@@ -386,6 +445,13 @@ int typecheck_program(Program* program,
                       struct Context* ctx,
                       char* error,
                       size_t error_size) {
+    if (program == NULL) {
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Type error: program is NULL");
+        }
+        return 0;
+    }
+
     TypeChecker tc = {0};
     tc.procs = procs;
     tc.proc_count = proc_count;
@@ -395,16 +461,29 @@ int typecheck_program(Program* program,
 
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
-        push_scope(&tc);
+        if (!push_scope(&tc)) {
+            type_error(&tc, (SourceLoc){0, 0}, "Too many nested scopes");
+            break;
+        }
         for (int p = 0; p < proc->param_count; p++) {
-            add_local(&tc, proc->params[p].name, proc->params[p].type);
+            if (!add_local(&tc, proc->params[p].name, proc->params[p].type)) {
+                type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                break;
+            }
+        }
+        if (tc.had_error) {
+            pop_scope(&tc);
+            break;
         }
         tc.return_type = proc->return_type;
-        for (int s = 0; s < proc->body->stmt_count; s++) {
-            check_stmt(&tc, proc->body->stmts[s]);
-            if (tc.had_error) return 0;
-        }
+        check_block(&tc, proc->body);
         pop_scope(&tc);
+        if (tc.had_error) break;
     }
-    return 1;
+
+    for (int i = 0; i < tc.transient_count; i++) {
+        type_free(tc.transient_types[i]);
+    }
+
+    return !tc.had_error;
 }
