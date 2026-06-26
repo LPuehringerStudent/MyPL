@@ -12,6 +12,24 @@ typedef enum {
     TYPE_ARRAY
 } TypeKind;
 
+typedef struct Type {
+    TypeKind kind;
+    struct Type* element_type;  /* only when kind == TYPE_ARRAY */
+} Type;
+
+extern Type type_int;
+extern Type type_float;
+extern Type type_string;
+extern Type type_bool;
+
+Type* type_new(TypeKind kind, Type* element_type);
+Type* type_copy(Type* type);
+void  type_free(Type* type);
+int   type_equals(Type* a, Type* b);
+int   type_is_numeric(Type* t);
+int   type_is_array(Type* t);
+const char* type_name(Type* t);
+
 typedef enum {
     EXPR_LITERAL,
     EXPR_VARIABLE,
@@ -41,14 +59,14 @@ typedef struct Block Block;
 
 typedef struct {
     char* name;
-    TypeKind type;
+    Type* type;
 } Param;
 
 typedef struct {
     char* name;
     Param* params;
     int param_count;
-    TypeKind return_type;
+    Type* return_type;
     Block* body;
 } ProcDecl;
 
@@ -70,7 +88,7 @@ struct Block {
 };
 
 typedef struct {
-    TypeKind type;
+    Type* type;
     char* name;
     Expr* initializer;
 } VarDeclStmt;
@@ -187,11 +205,11 @@ void free_block(Block* block);
 void free_expr(Expr* expr);
 void free_stmt(Stmt* stmt);
 
-ProcDecl* create_proc_decl(const char* name, TypeKind return_type);
+ProcDecl* create_proc_decl(const char* name, Type* return_type);
 
 Block* create_block(void);
 
-Stmt* create_var_decl_stmt(TypeKind type, const char* name, Expr* init);
+Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init);
 Stmt* create_assign_stmt(const char* name, Expr* value);
 Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body);

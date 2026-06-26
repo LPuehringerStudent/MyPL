@@ -3,6 +3,55 @@
 
 #include "ast.h"
 
+Type type_int    = { TYPE_INT,    NULL };
+Type type_float  = { TYPE_FLOAT,  NULL };
+Type type_string = { TYPE_STRING, NULL };
+Type type_bool   = { TYPE_BOOL,   NULL };
+
+Type* type_new(TypeKind kind, Type* element_type) {
+    Type* t = malloc(sizeof(Type));
+    if (t == NULL) return NULL;
+    t->kind = kind;
+    t->element_type = element_type;
+    return t;
+}
+
+Type* type_copy(Type* t) {
+    if (t == NULL) return NULL;
+    if (t == &type_int || t == &type_float || t == &type_string || t == &type_bool) return t;
+    return type_new(t->kind, type_copy(t->element_type));
+}
+
+void type_free(Type* t) {
+    if (t == NULL) return;
+    if (t == &type_int || t == &type_float || t == &type_string || t == &type_bool) return;
+    type_free(t->element_type);
+    free(t);
+}
+
+int type_equals(Type* a, Type* b) {
+    if (a == b) return 1;
+    if (a == NULL || b == NULL) return 0;
+    if (a->kind != b->kind) return 0;
+    if (a->kind == TYPE_ARRAY) return type_equals(a->element_type, b->element_type);
+    return 1;
+}
+
+int type_is_numeric(Type* t) { return t != NULL && (t->kind == TYPE_INT || t->kind == TYPE_FLOAT); }
+int type_is_array(Type* t)   { return t != NULL && t->kind == TYPE_ARRAY; }
+
+const char* type_name(Type* t) {
+    if (t == NULL) return "unknown";
+    switch (t->kind) {
+        case TYPE_INT:    return "int";
+        case TYPE_FLOAT:  return "float";
+        case TYPE_STRING: return "string";
+        case TYPE_BOOL:   return "bool";
+        case TYPE_ARRAY:  return "array";
+    }
+    return "unknown";
+}
+
 static char* copy_string(const char* source) {
     if (source == NULL) return NULL;
     size_t len = strlen(source);
@@ -73,11 +122,15 @@ void free_block(Block* block) {
     free(block);
 }
 
-ProcDecl* create_proc_decl(const char* name, TypeKind return_type) {
+ProcDecl* create_proc_decl(const char* name, Type* return_type) {
     ProcDecl* proc = malloc(sizeof(ProcDecl));
-    if (proc == NULL) return NULL;
+    if (proc == NULL) {
+        type_free(return_type);
+        return NULL;
+    }
     proc->name = copy_string(name);
     if (proc->name == NULL && name != NULL) {
+        type_free(return_type);
         free(proc);
         return NULL;
     }
@@ -97,7 +150,12 @@ void free_program(Program* program) {
     for (int i = 0; i < program->proc_count; i++) {
         free(program->procs[i].name);
         free_block(program->procs[i].body);
+        for (int j = 0; j < program->procs[i].param_count; j++) {
+            free(program->procs[i].params[j].name);
+            type_free(program->procs[i].params[j].type);
+        }
         free(program->procs[i].params);
+        type_free(program->procs[i].return_type);
     }
     free(program->procs);
     free(program);
@@ -115,6 +173,7 @@ void free_stmt(Stmt* stmt) {
     if (stmt == NULL) return;
     switch (stmt->kind) {
         case STMT_VAR_DECL:
+            type_free(stmt->as.var_decl.type);
             free(stmt->as.var_decl.name);
             free_expr(stmt->as.var_decl.initializer);
             break;
@@ -153,13 +212,19 @@ void free_stmt(Stmt* stmt) {
     free(stmt);
 }
 
-Stmt* create_var_decl_stmt(TypeKind type, const char* name, Expr* init) {
+Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init) {
     Stmt* stmt = malloc(sizeof(Stmt));
-    if (stmt == NULL) return NULL;
+    if (stmt == NULL) {
+        type_free(type);
+        free_expr(init);
+        return NULL;
+    }
     stmt->kind = STMT_VAR_DECL;
     stmt->as.var_decl.type = type;
     stmt->as.var_decl.name = copy_string(name);
     if (stmt->as.var_decl.name == NULL && name != NULL) {
+        type_free(type);
+        free_expr(init);
         free(stmt);
         return NULL;
     }

@@ -227,14 +227,14 @@ static Expr* expression(Parser* parser) {
     return parse_precedence(parser, PREC_ASSIGNMENT);
 }
 
-static TypeKind parse_type(Parser* parser) {
-    if (match(parser, TOKEN_INT_TYPE)) return TYPE_INT;
-    if (match(parser, TOKEN_FLOAT_TYPE)) return TYPE_FLOAT;
-    if (match(parser, TOKEN_STRING_TYPE)) return TYPE_STRING;
-    if (match(parser, TOKEN_BOOL_TYPE)) return TYPE_BOOL;
-    if (match(parser, TOKEN_ARRAY_TYPE)) return TYPE_ARRAY;
+static Type* parse_type(Parser* parser) {
+    if (match(parser, TOKEN_INT_TYPE)) return &type_int;
+    if (match(parser, TOKEN_FLOAT_TYPE)) return &type_float;
+    if (match(parser, TOKEN_STRING_TYPE)) return &type_string;
+    if (match(parser, TOKEN_BOOL_TYPE)) return &type_bool;
+    if (match(parser, TOKEN_ARRAY_TYPE)) return type_new(TYPE_ARRAY, NULL);
     error_at_current(parser, "expected type");
-    return TYPE_INT;
+    return &type_int;
 }
 
 static Stmt* var_decl(Parser* parser);
@@ -259,7 +259,7 @@ static Block* block(Parser* parser) {
 }
 
 static Stmt* var_decl(Parser* parser) {
-    TypeKind type = parse_type(parser);
+    Type* type = parse_type(parser);
     advance(parser); /* identifier */
     char* name = copy_token_lexeme(&parser->previous);
     Expr* init = NULL;
@@ -437,14 +437,16 @@ static void parse_proc(Parser* parser, Program* program) {
         do {
             advance(parser); /* param name */
             char* param_name = copy_token_lexeme(&parser->previous);
-            TypeKind param_type = parse_type(parser);
+            Type* param_type = parse_type(parser);
 
             Param* new_params = realloc(params,
                 sizeof(Param) * (size_t)(param_count + 1));
             if (new_params == NULL) {
                 free(param_name);
+                type_free(param_type);
                 for (int i = 0; i < param_count; i++) {
                     free(params[i].name);
+                    type_free(params[i].type);
                 }
                 free(params);
                 free(name);
@@ -460,12 +462,13 @@ static void parse_proc(Parser* parser, Program* program) {
 
     advance(parser); /* ) */
     advance(parser); /* -> */
-    TypeKind return_type = parse_type(parser);
+    Type* return_type = parse_type(parser);
     ProcDecl* proc = create_proc_decl(name, return_type);
     free(name);
     if (proc == NULL) {
         for (int i = 0; i < param_count; i++) {
             free(params[i].name);
+            type_free(params[i].type);
         }
         free(params);
         parser->had_error = 1;
@@ -476,7 +479,12 @@ static void parse_proc(Parser* parser, Program* program) {
     proc->body = block(parser);
     if (proc->body == NULL) {
         free(proc->name);
+        for (int i = 0; i < param_count; i++) {
+            free(proc->params[i].name);
+            type_free(proc->params[i].type);
+        }
         free(proc->params);
+        type_free(proc->return_type);
         free(proc);
         return;
     }

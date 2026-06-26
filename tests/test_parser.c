@@ -106,11 +106,11 @@ TEST(parser_parses_procedure_and_var_decl) {
     ASSERT_INT_EQ(1, program->proc_count);
     ProcDecl* proc = &program->procs[0];
     ASSERT_INT_EQ(0, strcmp("main", proc->name));
-    ASSERT_INT_EQ(TYPE_INT, proc->return_type);
+    ASSERT_INT_EQ(TYPE_INT, proc->return_type->kind);
     ASSERT_INT_EQ(1, proc->body->stmt_count);
     Stmt* stmt = proc->body->stmts[0];
     ASSERT_INT_EQ(STMT_VAR_DECL, stmt->kind);
-    ASSERT_INT_EQ(TYPE_INT, stmt->as.var_decl.type);
+    ASSERT_INT_EQ(TYPE_INT, stmt->as.var_decl.type->kind);
     ASSERT_INT_EQ(0, strcmp("x", stmt->as.var_decl.name));
     ASSERT_INT_EQ(EXPR_LITERAL, stmt->as.var_decl.initializer->kind);
     ASSERT_INT_EQ(42, stmt->as.var_decl.initializer->as.literal.value.as.as_int);
@@ -179,9 +179,9 @@ TEST(parser_parses_procedure_parameters) {
     ProcDecl* proc = &program->procs[0];
     ASSERT_INT_EQ(2, proc->param_count);
     ASSERT_INT_EQ(0, strcmp("a", proc->params[0].name));
-    ASSERT_INT_EQ(TYPE_INT, proc->params[0].type);
+    ASSERT_INT_EQ(TYPE_INT, proc->params[0].type->kind);
     ASSERT_INT_EQ(0, strcmp("b", proc->params[1].name));
-    ASSERT_INT_EQ(TYPE_INT, proc->params[1].type);
+    ASSERT_INT_EQ(TYPE_INT, proc->params[1].type->kind);
     free_program(program);
 }
 
@@ -215,7 +215,7 @@ TEST(parser_parses_array_literal) {
     ASSERT_PTR_NOT_NULL(program);
     Stmt* stmt = program->procs[0].body->stmts[0];
     ASSERT_INT_EQ(STMT_VAR_DECL, stmt->kind);
-    ASSERT_INT_EQ(TYPE_ARRAY, stmt->as.var_decl.type);
+    ASSERT_INT_EQ(TYPE_ARRAY, stmt->as.var_decl.type->kind);
     ASSERT_INT_EQ(EXPR_ARRAY, stmt->as.var_decl.initializer->kind);
     ASSERT_INT_EQ(3, stmt->as.var_decl.initializer->as.array.count);
     free_program(program);
