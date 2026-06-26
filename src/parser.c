@@ -258,7 +258,16 @@ static Type* parse_type(Parser* parser) {
     if (match(parser, TOKEN_FLOAT_TYPE)) return &type_float;
     if (match(parser, TOKEN_STRING_TYPE)) return &type_string;
     if (match(parser, TOKEN_BOOL_TYPE)) return &type_bool;
-    if (match(parser, TOKEN_ARRAY_TYPE)) return type_new(TYPE_ARRAY, NULL);
+    if (match(parser, TOKEN_ARRAY_TYPE)) {
+        if (match(parser, TOKEN_LT)) {
+            Type* element = parse_type(parser);
+            if (!match(parser, TOKEN_GT)) {
+                error_at_current(parser, "expected '>' after array element type");
+            }
+            return type_new(TYPE_ARRAY, element);
+        }
+        return type_new(TYPE_ARRAY, NULL);  /* generic array */
+    }
     error_at_current(parser, "expected type");
     return &type_int;
 }

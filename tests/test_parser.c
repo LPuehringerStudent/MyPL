@@ -248,6 +248,20 @@ TEST(parser_parses_import_statement) {
     free_program(program);
 }
 
+TEST(parser_parses_typed_array_variable) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<int> a = [1, 2]; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    free_program(program);
+}
+
+TEST(parser_parses_nested_typed_array) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<array<int>> a = []; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -275,5 +289,7 @@ int main(void) {
     RUN_TEST(parser_parses_index_expression);
     RUN_TEST(parser_parses_index_assignment);
     RUN_TEST(parser_parses_import_statement);
+    RUN_TEST(parser_parses_typed_array_variable);
+    RUN_TEST(parser_parses_nested_typed_array);
     TEST_SUMMARY();
 }
