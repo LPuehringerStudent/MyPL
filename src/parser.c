@@ -94,11 +94,11 @@ static Expr* grouping(Parser* parser) {
 }
 
 static Expr* unary(Parser* parser) {
-    TokenType op = parser->previous.type;
+    Token op = parser->previous;
     Expr* operand = parse_precedence(parser, PREC_UNARY);
-    Expr* expr = create_unary_expr(op, operand);
-    expr->loc.line = parser->previous.line;
-    expr->loc.column = parser->previous.column;
+    Expr* expr = create_unary_expr(op.type, operand);
+    expr->loc.line = op.line;
+    expr->loc.column = op.column;
     return expr;
 }
 
@@ -221,12 +221,12 @@ static Expr* index_expr(Parser* parser, Expr* left) {
 }
 
 static Expr* binary(Parser* parser, Expr* left) {
-    TokenType op = parser->previous.type;
-    ParseRule* rule = get_rule(op);
+    Token op = parser->previous;
+    ParseRule* rule = get_rule(op.type);
     Expr* right = parse_precedence(parser, (Precedence)(rule->precedence + 1));
-    Expr* expr = create_binary_expr(op, left, right);
-    expr->loc.line = parser->previous.line;
-    expr->loc.column = parser->previous.column;
+    Expr* expr = create_binary_expr(op.type, left, right);
+    expr->loc.line = op.line;
+    expr->loc.column = op.column;
     return expr;
 }
 
@@ -344,7 +344,7 @@ static Stmt* assignment(Parser* parser) {
 }
 
 static Stmt* if_statement(Parser* parser) {
-    /* 'if' was already consumed by the statement dispatcher */
+    Token kw = parser->previous;  /* 'if' was just consumed */
     Expr* cond = expression(parser);
     Block* then_block = block(parser);
     if (then_block == NULL) {
@@ -361,13 +361,13 @@ static Stmt* if_statement(Parser* parser) {
         }
     }
     Stmt* stmt = create_if_stmt(cond, then_block, else_block);
-    stmt->loc.line = parser->previous.line;
-    stmt->loc.column = parser->previous.column;
+    stmt->loc.line = kw.line;
+    stmt->loc.column = kw.column;
     return stmt;
 }
 
 static Stmt* for_statement(Parser* parser) {
-    /* 'for' was already consumed by the statement dispatcher */
+    Token kw = parser->previous;  /* 'for' was just consumed */
     advance(parser); /* iterator name */
     char* var_name = copy_token_lexeme(&parser->previous);
     advance(parser); /* in */
@@ -380,8 +380,8 @@ static Stmt* for_statement(Parser* parser) {
         return NULL;
     }
     Stmt* stmt = create_for_stmt(var_name, sql_query, body);
-    stmt->loc.line = parser->previous.line;
-    stmt->loc.column = parser->previous.column;
+    stmt->loc.line = kw.line;
+    stmt->loc.column = kw.column;
     free(var_name);
     free(sql_query);
     return stmt;
