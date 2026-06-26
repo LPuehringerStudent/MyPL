@@ -232,6 +232,46 @@ TEST(typecheck_rejects_intra_program_wrong_arg_type) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_length_on_array) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<int> a = [1, 2]; return length(a); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_length_on_int) {
+    char error[256];
+    Program* program = parse("proc main() -> int { return length(42); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_append_matching_type) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<int> a = [1]; a = append(a, 2); return length(a); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_append_mismatch) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<int> a = [1]; a = append(a, \"x\"); return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_println) {
+    char error[256];
+    Program* program = parse("proc main() -> int { println(42); return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -260,5 +300,10 @@ int main(void) {
     RUN_TEST(typecheck_accepts_uninitialized_variable);
     RUN_TEST(typecheck_rejects_intra_program_wrong_arg_count);
     RUN_TEST(typecheck_rejects_intra_program_wrong_arg_type);
+    RUN_TEST(typecheck_accepts_length_on_array);
+    RUN_TEST(typecheck_rejects_length_on_int);
+    RUN_TEST(typecheck_accepts_append_matching_type);
+    RUN_TEST(typecheck_rejects_append_mismatch);
+    RUN_TEST(typecheck_accepts_println);
     TEST_SUMMARY();
 }

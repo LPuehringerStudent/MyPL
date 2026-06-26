@@ -138,6 +138,60 @@ static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
 }
 
 static void check_stmt(TypeChecker* tc, Stmt* stmt);
+static Type* infer_expr(TypeChecker* tc, Expr* expr);
+
+static int is_native(const char* name) {
+    return strcmp(name, "length") == 0 ||
+           strcmp(name, "append") == 0 ||
+           strcmp(name, "println") == 0 ||
+           strcmp(name, "clock") == 0;
+}
+
+static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
+    if (strcmp(name, "length") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "length expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0]);
+        if (!type_is_array(a) && a != &type_unknown) {
+            type_error(tc, loc, "length expects an array");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "append") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "append expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0]);
+        if (!type_is_array(a) && a != &type_unknown) {
+            type_error(tc, loc, "append expects an array");
+            return a;
+        }
+        Type* v = infer_expr(tc, args[1]);
+        if (a->element_type != NULL && v != NULL && !type_equals(a->element_type, v) && v != &type_unknown) {
+            type_error(tc, loc, "append value type does not match array element type");
+        }
+        return a;
+    }
+    if (strcmp(name, "println") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "println expects 1 argument");
+            return NULL;
+        }
+        (void)infer_expr(tc, args[0]);
+        return &type_int;
+    }
+    if (strcmp(name, "clock") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "clock expects 0 arguments");
+            return NULL;
+        }
+        return &type_int;
+    }
+    return NULL;
+}
 
 static void check_block(TypeChecker* tc, Block* block) {
     if (!push_scope(tc)) {
@@ -248,10 +302,15 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         }
 
         case EXPR_CALL: {
-            ProcSignature* sig = resolve_proc(tc, expr->as.call.name);
+            const char* call_name = expr->as.call.name;
+            if (is_native(call_name)) {
+                return check_native_call(tc, call_name, expr->as.call.args,
+                                         expr->as.call.arg_count, expr->loc);
+            }
+            ProcSignature* sig = resolve_proc(tc, call_name);
             if (sig == NULL) {
                 type_error(tc, expr->loc, "Undefined procedure '%s'",
-                           expr->as.call.name);
+                           call_name);
                 return NULL;
             }
             if (expr->as.call.arg_count != sig->param_count) {
