@@ -219,6 +219,7 @@ Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init) {
         free_expr(init);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_VAR_DECL;
     stmt->as.var_decl.type = type;
     stmt->as.var_decl.name = copy_string(name);
@@ -235,6 +236,7 @@ Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init) {
 Stmt* create_assign_stmt(const char* name, Expr* value) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_ASSIGN;
     stmt->as.assign.name = copy_string(name);
     if (stmt->as.assign.name == NULL && name != NULL) {
@@ -253,6 +255,7 @@ Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block) {
         free_block(else_block);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_IF;
     stmt->as.if_stmt.condition = cond;
     stmt->as.if_stmt.then_block = then_block;
@@ -266,6 +269,7 @@ Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body) 
         free_block(body);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_FOR;
     stmt->as.for_stmt.var_name = copy_string(var_name);
     if (stmt->as.for_stmt.var_name == NULL && var_name != NULL) {
@@ -290,6 +294,7 @@ Stmt* create_return_stmt(Expr* value) {
         free_expr(value);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_RETURN;
     stmt->as.return_stmt.value = value;
     return stmt;
@@ -301,6 +306,7 @@ Stmt* create_print_stmt(Expr* value) {
         free_expr(value);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_PRINT;
     stmt->as.print_stmt.value = value;
     return stmt;
@@ -312,6 +318,7 @@ Stmt* create_expr_stmt(Expr* value) {
         free_expr(value);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_EXPR;
     stmt->as.expr_stmt.value = value;
     return stmt;
@@ -320,6 +327,7 @@ Stmt* create_expr_stmt(Expr* value) {
 Stmt* create_import_stmt(const char* path) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_IMPORT;
     stmt->as.import_stmt.path = copy_string(path);
     if (stmt->as.import_stmt.path == NULL && path != NULL) {
@@ -332,6 +340,7 @@ Stmt* create_import_stmt(const char* path) {
 Expr* create_literal_expr(Value value) {
     Expr* expr = malloc(sizeof(Expr));
     if (expr == NULL) return NULL;
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_LITERAL;
     expr->as.literal.value = value;
     return expr;
@@ -340,6 +349,7 @@ Expr* create_literal_expr(Value value) {
 Expr* create_variable_expr(const char* name) {
     Expr* expr = malloc(sizeof(Expr));
     if (expr == NULL) return NULL;
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_VARIABLE;
     expr->as.variable.name = copy_string(name);
     if (expr->as.variable.name == NULL && name != NULL) {
@@ -356,6 +366,7 @@ Expr* create_binary_expr(TokenType op, Expr* left, Expr* right) {
         free_expr(right);
         return NULL;
     }
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_BINARY;
     expr->as.binary.op = op;
     expr->as.binary.left = left;
@@ -369,6 +380,7 @@ Expr* create_unary_expr(TokenType op, Expr* operand) {
         free_expr(operand);
         return NULL;
     }
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_UNARY;
     expr->as.unary.op = op;
     expr->as.unary.operand = operand;
@@ -378,6 +390,7 @@ Expr* create_unary_expr(TokenType op, Expr* operand) {
 Expr* create_field_expr(const char* row, const char* field) {
     Expr* expr = malloc(sizeof(Expr));
     if (expr == NULL) return NULL;
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_FIELD;
     expr->as.field.row = copy_string(row);
     if (expr->as.field.row == NULL && row != NULL) {
@@ -402,6 +415,7 @@ Expr* create_call_expr(const char* name, Expr** args, int arg_count) {
         free(args);
         return NULL;
     }
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_CALL;
     expr->as.call.name = copy_string(name);
     if (expr->as.call.name == NULL && name != NULL) {
@@ -426,6 +440,7 @@ Expr* create_array_expr(Expr** elements, int count) {
         free(elements);
         return NULL;
     }
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_ARRAY;
     expr->as.array.elements = elements;
     expr->as.array.count = count;
@@ -439,6 +454,7 @@ Expr* create_index_expr(Expr* array, Expr* index) {
         free_expr(index);
         return NULL;
     }
+    expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_INDEX;
     expr->as.index.array = array;
     expr->as.index.index = index;
@@ -453,6 +469,7 @@ Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value) {
         free_expr(value);
         return NULL;
     }
+    stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_INDEX_ASSIGN;
     stmt->as.index_assign.array = array;
     stmt->as.index_assign.index = index;

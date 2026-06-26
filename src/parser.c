@@ -96,47 +96,62 @@ static Expr* grouping(Parser* parser) {
 static Expr* unary(Parser* parser) {
     TokenType op = parser->previous.type;
     Expr* operand = parse_precedence(parser, PREC_UNARY);
-    return create_unary_expr(op, operand);
+    Expr* expr = create_unary_expr(op, operand);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* literal_bool(Parser* parser) {
     int v = parser->previous.type == TOKEN_TRUE ? 1 : 0;
-    return create_literal_expr(value_bool(v));
+    Expr* expr = create_literal_expr(value_bool(v));
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* number(Parser* parser) {
+    Expr* expr;
     if (parser->previous.type == TOKEN_FLOAT) {
         char buffer[64];
         int len = parser->previous.length;
         if (len >= 64) len = 63;
         memcpy(buffer, parser->previous.start, (size_t)len);
         buffer[len] = '\0';
-        return create_literal_expr(value_float(strtod(buffer, NULL)));
-    }
-    if (parser->previous.type == TOKEN_STRING) {
+        expr = create_literal_expr(value_float(strtod(buffer, NULL)));
+    } else if (parser->previous.type == TOKEN_STRING) {
         int len = parser->previous.length - 2; /* without quotes */
         if (len < 0) len = 0;
         char* str = malloc((size_t)len + 1);
         if (str == NULL) return create_literal_expr(value_int(0));
         memcpy(str, parser->previous.start + 1, (size_t)len);
         str[len] = '\0';
-        return create_literal_expr(value_string(str));
+        expr = create_literal_expr(value_string(str));
+    } else {
+        int value = 0;
+        for (int i = 0; i < parser->previous.length; i++) {
+            value = value * 10 + (parser->previous.start[i] - '0');
+        }
+        expr = create_literal_expr(value_int(value));
     }
-    int value = 0;
-    for (int i = 0; i < parser->previous.length; i++) {
-        value = value * 10 + (parser->previous.start[i] - '0');
-    }
-    return create_literal_expr(value_int(value));
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* variable(Parser* parser) {
-    return create_variable_expr(copy_token_lexeme(&parser->previous));
+    Expr* expr = create_variable_expr(copy_token_lexeme(&parser->previous));
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* field(Parser* parser, Expr* left) {
     advance(parser); /* field name */
     char* field_name = copy_token_lexeme(&parser->previous);
     Expr* expr = create_field_expr(left->as.variable.name, field_name);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
     free(field_name);
     free_expr(left);
     return expr;
@@ -166,6 +181,8 @@ static Expr* call(Parser* parser, Expr* left) {
     advance(parser); /* consume ) */
 
     Expr* expr = create_call_expr(left->as.variable.name, args, arg_count);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
     free_expr(left);
     return expr;
 }
@@ -188,20 +205,29 @@ static Expr* array_literal(Parser* parser) {
         } while (match(parser, TOKEN_COMMA));
     }
     advance(parser); /* ] */
-    return create_array_expr(elements, count);
+    Expr* expr = create_array_expr(elements, count);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* index_expr(Parser* parser, Expr* left) {
     Expr* idx = expression(parser);
     advance(parser); /* ] */
-    return create_index_expr(left, idx);
+    Expr* expr = create_index_expr(left, idx);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* binary(Parser* parser, Expr* left) {
     TokenType op = parser->previous.type;
     ParseRule* rule = get_rule(op);
     Expr* right = parse_precedence(parser, (Precedence)(rule->precedence + 1));
-    return create_binary_expr(op, left, right);
+    Expr* expr = create_binary_expr(op, left, right);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
 }
 
 static Expr* parse_precedence(Parser* parser, Precedence precedence) {
@@ -261,6 +287,8 @@ static Block* block(Parser* parser) {
 static Stmt* var_decl(Parser* parser) {
     Type* type = parse_type(parser);
     advance(parser); /* identifier */
+    int id_line = parser->previous.line;
+    int id_column = parser->previous.column;
     char* name = copy_token_lexeme(&parser->previous);
     Expr* init = NULL;
     if (match(parser, TOKEN_ASSIGN)) {
@@ -268,12 +296,16 @@ static Stmt* var_decl(Parser* parser) {
     }
     advance(parser); /* semicolon */
     Stmt* stmt = create_var_decl_stmt(type, name, init);
+    stmt->loc.line = id_line;
+    stmt->loc.column = id_column;
     free(name);
     return stmt;
 }
 
 static Stmt* assignment(Parser* parser) {
     advance(parser); /* identifier */
+    int id_line = parser->previous.line;
+    int id_column = parser->previous.column;
     char* name = copy_token_lexeme(&parser->previous);
 
     if (check(parser, TOKEN_LPAREN)) {
@@ -281,6 +313,8 @@ static Stmt* assignment(Parser* parser) {
         Expr* call_expr = call(parser, create_variable_expr(name));
         advance(parser); /* ; */
         Stmt* stmt = create_expr_stmt(call_expr);
+        stmt->loc.line = call_expr->loc.line;
+        stmt->loc.column = call_expr->loc.column;
         free(name);
         return stmt;
     }
@@ -293,6 +327,8 @@ static Stmt* assignment(Parser* parser) {
         Expr* value = expression(parser);
         advance(parser); /* ; */
         Stmt* stmt = create_index_assign_stmt(array_expr, index_expr, value);
+        stmt->loc.line = id_line;
+        stmt->loc.column = id_column;
         free(name);
         return stmt;
     }
@@ -301,6 +337,8 @@ static Stmt* assignment(Parser* parser) {
     Expr* value = expression(parser);
     advance(parser); /* ; */
     Stmt* stmt = create_assign_stmt(name, value);
+    stmt->loc.line = id_line;
+    stmt->loc.column = id_column;
     free(name);
     return stmt;
 }
@@ -322,7 +360,10 @@ static Stmt* if_statement(Parser* parser) {
             return NULL;
         }
     }
-    return create_if_stmt(cond, then_block, else_block);
+    Stmt* stmt = create_if_stmt(cond, then_block, else_block);
+    stmt->loc.line = parser->previous.line;
+    stmt->loc.column = parser->previous.column;
+    return stmt;
 }
 
 static Stmt* for_statement(Parser* parser) {
@@ -339,6 +380,8 @@ static Stmt* for_statement(Parser* parser) {
         return NULL;
     }
     Stmt* stmt = create_for_stmt(var_name, sql_query, body);
+    stmt->loc.line = parser->previous.line;
+    stmt->loc.column = parser->previous.column;
     free(var_name);
     free(sql_query);
     return stmt;
@@ -346,16 +389,26 @@ static Stmt* for_statement(Parser* parser) {
 
 static Stmt* return_statement(Parser* parser) {
     /* 'return' was already consumed by the statement dispatcher */
+    int kw_line = parser->previous.line;
+    int kw_column = parser->previous.column;
     Expr* value = expression(parser);
     advance(parser); /* ; */
-    return create_return_stmt(value);
+    Stmt* stmt = create_return_stmt(value);
+    stmt->loc.line = kw_line;
+    stmt->loc.column = kw_column;
+    return stmt;
 }
 
 static Stmt* print_statement(Parser* parser) {
     /* 'print' was already consumed by the statement dispatcher */
+    int kw_line = parser->previous.line;
+    int kw_column = parser->previous.column;
     Expr* value = expression(parser);
     advance(parser); /* ; */
-    return create_print_stmt(value);
+    Stmt* stmt = create_print_stmt(value);
+    stmt->loc.line = kw_line;
+    stmt->loc.column = kw_column;
+    return stmt;
 }
 
 static int program_add_import(Program* program, Stmt* import_stmt) {
@@ -384,6 +437,8 @@ static void parse_import(Parser* parser, Program* program) {
         error_at_current(parser, "expected module path string");
         return;
     }
+    int path_line = parser->current.line;
+    int path_column = parser->current.column;
     char* raw_path = copy_token_lexeme(&parser->current);
     Stmt* stmt = create_import_stmt(raw_path);
     free(raw_path);
@@ -391,6 +446,8 @@ static void parse_import(Parser* parser, Program* program) {
         error_at_current(parser, "out of memory");
         return;
     }
+    stmt->loc.line = path_line;
+    stmt->loc.column = path_column;
     char* path = stmt->as.import_stmt.path;
     int len = (int)strlen(path);
     if (len >= 2 && path[0] == '"' && path[len - 1] == '"') {

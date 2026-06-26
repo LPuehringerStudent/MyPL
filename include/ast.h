@@ -58,6 +58,11 @@ typedef struct Stmt Stmt;
 typedef struct Block Block;
 
 typedef struct {
+    int line;
+    int column;
+} SourceLoc;
+
+typedef struct {
     char* name;
     Type* type;
 } Param;
@@ -130,6 +135,7 @@ typedef struct {
 
 struct Stmt {
     StmtKind kind;
+    SourceLoc loc;
     union {
         VarDeclStmt var_decl;
         AssignStmt assign;
@@ -185,6 +191,7 @@ typedef struct {
 
 struct Expr {
     ExprKind kind;
+    SourceLoc loc;
     union {
         LiteralExpr literal;
         VariableExpr variable;
