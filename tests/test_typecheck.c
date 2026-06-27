@@ -406,6 +406,22 @@ TEST(typecheck_accepts_row_field_with_select_star) {
     unlink(db_path);
 }
 
+TEST(typecheck_rejects_field_on_undefined_variable) {
+    char error[256];
+    Program* program = parse("proc main() -> int { return row.id; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_field_on_non_row_variable) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int x = 1; return x.y; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -446,5 +462,7 @@ int main(void) {
     RUN_TEST(typecheck_rejects_sql_row_field_type_mismatch);
     RUN_TEST(typecheck_rejects_row_field_not_selected);
     RUN_TEST(typecheck_accepts_row_field_with_select_star);
+    RUN_TEST(typecheck_rejects_field_on_undefined_variable);
+    RUN_TEST(typecheck_rejects_field_on_non_row_variable);
     TEST_SUMMARY();
 }

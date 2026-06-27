@@ -408,18 +408,27 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
 
         case EXPR_FIELD: {
             Type* base = resolve_local(tc, expr->as.field.row);
-            if (base == &type_unknown) {
-                RowBinding* row = find_row(tc, expr->as.field.row);
-                if (row != NULL && tc->ctx != NULL) {
-                    int sql_type;
-                    if (sql_query_column_type(tc->ctx, row->query, expr->as.field.field, &sql_type)) {
-                        return sql_type_to_type(sql_type);
-                    }
-                    type_error(tc, expr->loc,
-                               "Unknown column '%s' for row variable '%s'",
-                               expr->as.field.field, expr->as.field.row);
-                    return &type_unknown;
+            if (base == NULL) {
+                type_error(tc, expr->loc, "Undefined variable '%s'",
+                           expr->as.field.row);
+                return &type_unknown;
+            }
+            if (base != &type_unknown) {
+                type_error(tc, expr->loc,
+                           "Cannot access field on non-row variable '%s'",
+                           expr->as.field.row);
+                return &type_unknown;
+            }
+            RowBinding* row = find_row(tc, expr->as.field.row);
+            if (row != NULL && tc->ctx != NULL) {
+                int sql_type;
+                if (sql_query_column_type(tc->ctx, row->query, expr->as.field.field, &sql_type)) {
+                    return sql_type_to_type(sql_type);
                 }
+                type_error(tc, expr->loc,
+                           "Unknown column '%s' for row variable '%s'",
+                           expr->as.field.field, expr->as.field.row);
+                return &type_unknown;
             }
             return &type_unknown;
         }
