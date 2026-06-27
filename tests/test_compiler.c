@@ -3,6 +3,7 @@
 #include "vm.h"
 #include "sql_engine.h"
 
+#include <string.h>
 #include <unistd.h>
 
 static char s_module_path[256] = {0};
@@ -555,6 +556,9 @@ TEST(compiler_rejects_type_mismatch_in_assignment) {
     init_chunk(&chunk);
     char error[256];
     ASSERT_INT_EQ(0, compile("proc main() -> int { int x = \"hello\"; return 0; }", &chunk, error, sizeof(error)));
+    if (strstr(error, "Type error") == NULL || strstr(error, "string") == NULL) {
+        FAIL("expected type mismatch error message");
+    }
     free_chunk(&chunk);
 }
 

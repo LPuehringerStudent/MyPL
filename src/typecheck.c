@@ -138,7 +138,7 @@ static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
 }
 
 static void check_stmt(TypeChecker* tc, Stmt* stmt);
-static Type* infer_expr(TypeChecker* tc, Expr* expr);
+static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint);
 
 static int is_native(const char* name) {
     return strcmp(name, "length") == 0 ||
@@ -153,7 +153,7 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "length expects 1 argument");
             return NULL;
         }
-        Type* a = infer_expr(tc, args[0]);
+        Type* a = infer_expr(tc, args[0], NULL);
         if (!type_is_array(a) && a != &type_unknown) {
             type_error(tc, loc, "length expects an array");
         }
@@ -164,12 +164,12 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "append expects 2 arguments");
             return NULL;
         }
-        Type* a = infer_expr(tc, args[0]);
+        Type* a = infer_expr(tc, args[0], NULL);
         if (!type_is_array(a) && a != &type_unknown) {
             type_error(tc, loc, "append expects an array");
             return a;
         }
-        Type* v = infer_expr(tc, args[1]);
+        Type* v = infer_expr(tc, args[1], a != NULL && type_is_array(a) ? a->element_type : NULL);
         if (a->element_type != NULL && v != NULL && !type_equals(a->element_type, v) && v != &type_unknown) {
             type_error(tc, loc, "append value type does not match array element type");
         }
@@ -180,7 +180,7 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "println expects 1 argument");
             return NULL;
         }
-        (void)infer_expr(tc, args[0]);
+        (void)infer_expr(tc, args[0], NULL);
         return &type_int;
     }
     if (strcmp(name, "clock") == 0) {
@@ -208,7 +208,7 @@ static void check_block(TypeChecker* tc, Block* block) {
     pop_scope(tc);
 }
 
-static Type* infer_expr(TypeChecker* tc, Expr* expr) {
+static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
     switch (expr->kind) {
         case EXPR_LITERAL: {
             Value v = expr->as.literal.value;
@@ -232,8 +232,8 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         }
 
         case EXPR_BINARY: {
-            Type* left  = infer_expr(tc, expr->as.binary.left);
-            Type* right = infer_expr(tc, expr->as.binary.right);
+            Type* left  = infer_expr(tc, expr->as.binary.left, NULL);
+            Type* right = infer_expr(tc, expr->as.binary.right, NULL);
             TokenType op = expr->as.binary.op;
 
             if (tc->had_error) return NULL;
@@ -274,7 +274,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         }
 
         case EXPR_UNARY: {
-            Type* operand = infer_expr(tc, expr->as.unary.operand);
+            Type* operand = infer_expr(tc, expr->as.unary.operand, NULL);
             TokenType op = expr->as.unary.op;
 
             if (tc->had_error) return NULL;
@@ -322,7 +322,8 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
                 return sig->return_type;
             }
             for (int i = 0; i < expr->as.call.arg_count; i++) {
-                Type* arg_type = infer_expr(tc, expr->as.call.args[i]);
+                Type* arg_type = infer_expr(tc, expr->as.call.args[i],
+                                            sig->param_types[i]);
                 if (tc->had_error) return sig->return_type;
                 if (!types_assignable(sig->param_types[i], arg_type)) {
                     type_error(tc, expr->as.call.args[i]->loc,
@@ -337,13 +338,16 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         case EXPR_ARRAY: {
             int count = expr->as.array.count;
             if (count == 0) {
+                if (hint != NULL && hint->kind == TYPE_ARRAY) {
+                    return transient_array_type(tc, hint->element_type);
+                }
                 type_error(tc, expr->loc,
                            "Cannot infer element type of empty array");
                 return transient_array_type(tc, &type_int);
             }
-            Type* elem_type = infer_expr(tc, expr->as.array.elements[0]);
+            Type* elem_type = infer_expr(tc, expr->as.array.elements[0], NULL);
             for (int i = 1; i < count; i++) {
-                Type* t = infer_expr(tc, expr->as.array.elements[i]);
+                Type* t = infer_expr(tc, expr->as.array.elements[i], NULL);
                 if (tc->had_error) return NULL;
                 if (!type_equals(elem_type, t)) {
                     type_error(tc, expr->as.array.elements[i]->loc,
@@ -355,8 +359,8 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
         }
 
         case EXPR_INDEX: {
-            Type* base = infer_expr(tc, expr->as.index.array);
-            Type* idx  = infer_expr(tc, expr->as.index.index);
+            Type* base = infer_expr(tc, expr->as.index.array, NULL);
+            Type* idx  = infer_expr(tc, expr->as.index.index, NULL);
             if (tc->had_error) return NULL;
             if (base == NULL || base->kind != TYPE_ARRAY) {
                 type_error(tc, expr->loc, "Cannot index non-array type");
@@ -384,14 +388,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             Type* final_type = declared;
 
             if (stmt->as.var_decl.initializer != NULL) {
-                Type* init_type = NULL;
-                Expr* init = stmt->as.var_decl.initializer;
-                if (init->kind == EXPR_ARRAY && init->as.array.count == 0 &&
-                    declared != NULL && declared->kind == TYPE_ARRAY) {
-                    init_type = transient_array_type(tc, declared->element_type);
-                } else {
-                    init_type = infer_expr(tc, init);
-                }
+                Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer, declared);
                 if (tc->had_error) return;
                 if (init_type == NULL) {
                     type_error(tc, stmt->loc, "Cannot infer type of initializer");
@@ -423,14 +420,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                            stmt->as.assign.name);
                 return;
             }
-            Type* rhs = NULL;
-            Expr* value = stmt->as.assign.value;
-            if (value->kind == EXPR_ARRAY && value->as.array.count == 0 &&
-                target != NULL && target->kind == TYPE_ARRAY) {
-                rhs = transient_array_type(tc, target->element_type);
-            } else {
-                rhs = infer_expr(tc, value);
-            }
+            Type* rhs = infer_expr(tc, stmt->as.assign.value, target);
             if (tc->had_error) return;
             if (!types_assignable(target, rhs)) {
                 type_error(tc, stmt->loc,
@@ -441,7 +431,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         }
 
         case STMT_RETURN: {
-            Type* value = infer_expr(tc, stmt->as.return_stmt.value);
+            Type* value = infer_expr(tc, stmt->as.return_stmt.value, tc->return_type);
             if (tc->had_error) return;
             if (!types_assignable(tc->return_type, value)) {
                 type_error(tc, stmt->loc,
@@ -452,7 +442,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         }
 
         case STMT_IF: {
-            Type* cond = infer_expr(tc, stmt->as.if_stmt.condition);
+            Type* cond = infer_expr(tc, stmt->as.if_stmt.condition, NULL);
             if (tc->had_error) return;
             if (!is_condition_type(cond)) {
                 type_error(tc, stmt->loc,
@@ -487,14 +477,16 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             Expr* e = (stmt->kind == STMT_PRINT)
                           ? stmt->as.print_stmt.value
                           : stmt->as.expr_stmt.value;
-            infer_expr(tc, e);
+            infer_expr(tc, e, NULL);
             break;
         }
 
         case STMT_INDEX_ASSIGN: {
-            Type* base = infer_expr(tc, stmt->as.index_assign.array);
-            Type* idx  = infer_expr(tc, stmt->as.index_assign.index);
-            Type* val  = infer_expr(tc, stmt->as.index_assign.value);
+            Type* base = infer_expr(tc, stmt->as.index_assign.array, NULL);
+            Type* idx  = infer_expr(tc, stmt->as.index_assign.index, NULL);
+            Type* val  = infer_expr(tc, stmt->as.index_assign.value,
+                                    base != NULL && base->kind == TYPE_ARRAY
+                                        ? base->element_type : NULL);
             if (tc->had_error) return;
             if (base == NULL || base->kind != TYPE_ARRAY) {
                 type_error(tc, stmt->loc, "Cannot index assign to non-array type");

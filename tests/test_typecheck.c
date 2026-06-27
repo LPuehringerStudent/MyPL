@@ -288,6 +288,14 @@ TEST(typecheck_rejects_clock_with_args) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_empty_array_return_with_hint) {
+    char error[256];
+    Program* program = parse("proc make() -> array<int> { return []; } proc main() -> int { return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -323,5 +331,6 @@ int main(void) {
     RUN_TEST(typecheck_accepts_println);
     RUN_TEST(typecheck_accepts_clock);
     RUN_TEST(typecheck_rejects_clock_with_args);
+    RUN_TEST(typecheck_accepts_empty_array_return_with_hint);
     TEST_SUMMARY();
 }

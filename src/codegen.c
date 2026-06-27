@@ -55,7 +55,7 @@ typedef struct {
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
                           Type* return_type, Type** param_types, int param_count) {
-    if (compiler->proc_count >= MAX_PROCS) return -1;
+    if (compiler->proc_count >= MAX_PROCS) return -3;
     for (int i = 0; i < compiler->proc_count; i++) {
         if (strcmp(compiler->procs[i].name, name) == 0) return -2;
     }
@@ -63,12 +63,20 @@ static int add_proc_entry(Compiler* compiler, const char* name, int offset,
     if (name_copy == NULL) return -1;
     strcpy(name_copy, name);
     Type* rt_copy = type_copy(return_type);
+    if (rt_copy == NULL && return_type != NULL) { free(name_copy); return -1; }
     Type** pt_copy = NULL;
     if (param_count > 0) {
         pt_copy = malloc(sizeof(Type*) * (size_t)param_count);
         if (pt_copy == NULL) { free(name_copy); type_free(rt_copy); return -1; }
         for (int i = 0; i < param_count; i++) {
             pt_copy[i] = type_copy(param_types[i]);
+            if (pt_copy[i] == NULL && param_types[i] != NULL) {
+                for (int j = 0; j < i; j++) type_free(pt_copy[j]);
+                free(pt_copy);
+                free(name_copy);
+                type_free(rt_copy);
+                return -1;
+            }
         }
     }
     compiler->procs[compiler->proc_count].name = name_copy;
@@ -566,11 +574,12 @@ static int compiler_compile_source(Compiler* compiler, const char* source, int i
         free(pts);
         if (idx < 0) {
             if (error != NULL && error_size > 0) {
-                if (idx == -2) {
+                if (idx == -1) {
+                    snprintf(error, error_size, "Out of memory registering procedure '%s'", proc->name);
+                } else if (idx == -2) {
                     snprintf(error, error_size, "Duplicate procedure '%s'", proc->name);
                 } else {
-                    strncpy(error, "too many procedures", error_size - 1);
-                    error[error_size - 1] = '\0';
+                    snprintf(error, error_size, "Too many procedures");
                 }
             }
             free_program(program);
