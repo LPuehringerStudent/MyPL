@@ -415,6 +415,10 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                     if (sql_query_column_type(tc->ctx, row->query, expr->as.field.field, &sql_type)) {
                         return sql_type_to_type(sql_type);
                     }
+                    type_error(tc, expr->loc,
+                               "Unknown column '%s' for row variable '%s'",
+                               expr->as.field.field, expr->as.field.row);
+                    return &type_unknown;
                 }
             }
             return &type_unknown;
@@ -506,15 +510,23 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 return;
             }
             ForStmt* f = &stmt->as.for_stmt;
+            int saved_row_count = tc->row_count;
             if (tc->ctx != NULL) {
-                bind_row(tc, f->var_name, f->sql_query);
+                if (!bind_row(tc, f->var_name, f->sql_query)) {
+                    type_error(tc, stmt->loc, "too many row bindings");
+                    tc->row_count = saved_row_count;
+                    pop_scope(tc);
+                    return;
+                }
             }
             if (!add_local(tc, f->var_name, &type_unknown)) {
                 type_error(tc, stmt->loc, "Too many local variables");
+                tc->row_count = saved_row_count;
                 pop_scope(tc);
                 return;
             }
             check_block(tc, f->body);
+            tc->row_count = saved_row_count;
             pop_scope(tc);
             break;
         }

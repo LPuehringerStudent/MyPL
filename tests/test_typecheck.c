@@ -352,6 +352,60 @@ TEST(typecheck_rejects_sql_row_field_type_mismatch) {
     unlink(db_path);
 }
 
+TEST(typecheck_rejects_row_field_not_selected) {
+    char db_path[] = "/tmp/mypl_test_typecheck_sql3_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id", "name"};
+    int types[] = {VAL_INT, VAL_STRING};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 2);
+    ASSERT_PTR_NOT_NULL(t);
+
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for row in SELECT name FROM users { return row.id; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, &ctx, error, sizeof(error)));
+    free_program(program);
+
+    catalog_close(&ctx);
+    unlink(db_path);
+}
+
+TEST(typecheck_accepts_row_field_with_select_star) {
+    char db_path[] = "/tmp/mypl_test_typecheck_sql4_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id", "name"};
+    int types[] = {VAL_INT, VAL_STRING};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 2);
+    ASSERT_PTR_NOT_NULL(t);
+
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for row in SELECT * FROM users { return row.id; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, &ctx, error, sizeof(error)));
+    free_program(program);
+
+    catalog_close(&ctx);
+    unlink(db_path);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -390,5 +444,7 @@ int main(void) {
     RUN_TEST(typecheck_accepts_empty_array_return_with_hint);
     RUN_TEST(typecheck_resolves_sql_row_field_type);
     RUN_TEST(typecheck_rejects_sql_row_field_type_mismatch);
+    RUN_TEST(typecheck_rejects_row_field_not_selected);
+    RUN_TEST(typecheck_accepts_row_field_with_select_star);
     TEST_SUMMARY();
 }

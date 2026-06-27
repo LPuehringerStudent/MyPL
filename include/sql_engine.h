@@ -6,6 +6,8 @@
 #include "mydb.h"
 #include "compiler.h"
 
+#define MAX_NAME_LEN 255
+
 typedef struct {
     int type; /* VAL_INT, VAL_FLOAT, VAL_STRING */
     union {

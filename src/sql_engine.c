@@ -11,7 +11,6 @@
 /* -------------------------------------------------------------------------- */
 
 #define MAX_CATALOG_TABLES 64
-#define MAX_NAME_LEN       255
 
 static Table* g_catalog[MAX_CATALOG_TABLES];
 static int    g_catalog_count = 0;
@@ -640,11 +639,11 @@ static void sql_token_text(SqlToken* tok, char* out, size_t out_size) {
 #define MAX_COLUMNS        16
 
 typedef struct {
-    char column_names[MAX_SELECT_COLUMNS][64];
+    char column_names[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
     int  column_count;
-    char table_name[64];
+    char table_name[MAX_NAME_LEN + 1];
     int  has_where;
-    char where_column[64];
+    char where_column[MAX_NAME_LEN + 1];
     int  where_op;
     Cell where_value;
 } SelectStmt;
@@ -909,7 +908,7 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
-    char        table_name[64];
+    char        table_name[MAX_NAME_LEN + 1];
     char*       column_names[MAX_COLUMNS];
     int         column_types[MAX_COLUMNS];
     int         column_count;
@@ -952,7 +951,7 @@ static int sql_parse_create_table(const char* query, DdlStmt* stmt) {
 
     tok = sql_next_token(&lex);
     if (tok.type != TOK_IDENT) return 0;
-    char buf[64];
+    char buf[MAX_NAME_LEN + 1];
     sql_token_text(&tok, buf, sizeof(buf));
     stmt->column_names[stmt->column_count] = strdup(buf);
     if (stmt->column_names[stmt->column_count] == NULL) return 0;
@@ -1076,37 +1075,86 @@ int sql_exec_ddl(const char* query, Context* ctx) {
 /* Column type resolution                                                     */
 /* -------------------------------------------------------------------------- */
 
-static const char* strcasestr_local(const char* haystack, const char* needle) {
-    if (!needle[0]) return haystack;
-    char* h = (char*)haystack;
-    while (*h) {
-        if (tolower((unsigned char)*h) == tolower((unsigned char)*needle)) {
-            const char* n = needle;
-            const char* p = h;
-            while (*n && tolower((unsigned char)*p) == tolower((unsigned char)*n)) { p++; n++; }
-            if (!*n) return h;
-        }
-        h++;
+static int is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
+static const char* skip_space(const char* p) { while (*p && is_space(*p)) p++; return p; }
+
+static int starts_with_ci(const char* p, const char* word) {
+    const char* w = word;
+    while (*w) {
+        if (tolower((unsigned char)*p) != tolower((unsigned char)*w)) return 0;
+        p++; w++;
     }
-    return NULL;
+    return 1;
 }
 
 int sql_query_column_type(Context* ctx, const char* query, const char* column_name, int* out_type) {
     if (ctx == NULL || query == NULL || column_name == NULL || out_type == NULL) return 0;
-    const char* from = strcasestr_local(query, " FROM ");
-    if (from == NULL) return 0;
-    from += 6;
-    while (*from == ' ' || *from == '\t') from++;
-    char table_name[64];
+
+    const char* p = skip_space(query);
+    if (!starts_with_ci(p, "SELECT")) return 0;
+    p += 6;
+    p = skip_space(p);
+    if (*p == '\0') return 0;
+
+    /* Locate FROM as a whole word. */
+    const char* from_pos = NULL;
+    const char* q = p;
+    while (*q) {
+        if (starts_with_ci(q, "FROM")) {
+            int preceded_by_ws = (q == p) || is_space(*(q - 1));
+            int followed_by_ws = is_space(*(q + 4)) || *(q + 4) == '\0';
+            if (preceded_by_ws && followed_by_ws) {
+                from_pos = q;
+                break;
+            }
+        }
+        q++;
+    }
+    if (from_pos == NULL) return 0;
+
+    /* Parse comma-separated selected columns between SELECT and FROM. */
+    int has_star = 0;
+    int selected = 0;
+    const char* s = p;
+    while (s < from_pos) {
+        s = skip_space(s);
+        const char* tok_start = s;
+        while (s < from_pos && !is_space(*s) && *s != ',') s++;
+        const char* tok_end = s;
+        while (tok_end > tok_start && is_space(*(tok_end - 1))) tok_end--;
+
+        int tok_len = (int)(tok_end - tok_start);
+        if (tok_len > 0) {
+            if (tok_len == 1 && *tok_start == '*') {
+                has_star = 1;
+            } else if (tok_len == (int)strlen(column_name) &&
+                       strncasecmp(tok_start, column_name, tok_len) == 0) {
+                selected = 1;
+            }
+        }
+
+        s = skip_space(s);
+        if (s < from_pos && *s == ',') {
+            s++;
+        }
+    }
+
+    /* Extract table name after FROM. */
+    const char* t = from_pos + 4;
+    t = skip_space(t);
+    char table_name[MAX_NAME_LEN + 1];
     int i = 0;
-    while (*from && *from != ' ' && *from != '\t' && *from != '\n' && i < 63) {
-        table_name[i++] = *from++;
+    while (*t && !is_space(*t) && i < MAX_NAME_LEN) {
+        table_name[i++] = *t++;
     }
     table_name[i] = '\0';
     if (table_name[0] == '\0') return 0;
 
     Table* table = catalog_find_table(ctx, table_name);
     if (table == NULL) return 0;
+    if (!has_star && !selected) return 0;
+
     for (int c = 0; c < table->column_count; c++) {
         if (strcmp(table->columns[c].name, column_name) == 0) {
             *out_type = table->columns[c].type;
