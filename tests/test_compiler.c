@@ -573,6 +573,33 @@ TEST(compiler_accepts_typed_array_program) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_typechecks_sql_row_field_with_context) {
+    char path[] = "/tmp/mypl_test_compiler_ctx_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx;
+    ctx.db_path = path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    ASSERT_INT_EQ(1, compile_with_context(
+        "proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }",
+        &chunk, error, sizeof(error), &ctx));
+
+    free_chunk(&chunk);
+    catalog_close(&ctx);
+    unlink(path);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -612,5 +639,6 @@ int main(void) {
     RUN_TEST(compiler_rejects_too_many_imports);
     RUN_TEST(compiler_rejects_type_mismatch_in_assignment);
     RUN_TEST(compiler_accepts_typed_array_program);
+    RUN_TEST(compiler_typechecks_sql_row_field_with_context);
     TEST_SUMMARY();
 }

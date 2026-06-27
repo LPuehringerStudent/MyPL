@@ -1,7 +1,9 @@
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "test_harness.h"
 #include "parser.h"
+#include "sql_engine.h"
 #include "typecheck.h"
 
 TEST(typecheck_rejects_string_to_int_assignment) {
@@ -296,6 +298,60 @@ TEST(typecheck_accepts_empty_array_return_with_hint) {
     free_program(program);
 }
 
+TEST(typecheck_resolves_sql_row_field_type) {
+    char db_path[] = "/tmp/mypl_test_typecheck_sql_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
+
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for row in SELECT id FROM users { return row.id; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, &ctx, error, sizeof(error)));
+    free_program(program);
+
+    catalog_close(&ctx);
+    unlink(db_path);
+}
+
+TEST(typecheck_rejects_sql_row_field_type_mismatch) {
+    char db_path[] = "/tmp/mypl_test_typecheck_sql2_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"name"};
+    int types[] = {VAL_STRING};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
+
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for row in SELECT name FROM users { int x = row.name; return x; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, &ctx, error, sizeof(error)));
+    free_program(program);
+
+    catalog_close(&ctx);
+    unlink(db_path);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -332,5 +388,7 @@ int main(void) {
     RUN_TEST(typecheck_accepts_clock);
     RUN_TEST(typecheck_rejects_clock_with_args);
     RUN_TEST(typecheck_accepts_empty_array_return_with_hint);
+    RUN_TEST(typecheck_resolves_sql_row_field_type);
+    RUN_TEST(typecheck_rejects_sql_row_field_type_mismatch);
     TEST_SUMMARY();
 }

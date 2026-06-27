@@ -3,16 +3,23 @@
 #include <string.h>
 #include <stdarg.h>
 
+#include "sql_engine.h"
 #include "typecheck.h"
 
 #define MAX_LOCALS 256
 #define MAX_SCOPES 64
 #define MAX_TRANSIENTS 256
+#define MAX_ROWS 16
 
 typedef struct {
     const char* name;
     Type* type;
 } Local;
+
+typedef struct {
+    const char* var_name;
+    const char* query;  /* pointer to AST-owned query string */
+} RowBinding;
 
 typedef struct {
     Local locals[MAX_LOCALS];
@@ -31,6 +38,8 @@ typedef struct {
     int had_error;
     Type* transient_types[MAX_TRANSIENTS];
     int transient_count;
+    RowBinding rows[MAX_ROWS];
+    int row_count;
 } TypeChecker;
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
@@ -85,6 +94,30 @@ static ProcSignature* resolve_proc(TypeChecker* tc, const char* name) {
         if (strcmp(tc->procs[i].name, name) == 0) return &tc->procs[i];
     }
     return NULL;
+}
+
+static int bind_row(TypeChecker* tc, const char* var_name, const char* query) {
+    if (tc->row_count >= MAX_ROWS) return 0;
+    tc->rows[tc->row_count].var_name = var_name;
+    tc->rows[tc->row_count].query = query;
+    tc->row_count++;
+    return 1;
+}
+
+static RowBinding* find_row(TypeChecker* tc, const char* var_name) {
+    for (int i = tc->row_count - 1; i >= 0; i--) {
+        if (strcmp(tc->rows[i].var_name, var_name) == 0) return &tc->rows[i];
+    }
+    return NULL;
+}
+
+static Type* sql_type_to_type(int sql_type) {
+    switch (sql_type) {
+        case VAL_INT:    return &type_int;
+        case VAL_FLOAT:  return &type_float;
+        case VAL_STRING: return &type_string;
+    }
+    return &type_unknown;
 }
 
 static int types_compatible(Type* expected, Type* actual) {
@@ -374,6 +407,16 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
         }
 
         case EXPR_FIELD: {
+            Type* base = resolve_local(tc, expr->as.field.row);
+            if (base == &type_unknown) {
+                RowBinding* row = find_row(tc, expr->as.field.row);
+                if (row != NULL && tc->ctx != NULL) {
+                    int sql_type;
+                    if (sql_query_column_type(tc->ctx, row->query, expr->as.field.field, &sql_type)) {
+                        return sql_type_to_type(sql_type);
+                    }
+                }
+            }
             return &type_unknown;
         }
     }
@@ -462,12 +505,16 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 type_error(tc, stmt->loc, "Too many nested scopes");
                 return;
             }
-            if (!add_local(tc, stmt->as.for_stmt.var_name, &type_unknown)) {
+            ForStmt* f = &stmt->as.for_stmt;
+            if (tc->ctx != NULL) {
+                bind_row(tc, f->var_name, f->sql_query);
+            }
+            if (!add_local(tc, f->var_name, &type_unknown)) {
                 type_error(tc, stmt->loc, "Too many local variables");
                 pop_scope(tc);
                 return;
             }
-            check_block(tc, stmt->as.for_stmt.body);
+            check_block(tc, f->body);
             pop_scope(tc);
             break;
         }

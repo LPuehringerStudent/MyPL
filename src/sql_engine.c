@@ -1073,6 +1073,50 @@ int sql_exec_ddl(const char* query, Context* ctx) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Column type resolution                                                     */
+/* -------------------------------------------------------------------------- */
+
+static const char* strcasestr_local(const char* haystack, const char* needle) {
+    if (!needle[0]) return haystack;
+    char* h = (char*)haystack;
+    while (*h) {
+        if (tolower((unsigned char)*h) == tolower((unsigned char)*needle)) {
+            const char* n = needle;
+            const char* p = h;
+            while (*n && tolower((unsigned char)*p) == tolower((unsigned char)*n)) { p++; n++; }
+            if (!*n) return h;
+        }
+        h++;
+    }
+    return NULL;
+}
+
+int sql_query_column_type(Context* ctx, const char* query, const char* column_name, int* out_type) {
+    if (ctx == NULL || query == NULL || column_name == NULL || out_type == NULL) return 0;
+    const char* from = strcasestr_local(query, " FROM ");
+    if (from == NULL) return 0;
+    from += 6;
+    while (*from == ' ' || *from == '\t') from++;
+    char table_name[64];
+    int i = 0;
+    while (*from && *from != ' ' && *from != '\t' && *from != '\n' && i < 63) {
+        table_name[i++] = *from++;
+    }
+    table_name[i] = '\0';
+    if (table_name[0] == '\0') return 0;
+
+    Table* table = catalog_find_table(ctx, table_name);
+    if (table == NULL) return 0;
+    for (int c = 0; c < table->column_count; c++) {
+        if (strcmp(table->columns[c].name, column_name) == 0) {
+            *out_type = table->columns[c].type;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Public query API                                                           */
 /* -------------------------------------------------------------------------- */
 

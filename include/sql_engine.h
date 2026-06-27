@@ -66,6 +66,10 @@ Row*    result_next(Result* res);
 void    result_free(Result* res);
 Cell    row_get_field(Row* row, const char* name);
 
+/* Resolve the type of a column in a SELECT query. */
+/* out_type receives one of VAL_INT, VAL_FLOAT, VAL_STRING on success. */
+int sql_query_column_type(Context* ctx, const char* query, const char* column_name, int* out_type);
+
 /* Storage layer */
 #define PAGE_SIZE 4096
 
