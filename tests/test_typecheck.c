@@ -272,6 +272,22 @@ TEST(typecheck_accepts_println) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_clock) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int t = clock(); return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_clock_with_args) {
+    char error[256];
+    Program* program = parse("proc main() -> int { clock(1); return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -305,5 +321,7 @@ int main(void) {
     RUN_TEST(typecheck_accepts_append_matching_type);
     RUN_TEST(typecheck_rejects_append_mismatch);
     RUN_TEST(typecheck_accepts_println);
+    RUN_TEST(typecheck_accepts_clock);
+    RUN_TEST(typecheck_rejects_clock_with_args);
     TEST_SUMMARY();
 }
