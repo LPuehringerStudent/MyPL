@@ -95,6 +95,9 @@ Value value_lt(Value a, Value b);
 Value value_gt(Value a, Value b);
 int   value_is_truthy(Value value);
 
+struct Context;
+
 int compile(const char* source, Chunk* chunk, char* error, size_t error_size);
+int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx);
 
 #endif

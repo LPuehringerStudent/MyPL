@@ -245,7 +245,8 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
                     right != NULL && right->kind == TYPE_STRING) {
                     return &type_string;
                 }
-                if (!type_is_numeric(left) || !type_is_numeric(right)) {
+                if ((left != &type_unknown && !type_is_numeric(left)) ||
+                    (right != &type_unknown && !type_is_numeric(right))) {
                     type_error(tc, expr->loc,
                                "Operands to '%s' must be numeric",
                                op == TOKEN_PLUS ? "+" :
@@ -279,16 +280,16 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr) {
             if (tc->had_error) return NULL;
 
             if (op == TOKEN_MINUS) {
-                if (!type_is_numeric(operand)) {
+                if (operand != &type_unknown && !type_is_numeric(operand)) {
                     type_error(tc, expr->loc,
                                "Operand to '-' must be numeric");
                     return NULL;
                 }
-                return operand;
+                return operand == &type_unknown ? &type_int : operand;
             }
 
             if (op == TOKEN_BANG) {
-                if (operand != NULL &&
+                if (operand != NULL && operand != &type_unknown &&
                     operand->kind != TYPE_BOOL && !type_is_numeric(operand)) {
                     type_error(tc, expr->loc,
                                "Operand to '!' must be bool or numeric");
@@ -383,7 +384,14 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             Type* final_type = declared;
 
             if (stmt->as.var_decl.initializer != NULL) {
-                Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer);
+                Type* init_type = NULL;
+                Expr* init = stmt->as.var_decl.initializer;
+                if (init->kind == EXPR_ARRAY && init->as.array.count == 0 &&
+                    declared != NULL && declared->kind == TYPE_ARRAY) {
+                    init_type = transient_array_type(tc, declared->element_type);
+                } else {
+                    init_type = infer_expr(tc, init);
+                }
                 if (tc->had_error) return;
                 if (init_type == NULL) {
                     type_error(tc, stmt->loc, "Cannot infer type of initializer");
@@ -415,7 +423,14 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                            stmt->as.assign.name);
                 return;
             }
-            Type* rhs = infer_expr(tc, stmt->as.assign.value);
+            Type* rhs = NULL;
+            Expr* value = stmt->as.assign.value;
+            if (value->kind == EXPR_ARRAY && value->as.array.count == 0 &&
+                target != NULL && target->kind == TYPE_ARRAY) {
+                rhs = transient_array_type(tc, target->element_type);
+            } else {
+                rhs = infer_expr(tc, value);
+            }
             if (tc->had_error) return;
             if (!types_assignable(target, rhs)) {
                 type_error(tc, stmt->loc,

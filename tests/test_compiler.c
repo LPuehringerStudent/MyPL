@@ -54,7 +54,7 @@ TEST(compiler_compiles_arithmetic) {
 TEST(compiler_compiles_comparison) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return 5 == 5; }", &chunk, NULL, 0));
+    ASSERT_INT_EQ(1, compile("proc main() -> bool { return 5 == 5; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -114,7 +114,7 @@ TEST(compiler_compiles_unary_minus) {
 TEST(compiler_compiles_unary_not) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return !0; }", &chunk, NULL, 0));
+    ASSERT_INT_EQ(1, compile("proc main() -> bool { return !0; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -126,7 +126,7 @@ TEST(compiler_compiles_unary_not) {
 TEST(compiler_compiles_unary_not_true) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return !1; }", &chunk, NULL, 0));
+    ASSERT_INT_EQ(1, compile("proc main() -> bool { return !1; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -335,7 +335,9 @@ TEST(compiler_returns_error_message_for_undefined_variable) {
     init_chunk(&chunk);
     char error[256];
     ASSERT_INT_EQ(0, compile("proc main() -> int { return unknown; }", &chunk, error, sizeof(error)));
-    ASSERT_STRING_EQ("Undefined variable 'unknown'", error);
+    if (strstr(error, "Undefined variable 'unknown'") == NULL) {
+        FAIL("expected undefined variable error");
+    }
     free_chunk(&chunk);
 }
 
@@ -364,7 +366,7 @@ TEST(compiler_compiles_print_string_statement) {
 TEST(compiler_compiles_bool_literal) {
     Chunk chunk;
     init_chunk(&chunk);
-    ASSERT_INT_EQ(1, compile("proc main() -> int { return true; }", &chunk, NULL, 0));
+    ASSERT_INT_EQ(1, compile("proc main() -> bool { return true; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -548,6 +550,25 @@ TEST(compiler_rejects_too_many_imports) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_rejects_type_mismatch_in_assignment) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    ASSERT_INT_EQ(0, compile("proc main() -> int { int x = \"hello\"; return 0; }", &chunk, error, sizeof(error)));
+    free_chunk(&chunk);
+}
+
+TEST(compiler_accepts_typed_array_program) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { array<int> a = [1, 2]; return a[0]; }", &chunk, NULL, 0));
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -585,5 +606,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_imported_procedure);
     RUN_TEST(compiler_reports_original_error_for_bad_import);
     RUN_TEST(compiler_rejects_too_many_imports);
+    RUN_TEST(compiler_rejects_type_mismatch_in_assignment);
+    RUN_TEST(compiler_accepts_typed_array_program);
     TEST_SUMMARY();
 }

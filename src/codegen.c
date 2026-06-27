@@ -6,6 +6,7 @@
 #include "natives.h"
 #include "os.h"
 #include "parser.h"
+#include "typecheck.h"
 
 #define MAX_LOCALS 256
 #define MAX_PROCS 256
@@ -22,6 +23,9 @@ typedef struct {
 typedef struct {
     const char* name;
     int offset;
+    Type* return_type;
+    Type** param_types;
+    int param_count;
 } ProcEntry;
 
 typedef struct {
@@ -46,21 +50,44 @@ typedef struct {
     int loaded_count;
     const char* loading_stack[MAX_LOADING];
     int loading_count;
+    struct Context* ctx;
 } Compiler;
 
-static int add_proc_entry(Compiler* compiler, const char* name, int offset) {
+static int add_proc_entry(Compiler* compiler, const char* name, int offset,
+                          Type* return_type, Type** param_types, int param_count) {
     if (compiler->proc_count >= MAX_PROCS) return -1;
     for (int i = 0; i < compiler->proc_count; i++) {
-        if (strcmp(compiler->procs[i].name, name) == 0) {
-            return -2;
+        if (strcmp(compiler->procs[i].name, name) == 0) return -2;
+    }
+    char* name_copy = malloc(strlen(name) + 1);
+    if (name_copy == NULL) return -1;
+    strcpy(name_copy, name);
+    Type* rt_copy = type_copy(return_type);
+    Type** pt_copy = NULL;
+    if (param_count > 0) {
+        pt_copy = malloc(sizeof(Type*) * (size_t)param_count);
+        if (pt_copy == NULL) { free(name_copy); type_free(rt_copy); return -1; }
+        for (int i = 0; i < param_count; i++) {
+            pt_copy[i] = type_copy(param_types[i]);
         }
     }
-    char* copy = malloc(strlen(name) + 1);
-    if (copy == NULL) return -1;
-    strcpy(copy, name);
-    compiler->procs[compiler->proc_count].name = copy;
+    compiler->procs[compiler->proc_count].name = name_copy;
     compiler->procs[compiler->proc_count].offset = offset;
+    compiler->procs[compiler->proc_count].return_type = rt_copy;
+    compiler->procs[compiler->proc_count].param_types = pt_copy;
+    compiler->procs[compiler->proc_count].param_count = param_count;
     return compiler->proc_count++;
+}
+
+static void free_proc_entries(Compiler* compiler) {
+    for (int i = 0; i < compiler->proc_count; i++) {
+        free((void*)compiler->procs[i].name);
+        type_free(compiler->procs[i].return_type);
+        for (int p = 0; p < compiler->procs[i].param_count; p++) {
+            type_free(compiler->procs[i].param_types[p]);
+        }
+        free(compiler->procs[i].param_types);
+    }
 }
 
 static int add_call_patch(Compiler* compiler, const char* name, int offset) {
@@ -149,7 +176,7 @@ static void patch_call(Chunk* chunk, int offset, int target) {
 static void emit_call(Compiler* compiler, const char* name, int arg_count) {
     emit_byte(compiler, OP_CALL);
     int idx = find_proc(compiler, name);
-    if (idx >= 0) {
+    if (idx >= 0 && compiler->procs[idx].offset >= 0) {
         emit_u16(compiler, (uint16_t)compiler->procs[idx].offset);
     } else {
         if (!add_call_patch(compiler, name, compiler->chunk->count)) {
@@ -530,10 +557,16 @@ static int compiler_compile_source(Compiler* compiler, const char* source, int i
 
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
-        int proc_idx = add_proc_entry(compiler, proc->name, compiler->chunk->count);
-        if (proc_idx < 0) {
+        Type** pts = NULL;
+        if (proc->param_count > 0) {
+            pts = malloc(sizeof(Type*) * (size_t)proc->param_count);
+            for (int p = 0; p < proc->param_count; p++) pts[p] = proc->params[p].type;
+        }
+        int idx = add_proc_entry(compiler, proc->name, -1, proc->return_type, pts, proc->param_count);
+        free(pts);
+        if (idx < 0) {
             if (error != NULL && error_size > 0) {
-                if (proc_idx == -2) {
+                if (idx == -2) {
                     snprintf(error, error_size, "Duplicate procedure '%s'", proc->name);
                 } else {
                     strncpy(error, "too many procedures", error_size - 1);
@@ -544,11 +577,39 @@ static int compiler_compile_source(Compiler* compiler, const char* source, int i
             return 0;
         }
         if (is_main && strcmp(proc->name, "main") == 0) {
-            compiler->entry_index = proc_idx;
+            compiler->entry_index = idx;
         }
+    }
+
+    ProcSignature* sigs = malloc(sizeof(ProcSignature) * (size_t)compiler->proc_count);
+    if (sigs == NULL) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "out of memory", error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        free_program(program);
+        return 0;
+    }
+    for (int i = 0; i < compiler->proc_count; i++) {
+        sigs[i].name = compiler->procs[i].name;
+        sigs[i].return_type = compiler->procs[i].return_type;
+        sigs[i].param_types = compiler->procs[i].param_types;
+        sigs[i].param_count = compiler->procs[i].param_count;
+    }
+
+    if (!typecheck_program(program, sigs, compiler->proc_count, compiler->ctx, error, error_size)) {
+        free(sigs);
+        free_program(program);
+        return 0;
+    }
+    free(sigs);
+
+    for (int i = 0; i < program->proc_count; i++) {
+        ProcDecl* proc = &program->procs[i];
+        int idx = find_proc(compiler, proc->name);
+        compiler->procs[idx].offset = compiler->chunk->count;
         for (int p = 0; p < proc->param_count; p++) {
-            Param* param = &proc->params[p];
-            add_local(compiler, param->name, (int)strlen(param->name));
+            add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name));
         }
         compile_block(compiler, proc->body);
         if (compiler->had_error) {
@@ -561,13 +622,14 @@ static int compiler_compile_source(Compiler* compiler, const char* source, int i
         }
         emit_byte(compiler, OP_RETURN);
         compiler->local_count = 0;
+        compiler->scope_depth = 0;
     }
 
     free_program(program);
     return 1;
 }
 
-int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
+int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx) {
     Compiler compiler;
     compiler.chunk = chunk;
     compiler.local_count = 0;
@@ -579,6 +641,7 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
     compiler.entry_index = -1;
     compiler.loaded_count = 0;
     compiler.loading_count = 0;
+    compiler.ctx = ctx;
 
     if (chunk->count == 0) {
         emit_byte(&compiler, OP_CALL);
@@ -591,7 +654,7 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
     }
 
     if (!compiler_compile_source(&compiler, source, 1, error, error_size)) {
-        for (int i = 0; i < compiler.proc_count; i++) free((void*)compiler.procs[i].name);
+        free_proc_entries(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
         return 0;
@@ -602,7 +665,7 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
             strncpy(error, "No main procedure", error_size - 1);
             error[error_size - 1] = '\0';
         }
-        for (int i = 0; i < compiler.proc_count; i++) free((void*)compiler.procs[i].name);
+        free_proc_entries(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
         return 0;
@@ -616,7 +679,7 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
             if (error != NULL && error_size > 0) {
                 snprintf(error, error_size, "Undefined procedure '%s'", compiler.patches[i].name);
             }
-            for (int j = 0; j < compiler.proc_count; j++) free((void*)compiler.procs[j].name);
+            free_proc_entries(&compiler);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);
             for (int j = 0; j < compiler.loaded_count; j++) free(compiler.loaded_paths[j]);
             return 0;
@@ -624,8 +687,12 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
         patch_call(chunk, compiler.patches[i].offset, compiler.procs[idx].offset);
     }
 
-    for (int i = 0; i < compiler.proc_count; i++) free((void*)compiler.procs[i].name);
+    free_proc_entries(&compiler);
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
     for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
     return 1;
+}
+
+int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
+    return compile_with_context(source, chunk, error, error_size, NULL);
 }
