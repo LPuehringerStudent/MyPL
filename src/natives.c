@@ -116,7 +116,7 @@ static int native_contains(VM* vm, int argc, Value* argv, Value* out) {
     }
     const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
     const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
-    *out = value_int(strstr(hay, needle) != NULL ? 1 : 0);
+    *out = value_bool(strstr(hay, needle) != NULL);
     return 1;
 }
 
@@ -217,15 +217,11 @@ static int native_int_to_string(VM* vm, int argc, Value* argv, Value* out) {
 static int native_float_to_string(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
-    double n;
-    if (argv[0].type == VAL_FLOAT) {
-        n = argv[0].as.as_float;
-    } else if (argv[0].type == VAL_INT) {
-        n = (double)argv[0].as.as_int;
-    } else {
+    if (argv[0].type != VAL_FLOAT) {
         vm_set_error(vm, "float_to_string expects a float");
         return 0;
     }
+    double n = argv[0].as.as_float;
     char* buf = malloc(64);
     if (buf == NULL) {
         vm_set_error(vm, "Out of memory");

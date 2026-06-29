@@ -162,6 +162,57 @@ TEST(natives_float_to_string_formats_g) {
     ASSERT_STRING_EQ("3.5", out.as.as_string);
 }
 
+TEST(natives_contains_rejects_non_strings) {
+    Value argv[2];
+    argv[0] = value_int(1);
+    argv[1] = value_string(strdup("x"));
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("contains", 2, argv, &out));
+}
+
+TEST(natives_index_of_rejects_non_strings) {
+    Value argv[2];
+    argv[0] = value_string(strdup("x"));
+    argv[1] = value_float(1.5);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("index_of", 2, argv, &out));
+}
+
+TEST(natives_to_upper_rejects_non_string) {
+    Value argv[1];
+    argv[0] = value_int(42);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("to_upper", 1, argv, &out));
+}
+
+TEST(natives_to_lower_rejects_non_string) {
+    Value argv[1];
+    argv[0] = value_float(1.5);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("to_lower", 1, argv, &out));
+}
+
+TEST(natives_trim_rejects_non_string) {
+    Value argv[1];
+    argv[0] = value_int(0);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("trim", 1, argv, &out));
+}
+
+TEST(natives_int_to_string_rejects_non_int) {
+    Value argv[1];
+    argv[0] = value_string(strdup("42"));
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("int_to_string", 1, argv, &out));
+}
+
+TEST(natives_float_to_string_rejects_non_float) {
+    Value argv[1];
+    argv[0] = value_int(42);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("float_to_string", 1, argv, &out));
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -180,5 +231,12 @@ int main(void) {
     RUN_TEST(natives_trim_strips_whitespace);
     RUN_TEST(natives_int_to_string_formats_decimal);
     RUN_TEST(natives_float_to_string_formats_g);
+    RUN_TEST(natives_contains_rejects_non_strings);
+    RUN_TEST(natives_index_of_rejects_non_strings);
+    RUN_TEST(natives_to_upper_rejects_non_string);
+    RUN_TEST(natives_to_lower_rejects_non_string);
+    RUN_TEST(natives_trim_rejects_non_string);
+    RUN_TEST(natives_int_to_string_rejects_non_int);
+    RUN_TEST(natives_float_to_string_rejects_non_float);
     TEST_SUMMARY();
 }
