@@ -197,6 +197,45 @@ static int native_trim(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_int_to_string(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT) {
+        vm_set_error(vm, "int_to_string expects an int");
+        return 0;
+    }
+    char* buf = malloc(32);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    snprintf(buf, 32, "%d", argv[0].as.as_int);
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_float_to_string(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    double n;
+    if (argv[0].type == VAL_FLOAT) {
+        n = argv[0].as.as_float;
+    } else if (argv[0].type == VAL_INT) {
+        n = (double)argv[0].as.as_int;
+    } else {
+        vm_set_error(vm, "float_to_string expects a float");
+        return 0;
+    }
+    char* buf = malloc(64);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    snprintf(buf, 64, "%g", n);
+    *out = value_string(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -209,6 +248,8 @@ static NativeDef natives[] = {
     {"to_upper", 1, native_to_upper},
     {"to_lower", 1, native_to_lower},
     {"trim",    1, native_trim},
+    {"int_to_string", 1, native_int_to_string},
+    {"float_to_string", 1, native_float_to_string},
     {NULL,      0, NULL}
 };
 

@@ -146,6 +146,22 @@ TEST(natives_trim_strips_whitespace) {
     ASSERT_STRING_EQ("hello world", out.as.as_string);
 }
 
+TEST(natives_int_to_string_formats_decimal) {
+    Value argv[1];
+    argv[0] = value_int(-42);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("int_to_string", 1, argv, &out));
+    ASSERT_STRING_EQ("-42", out.as.as_string);
+}
+
+TEST(natives_float_to_string_formats_g) {
+    Value argv[1];
+    argv[0] = value_float(3.5);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("float_to_string", 1, argv, &out));
+    ASSERT_STRING_EQ("3.5", out.as.as_string);
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -162,5 +178,7 @@ int main(void) {
     RUN_TEST(natives_to_upper_converts_ascii);
     RUN_TEST(natives_to_lower_converts_ascii);
     RUN_TEST(natives_trim_strips_whitespace);
+    RUN_TEST(natives_int_to_string_formats_decimal);
+    RUN_TEST(natives_float_to_string_formats_g);
     TEST_SUMMARY();
 }
