@@ -422,6 +422,46 @@ TEST(typecheck_rejects_field_on_non_row_variable) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_string_concat) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = \"a\" + \"b\"; return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_string_plus_int) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = \"a\" + 1; return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_string_comparison) {
+    char error[256];
+    Program* program = parse("proc main() -> bool { bool b = \"a\" < \"b\"; return b; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_length_on_string) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int n = length(\"hello\"); return n; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_concat_with_int) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = concat(\"a\", 1); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -464,5 +504,10 @@ int main(void) {
     RUN_TEST(typecheck_accepts_row_field_with_select_star);
     RUN_TEST(typecheck_rejects_field_on_undefined_variable);
     RUN_TEST(typecheck_rejects_field_on_non_row_variable);
+    RUN_TEST(typecheck_accepts_string_concat);
+    RUN_TEST(typecheck_rejects_string_plus_int);
+    RUN_TEST(typecheck_accepts_string_comparison);
+    RUN_TEST(typecheck_accepts_length_on_string);
+    RUN_TEST(typecheck_rejects_concat_with_int);
     TEST_SUMMARY();
 }
