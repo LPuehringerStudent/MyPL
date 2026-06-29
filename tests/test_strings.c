@@ -39,9 +39,19 @@ TEST(strings_value_gt_compares_lexicographically) {
     ASSERT_INT_EQ(1, value_gt(b, a).as.as_int);
 }
 
+TEST(natives_length_accepts_strings) {
+    Value argv[1];
+    argv[0] = value_string(strdup("hello"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("length", 1, argv, &out));
+    ASSERT_INT_EQ(VAL_INT, out.type);
+    ASSERT_INT_EQ(5, out.as.as_int);
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
     RUN_TEST(strings_value_gt_compares_lexicographically);
+    RUN_TEST(natives_length_accepts_strings);
     TEST_SUMMARY();
 }

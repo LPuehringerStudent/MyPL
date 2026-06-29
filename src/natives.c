@@ -16,12 +16,17 @@ typedef struct {
 static int native_length(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
-    if (argv[0].type != VAL_ARRAY) {
-        vm_set_error(vm, "length expects an array");
-        return 0;
+    if (argv[0].type == VAL_ARRAY) {
+        *out = value_int(array_length(argv[0].as.as_array));
+        return 1;
     }
-    *out = value_int(array_length(argv[0].as.as_array));
-    return 1;
+    if (argv[0].type == VAL_STRING) {
+        const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+        *out = value_int((int)strlen(s));
+        return 1;
+    }
+    vm_set_error(vm, "length expects a string or array");
+    return 0;
 }
 
 static int native_append(VM* vm, int argc, Value* argv, Value* out) {
