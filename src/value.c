@@ -62,6 +62,15 @@ static double as_number(Value v) {
 }
 
 Value value_add(Value a, Value b) {
+    if (a.type == VAL_STRING && b.type == VAL_STRING) {
+        const char* as = a.as.as_string ? a.as.as_string : "";
+        const char* bs = b.as.as_string ? b.as.as_string : "";
+        size_t len = strlen(as) + strlen(bs) + 1;
+        char* buf = malloc(len);
+        if (buf == NULL) return value_int(0);
+        snprintf(buf, len, "%s%s", as, bs);
+        return value_string(buf);
+    }
     if (either_float(a, b)) {
         return value_float(as_number(a) + as_number(b));
     }
