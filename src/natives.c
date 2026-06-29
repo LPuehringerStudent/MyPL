@@ -1,5 +1,6 @@
 #include "natives.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -106,6 +107,33 @@ static int native_substring(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_contains(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "contains expects two strings");
+        return 0;
+    }
+    const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
+    *out = value_int(strstr(hay, needle) != NULL ? 1 : 0);
+    return 1;
+}
+
+static int native_index_of(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "index_of expects two strings");
+        return 0;
+    }
+    const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
+    const char* found = strstr(hay, needle);
+    *out = value_int(found != NULL ? (int)(found - hay) : -1);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -113,6 +141,8 @@ static NativeDef natives[] = {
     {"clock",   0, native_clock},
     {"concat",  2, native_concat},
     {"substring", 3, native_substring},
+    {"contains", 2, native_contains},
+    {"index_of", 2, native_index_of},
     {NULL,      0, NULL}
 };
 

@@ -86,6 +86,42 @@ TEST(natives_substring_clamps_out_of_range) {
     ASSERT_STRING_EQ("i", out.as.as_string);
 }
 
+TEST(natives_contains_finds_substring) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello world"));
+    argv[1] = value_string(strdup("world"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("contains", 2, argv, &out));
+    ASSERT_INT_EQ(1, out.as.as_int);
+}
+
+TEST(natives_contains_returns_false_when_missing) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello"));
+    argv[1] = value_string(strdup("x"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("contains", 2, argv, &out));
+    ASSERT_INT_EQ(0, out.as.as_int);
+}
+
+TEST(natives_index_of_returns_first_index) {
+    Value argv[2];
+    argv[0] = value_string(strdup("banana"));
+    argv[1] = value_string(strdup("na"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("index_of", 2, argv, &out));
+    ASSERT_INT_EQ(2, out.as.as_int);
+}
+
+TEST(natives_index_of_returns_minus_one_when_missing) {
+    Value argv[2];
+    argv[0] = value_string(strdup("abc"));
+    argv[1] = value_string(strdup("z"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("index_of", 2, argv, &out));
+    ASSERT_INT_EQ(-1, out.as.as_int);
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -95,5 +131,9 @@ int main(void) {
     RUN_TEST(natives_concat_rejects_non_strings);
     RUN_TEST(natives_substring_extracts_substring);
     RUN_TEST(natives_substring_clamps_out_of_range);
+    RUN_TEST(natives_contains_finds_substring);
+    RUN_TEST(natives_contains_returns_false_when_missing);
+    RUN_TEST(natives_index_of_returns_first_index);
+    RUN_TEST(natives_index_of_returns_minus_one_when_missing);
     TEST_SUMMARY();
 }
