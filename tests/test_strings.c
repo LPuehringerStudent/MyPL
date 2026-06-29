@@ -25,7 +25,23 @@ TEST(strings_value_add_concatenates) {
     ASSERT_STRING_EQ("hello world", result.as.as_string);
 }
 
+TEST(strings_value_lt_compares_lexicographically) {
+    Value a = value_string(strdup("apple"));
+    Value b = value_string(strdup("banana"));
+    ASSERT_INT_EQ(1, value_lt(a, b).as.as_int);
+    ASSERT_INT_EQ(0, value_lt(b, a).as.as_int);
+}
+
+TEST(strings_value_gt_compares_lexicographically) {
+    Value a = value_string(strdup("apple"));
+    Value b = value_string(strdup("banana"));
+    ASSERT_INT_EQ(0, value_gt(a, b).as.as_int);
+    ASSERT_INT_EQ(1, value_gt(b, a).as.as_int);
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
+    RUN_TEST(strings_value_lt_compares_lexicographically);
+    RUN_TEST(strings_value_gt_compares_lexicographically);
     TEST_SUMMARY();
 }

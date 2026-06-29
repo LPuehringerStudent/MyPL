@@ -135,6 +135,11 @@ Value value_eq(Value a, Value b) {
 }
 
 Value value_lt(Value a, Value b) {
+    if (a.type == VAL_STRING && b.type == VAL_STRING) {
+        const char* as = a.as.as_string ? a.as.as_string : "";
+        const char* bs = b.as.as_string ? b.as.as_string : "";
+        return value_int(strcmp(as, bs) < 0 ? 1 : 0);
+    }
     if (a.type == VAL_BOOL && b.type == VAL_BOOL) {
         return value_int(a.as.as_int < b.as.as_int ? 1 : 0);
     }
@@ -151,6 +156,11 @@ Value value_lt(Value a, Value b) {
 }
 
 Value value_gt(Value a, Value b) {
+    if (a.type == VAL_STRING && b.type == VAL_STRING) {
+        const char* as = a.as.as_string ? a.as.as_string : "";
+        const char* bs = b.as.as_string ? b.as.as_string : "";
+        return value_int(strcmp(as, bs) > 0 ? 1 : 0);
+    }
     if (a.type == VAL_BOOL && b.type == VAL_BOOL) {
         return value_int(a.as.as_int > b.as.as_int ? 1 : 0);
     }
