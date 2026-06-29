@@ -66,6 +66,26 @@ TEST(natives_concat_rejects_non_strings) {
     ASSERT_INT_EQ(0, run_native_string("concat", 2, argv, &out));
 }
 
+TEST(natives_substring_extracts_substring) {
+    Value argv[3];
+    argv[0] = value_string(strdup("hello"));
+    argv[1] = value_int(1);
+    argv[2] = value_int(3);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("substring", 3, argv, &out));
+    ASSERT_STRING_EQ("ell", out.as.as_string);
+}
+
+TEST(natives_substring_clamps_out_of_range) {
+    Value argv[3];
+    argv[0] = value_string(strdup("hi"));
+    argv[1] = value_int(1);
+    argv[2] = value_int(100);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("substring", 3, argv, &out));
+    ASSERT_STRING_EQ("i", out.as.as_string);
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -73,5 +93,7 @@ int main(void) {
     RUN_TEST(natives_length_accepts_strings);
     RUN_TEST(natives_concat_returns_concatenated_string);
     RUN_TEST(natives_concat_rejects_non_strings);
+    RUN_TEST(natives_substring_extracts_substring);
+    RUN_TEST(natives_substring_clamps_out_of_range);
     TEST_SUMMARY();
 }

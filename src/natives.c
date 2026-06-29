@@ -80,12 +80,39 @@ static int native_concat(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_substring(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT || argv[2].type != VAL_INT) {
+        vm_set_error(vm, "substring expects (string, int, int)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int len_s = (int)strlen(s);
+    int start = argv[1].as.as_int;
+    int len = argv[2].as.as_int;
+    if (start < 0) start = 0;
+    if (start > len_s) start = len_s;
+    if (len < 0) len = 0;
+    if (start + len > len_s) len = len_s - start;
+    char* buf = malloc((size_t)len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    memcpy(buf, s + start, len);
+    buf[len] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
     {"println", 1, native_println},
     {"clock",   0, native_clock},
     {"concat",  2, native_concat},
+    {"substring", 3, native_substring},
     {NULL,      0, NULL}
 };
 
