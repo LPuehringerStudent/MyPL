@@ -48,10 +48,30 @@ TEST(natives_length_accepts_strings) {
     ASSERT_INT_EQ(5, out.as.as_int);
 }
 
+TEST(natives_concat_returns_concatenated_string) {
+    Value argv[2];
+    argv[0] = value_string(strdup("Hello, "));
+    argv[1] = value_string(strdup("world!"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("concat", 2, argv, &out));
+    ASSERT_INT_EQ(VAL_STRING, out.type);
+    ASSERT_STRING_EQ("Hello, world!", out.as.as_string);
+}
+
+TEST(natives_concat_rejects_non_strings) {
+    Value argv[2];
+    argv[0] = value_string(strdup("x"));
+    argv[1] = value_int(1);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("concat", 2, argv, &out));
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
     RUN_TEST(strings_value_gt_compares_lexicographically);
     RUN_TEST(natives_length_accepts_strings);
+    RUN_TEST(natives_concat_returns_concatenated_string);
+    RUN_TEST(natives_concat_rejects_non_strings);
     TEST_SUMMARY();
 }

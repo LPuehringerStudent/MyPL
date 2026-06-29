@@ -60,11 +60,32 @@ static int native_clock(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_concat(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "concat expects two strings");
+        return 0;
+    }
+    const char* a = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* b = argv[1].as.as_string ? argv[1].as.as_string : "";
+    size_t len = strlen(a) + strlen(b) + 1;
+    char* buf = malloc(len);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    snprintf(buf, len, "%s%s", a, b);
+    *out = value_string(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
     {"println", 1, native_println},
     {"clock",   0, native_clock},
+    {"concat",  2, native_concat},
     {NULL,      0, NULL}
 };
 
