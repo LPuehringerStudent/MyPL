@@ -122,6 +122,30 @@ TEST(natives_index_of_returns_minus_one_when_missing) {
     ASSERT_INT_EQ(-1, out.as.as_int);
 }
 
+TEST(natives_to_upper_converts_ascii) {
+    Value argv[1];
+    argv[0] = value_string(strdup("Hello"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("to_upper", 1, argv, &out));
+    ASSERT_STRING_EQ("HELLO", out.as.as_string);
+}
+
+TEST(natives_to_lower_converts_ascii) {
+    Value argv[1];
+    argv[0] = value_string(strdup("Hello"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("to_lower", 1, argv, &out));
+    ASSERT_STRING_EQ("hello", out.as.as_string);
+}
+
+TEST(natives_trim_strips_whitespace) {
+    Value argv[1];
+    argv[0] = value_string(strdup("  hello world  "));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("trim", 1, argv, &out));
+    ASSERT_STRING_EQ("hello world", out.as.as_string);
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -135,5 +159,8 @@ int main(void) {
     RUN_TEST(natives_contains_returns_false_when_missing);
     RUN_TEST(natives_index_of_returns_first_index);
     RUN_TEST(natives_index_of_returns_minus_one_when_missing);
+    RUN_TEST(natives_to_upper_converts_ascii);
+    RUN_TEST(natives_to_lower_converts_ascii);
+    RUN_TEST(natives_trim_strips_whitespace);
     TEST_SUMMARY();
 }

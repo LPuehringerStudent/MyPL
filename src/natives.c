@@ -134,6 +134,69 @@ static int native_index_of(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_to_upper(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "to_upper expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    char* buf = strdup(s);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (char* p = buf; *p; p++) {
+        if (*p >= 'a' && *p <= 'z') *p -= 32;
+    }
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_to_lower(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "to_lower expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    char* buf = strdup(s);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (char* p = buf; *p; p++) {
+        if (*p >= 'A' && *p <= 'Z') *p += 32;
+    }
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_trim(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "trim expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    while (isspace((unsigned char)*s)) s++;
+    const char* end = s + strlen(s);
+    while (end > s && isspace((unsigned char)*(end - 1))) end--;
+    size_t len = (size_t)(end - s);
+    char* buf = malloc(len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    memcpy(buf, s, len);
+    buf[len] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -143,6 +206,9 @@ static NativeDef natives[] = {
     {"substring", 3, native_substring},
     {"contains", 2, native_contains},
     {"index_of", 2, native_index_of},
+    {"to_upper", 1, native_to_upper},
+    {"to_lower", 1, native_to_lower},
+    {"trim",    1, native_trim},
     {NULL,      0, NULL}
 };
 
