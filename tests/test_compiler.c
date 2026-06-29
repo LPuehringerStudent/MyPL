@@ -600,6 +600,90 @@ TEST(compiler_typechecks_sql_row_field_with_context) {
     unlink(path);
 }
 
+TEST(compiler_compiles_string_concatenation) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> string { return \"a\" + \"b\"; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("ab", result.as.as_string);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_string_comparison) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> bool { return \"a\" < \"b\"; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_string_length) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return length(\"hello\"); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(5, result.as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_concat_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> string { return concat(\"x\", \"y\"); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("xy", result.as.as_string);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_substring_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> string { return substring(\"hello\", 1, 3); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("ell", result.as.as_string);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_int_to_string_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> string { return int_to_string(42); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("42", result.as.as_string);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -640,5 +724,11 @@ int main(void) {
     RUN_TEST(compiler_rejects_type_mismatch_in_assignment);
     RUN_TEST(compiler_accepts_typed_array_program);
     RUN_TEST(compiler_typechecks_sql_row_field_with_context);
+    RUN_TEST(compiler_compiles_string_concatenation);
+    RUN_TEST(compiler_compiles_string_comparison);
+    RUN_TEST(compiler_compiles_string_length);
+    RUN_TEST(compiler_compiles_concat_native);
+    RUN_TEST(compiler_compiles_substring_native);
+    RUN_TEST(compiler_compiles_int_to_string_native);
     TEST_SUMMARY();
 }
