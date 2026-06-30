@@ -10,6 +10,23 @@ int os_file_exists(const char* path) {
     return stat(path, &st) == 0;
 }
 
+int os_write_file(const char* path, const char* contents, size_t len) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return 0;
+
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = write(fd, contents + total, len - total);
+        if (n < 0) {
+            close(fd);
+            return 0;
+        }
+        total += (size_t)n;
+    }
+    close(fd);
+    return 1;
+}
+
 char* os_read_file(const char* path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;

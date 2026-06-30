@@ -213,6 +213,149 @@ TEST(natives_float_to_string_rejects_non_float) {
     ASSERT_INT_EQ(0, run_native_string("float_to_string", 1, argv, &out));
 }
 
+TEST(natives_split_splits_by_delimiter) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_string(strdup("a,b,c"));
+    argv[1] = value_string(strdup(","));
+    Value out;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("split"), 2, argv, &out));
+    ASSERT_INT_EQ(VAL_ARRAY, out.type);
+    ASSERT_INT_EQ(3, array_length(out.as.as_array));
+    ASSERT_STRING_EQ("a", array_get(out.as.as_array, 0).as.as_string);
+    ASSERT_STRING_EQ("b", array_get(out.as.as_array, 1).as.as_string);
+    ASSERT_STRING_EQ("c", array_get(out.as.as_array, 2).as.as_string);
+    vm_free(vm);
+}
+
+TEST(natives_split_returns_single_part_when_delimiter_missing) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_string(strdup("abc"));
+    argv[1] = value_string(strdup(","));
+    Value out;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("split"), 2, argv, &out));
+    ASSERT_INT_EQ(VAL_ARRAY, out.type);
+    ASSERT_INT_EQ(1, array_length(out.as.as_array));
+    ASSERT_STRING_EQ("abc", array_get(out.as.as_array, 0).as.as_string);
+    vm_free(vm);
+}
+
+TEST(natives_split_rejects_empty_delimiter) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_string(strdup("abc"));
+    argv[1] = value_string(strdup(""));
+    Value out;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("split"), 2, argv, &out));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_split_rejects_non_string_arguments) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(1);
+    argv[1] = value_string(strdup(","));
+    Value out;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("split"), 2, argv, &out));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_join_combines_parts) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_string(strdup("a")));
+    array_append(arr, value_string(strdup("b")));
+    array_append(arr, value_string(strdup("c")));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_string(strdup("-"));
+    Value out;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("join"), 2, argv, &out));
+    ASSERT_INT_EQ(VAL_STRING, out.type);
+    ASSERT_STRING_EQ("a-b-c", out.as.as_string);
+    vm_free(vm);
+}
+
+TEST(natives_join_rejects_non_array) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(1);
+    argv[1] = value_string(strdup("-"));
+    Value out;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("join"), 2, argv, &out));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_join_rejects_non_string_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_string(strdup("-"));
+    Value out;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("join"), 2, argv, &out));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_replace_replaces_all_occurrences) {
+    Value argv[3];
+    argv[0] = value_string(strdup("hello world world"));
+    argv[1] = value_string(strdup("world"));
+    argv[2] = value_string(strdup("mypl"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("replace", 3, argv, &out));
+    ASSERT_STRING_EQ("hello mypl mypl", out.as.as_string);
+}
+
+TEST(natives_replace_rejects_non_strings) {
+    Value argv[3];
+    argv[0] = value_string(strdup("x"));
+    argv[1] = value_int(1);
+    argv[2] = value_string(strdup("y"));
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("replace", 3, argv, &out));
+}
+
+TEST(natives_repeat_repeats_string) {
+    Value argv[2];
+    argv[0] = value_string(strdup("ab"));
+    argv[1] = value_int(3);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("repeat", 2, argv, &out));
+    ASSERT_STRING_EQ("ababab", out.as.as_string);
+}
+
+TEST(natives_repeat_returns_empty_for_zero_count) {
+    Value argv[2];
+    argv[0] = value_string(strdup("x"));
+    argv[1] = value_int(0);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("repeat", 2, argv, &out));
+    ASSERT_STRING_EQ("", out.as.as_string);
+}
+
+TEST(natives_repeat_rejects_non_string) {
+    Value argv[2];
+    argv[0] = value_int(1);
+    argv[1] = value_int(3);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("repeat", 2, argv, &out));
+}
+
+TEST(natives_repeat_rejects_non_int_count) {
+    Value argv[2];
+    argv[0] = value_string(strdup("x"));
+    argv[1] = value_float(3.0);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("repeat", 2, argv, &out));
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -238,5 +381,18 @@ int main(void) {
     RUN_TEST(natives_trim_rejects_non_string);
     RUN_TEST(natives_int_to_string_rejects_non_int);
     RUN_TEST(natives_float_to_string_rejects_non_float);
+    RUN_TEST(natives_split_splits_by_delimiter);
+    RUN_TEST(natives_split_returns_single_part_when_delimiter_missing);
+    RUN_TEST(natives_split_rejects_empty_delimiter);
+    RUN_TEST(natives_split_rejects_non_string_arguments);
+    RUN_TEST(natives_join_combines_parts);
+    RUN_TEST(natives_join_rejects_non_array);
+    RUN_TEST(natives_join_rejects_non_string_element);
+    RUN_TEST(natives_replace_replaces_all_occurrences);
+    RUN_TEST(natives_replace_rejects_non_strings);
+    RUN_TEST(natives_repeat_repeats_string);
+    RUN_TEST(natives_repeat_returns_empty_for_zero_count);
+    RUN_TEST(natives_repeat_rejects_non_string);
+    RUN_TEST(natives_repeat_rejects_non_int_count);
     TEST_SUMMARY();
 }

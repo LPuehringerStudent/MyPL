@@ -192,7 +192,14 @@ static int is_native(const char* name) {
            strcmp(name, "min_int") == 0 ||
            strcmp(name, "max_int") == 0 ||
            strcmp(name, "min_float") == 0 ||
-           strcmp(name, "max_float") == 0;
+           strcmp(name, "max_float") == 0 ||
+           strcmp(name, "read_file") == 0 ||
+           strcmp(name, "write_file") == 0 ||
+           strcmp(name, "file_exists") == 0 ||
+           strcmp(name, "split") == 0 ||
+           strcmp(name, "join") == 0 ||
+           strcmp(name, "replace") == 0 ||
+           strcmp(name, "repeat") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -374,6 +381,113 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "%s expects float arguments", name);
         }
         return &type_float;
+    }
+    if (strcmp(name, "read_file") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "read_file expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "read_file expects a string path");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "write_file") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "write_file expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "write_file expects a string path");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "write_file expects string contents");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "file_exists") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "file_exists expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "file_exists expects a string path");
+        }
+        return &type_bool;
+    }
+    if (strcmp(name, "split") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "split expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "split expects string arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "split expects string arguments");
+        }
+        return transient_array_type(tc, &type_string);
+    }
+    if (strcmp(name, "join") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "join expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], transient_array_type(tc, &type_string));
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "join expects an array<string>");
+        }
+        if (a != NULL && type_is_array(a) &&
+            a->element_type != NULL &&
+            a->element_type->kind != TYPE_UNKNOWN &&
+            a->element_type->kind != TYPE_STRING) {
+            type_error(tc, loc, "join expects an array<string>");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "join expects a string delimiter");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "replace") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "replace expects 3 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        Type* c = infer_expr(tc, args[2], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "replace expects string arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "replace expects string arguments");
+        }
+        if (c != &type_unknown && c != NULL && c->kind != TYPE_STRING) {
+            type_error(tc, loc, "replace expects string arguments");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "repeat") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "repeat expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "repeat expects a string");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "repeat expects an int count");
+        }
+        return &type_string;
     }
     return NULL;
 }

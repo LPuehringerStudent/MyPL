@@ -494,6 +494,110 @@ TEST(typecheck_rejects_min_float_with_int) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_read_file) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = read_file(\"x.txt\"); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_write_file) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int ok = write_file(\"x.txt\", \"hi\"); return ok; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_file_exists) {
+    char error[256];
+    Program* program = parse("proc main() -> bool { bool b = file_exists(\"x.txt\"); return b; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_split) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<string> parts = split(\"a,b\", \",\"); return length(parts); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_join) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = join([\"a\", \"b\"], \"-\"); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_replace) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = replace(\"a\", \"b\", \"c\"); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_repeat) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = repeat(\"a\", 3); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_read_file_with_int_path) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = read_file(1); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_write_file_with_int_path) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int ok = write_file(1, \"hi\"); return ok; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_split_with_int_delimiter) {
+    char error[256];
+    Program* program = parse("proc main() -> int { array<string> parts = split(\"a,b\", 1); return length(parts); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_join_with_string_parts) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = join(\"ab\", \"-\"); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_replace_with_int_old) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = replace(\"a\", 1, \"c\"); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_repeat_with_float_count) {
+    char error[256];
+    Program* program = parse("proc main() -> string { string s = repeat(\"a\", 3.0); return s; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -545,5 +649,18 @@ int main(void) {
     RUN_TEST(typecheck_rejects_abs_int_with_float);
     RUN_TEST(typecheck_accepts_min_max_float);
     RUN_TEST(typecheck_rejects_min_float_with_int);
+    RUN_TEST(typecheck_accepts_read_file);
+    RUN_TEST(typecheck_accepts_write_file);
+    RUN_TEST(typecheck_accepts_file_exists);
+    RUN_TEST(typecheck_accepts_split);
+    RUN_TEST(typecheck_accepts_join);
+    RUN_TEST(typecheck_accepts_replace);
+    RUN_TEST(typecheck_accepts_repeat);
+    RUN_TEST(typecheck_rejects_read_file_with_int_path);
+    RUN_TEST(typecheck_rejects_write_file_with_int_path);
+    RUN_TEST(typecheck_rejects_split_with_int_delimiter);
+    RUN_TEST(typecheck_rejects_join_with_string_parts);
+    RUN_TEST(typecheck_rejects_replace_with_int_old);
+    RUN_TEST(typecheck_rejects_repeat_with_float_count);
     TEST_SUMMARY();
 }

@@ -6,6 +6,7 @@
 
 char* os_read_file(const char* path);
 int os_file_exists(const char* path);
+int os_write_file(const char* path, const char* contents, size_t len);
 
 int os_open(const char* path);
 int os_close(int fd);

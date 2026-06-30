@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "compiler.h"
+#include "os.h"
 
 typedef struct {
     const char* name;
@@ -313,6 +314,192 @@ static int native_max_float(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_read_file(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "read_file expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    char* contents = os_read_file(path);
+    if (contents == NULL) {
+        vm_set_error(vm, "read_file: could not read file");
+        return 0;
+    }
+    *out = value_string(contents);
+    return 1;
+}
+
+static int native_write_file(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "write_file expects (string, string)");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* contents = argv[1].as.as_string ? argv[1].as.as_string : "";
+    if (!os_write_file(path, contents, strlen(contents))) {
+        vm_set_error(vm, "write_file: could not write file");
+        return 0;
+    }
+    *out = value_int(1);
+    return 1;
+}
+
+static int native_file_exists(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "file_exists expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    *out = value_bool(os_file_exists(path));
+    return 1;
+}
+
+static int native_split(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "split expects (string, string)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* delim = argv[1].as.as_string ? argv[1].as.as_string : "";
+    if (strlen(delim) == 0) {
+        vm_set_error(vm, "split delimiter cannot be empty");
+        return 0;
+    }
+    ArrayObj* arr = array_new();
+    if (arr == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    char* copy = strdup(s);
+    if (copy == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    char* token = strtok(copy, delim);
+    while (token != NULL) {
+        if (!array_append(arr, value_string(strdup(token)))) {
+            free(copy);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        token = strtok(NULL, delim);
+    }
+    free(copy);
+    *out = value_array(arr);
+    return 1;
+}
+
+static int native_join(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "join expects (array<string>, string)");
+        return 0;
+    }
+    ArrayObj* arr = argv[0].as.as_array;
+    const char* delim = argv[1].as.as_string ? argv[1].as.as_string : "";
+    size_t delim_len = strlen(delim);
+    int count = array_length(arr);
+    size_t total = 0;
+    for (int i = 0; i < count; i++) {
+        Value v = array_get(arr, i);
+        if (v.type != VAL_STRING) {
+            vm_set_error(vm, "join expects array<string>");
+            return 0;
+        }
+        total += strlen(v.as.as_string ? v.as.as_string : "");
+    }
+    if (count > 1) {
+        total += delim_len * (size_t)(count - 1);
+    }
+    char* buf = malloc(total + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    buf[0] = '\0';
+    for (int i = 0; i < count; i++) {
+        if (i > 0) strcat(buf, delim);
+        const char* part = array_get(arr, i).as.as_string;
+        strcat(buf, part ? part : "");
+    }
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_replace(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING || argv[2].type != VAL_STRING) {
+        vm_set_error(vm, "replace expects (string, string, string)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* old = argv[1].as.as_string ? argv[1].as.as_string : "";
+    const char* new_ = argv[2].as.as_string ? argv[2].as.as_string : "";
+    size_t old_len = strlen(old);
+    if (old_len == 0) {
+        vm_set_error(vm, "replace: old string cannot be empty");
+        return 0;
+    }
+    size_t new_len = strlen(new_);
+    size_t count = 0;
+    const char* tmp = s;
+    const char* match;
+    while ((match = strstr(tmp, old)) != NULL) {
+        count++;
+        tmp = match + old_len;
+    }
+    size_t result_len = strlen(s) + count * (new_len - old_len);
+    char* buf = malloc(result_len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    char* dst = buf;
+    const char* pos = s;
+    while ((match = strstr(pos, old)) != NULL) {
+        size_t prefix = (size_t)(match - pos);
+        memcpy(dst, pos, prefix);
+        dst += prefix;
+        memcpy(dst, new_, new_len);
+        dst += new_len;
+        pos = match + old_len;
+    }
+    size_t tail = strlen(pos);
+    memcpy(dst, pos, tail);
+    dst += tail;
+    *dst = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_repeat(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "repeat expects (string, int)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int count = argv[1].as.as_int;
+    if (count < 0) count = 0;
+    size_t len = strlen(s);
+    char* buf = malloc(len * (size_t)count + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        memcpy(buf + i * len, s, len);
+    }
+    buf[len * (size_t)count] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -333,6 +520,13 @@ static NativeDef natives[] = {
     {"max_int",   2, native_max_int},
     {"min_float", 2, native_min_float},
     {"max_float", 2, native_max_float},
+    {"read_file", 1, native_read_file},
+    {"write_file", 2, native_write_file},
+    {"file_exists", 1, native_file_exists},
+    {"split", 2, native_split},
+    {"join", 2, native_join},
+    {"replace", 3, native_replace},
+    {"repeat", 2, native_repeat},
     {NULL,      0, NULL}
 };
 
