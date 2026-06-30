@@ -462,6 +462,38 @@ TEST(typecheck_rejects_concat_with_int) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_abs_int) {
+    char error[256];
+    Program* program = parse("proc main() -> int { return abs_int(-5); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_abs_int_with_float) {
+    char error[256];
+    Program* program = parse("proc main() -> int { return abs_int(-5.5); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_min_max_float) {
+    char error[256];
+    Program* program = parse("proc main() -> float { return min_float(1.0, 2.5); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_min_float_with_int) {
+    char error[256];
+    Program* program = parse("proc main() -> float { return min_float(1, 2.5); }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -509,5 +541,9 @@ int main(void) {
     RUN_TEST(typecheck_accepts_string_comparison);
     RUN_TEST(typecheck_accepts_length_on_string);
     RUN_TEST(typecheck_rejects_concat_with_int);
+    RUN_TEST(typecheck_accepts_abs_int);
+    RUN_TEST(typecheck_rejects_abs_int_with_float);
+    RUN_TEST(typecheck_accepts_min_max_float);
+    RUN_TEST(typecheck_rejects_min_float_with_int);
     TEST_SUMMARY();
 }

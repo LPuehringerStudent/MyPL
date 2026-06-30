@@ -186,7 +186,13 @@ static int is_native(const char* name) {
            strcmp(name, "to_lower") == 0 ||
            strcmp(name, "trim") == 0 ||
            strcmp(name, "int_to_string") == 0 ||
-           strcmp(name, "float_to_string") == 0;
+           strcmp(name, "float_to_string") == 0 ||
+           strcmp(name, "abs_int") == 0 ||
+           strcmp(name, "abs_float") == 0 ||
+           strcmp(name, "min_int") == 0 ||
+           strcmp(name, "max_int") == 0 ||
+           strcmp(name, "min_float") == 0 ||
+           strcmp(name, "max_float") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -316,6 +322,58 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "float_to_string expects a float");
         }
         return &type_string;
+    }
+    if (strcmp(name, "abs_int") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "abs_int expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "abs_int expects an int");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "abs_float") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "abs_float expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_FLOAT) {
+            type_error(tc, loc, "abs_float expects a float");
+        }
+        return &type_float;
+    }
+    if (strcmp(name, "min_int") == 0 || strcmp(name, "max_int") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "%s expects 2 arguments", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "%s expects int arguments", name);
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "%s expects int arguments", name);
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "min_float") == 0 || strcmp(name, "max_float") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "%s expects 2 arguments", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_FLOAT) {
+            type_error(tc, loc, "%s expects float arguments", name);
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_FLOAT) {
+            type_error(tc, loc, "%s expects float arguments", name);
+        }
+        return &type_float;
     }
     return NULL;
 }
