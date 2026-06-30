@@ -261,6 +261,58 @@ static int native_abs_float(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_min_int(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "min_int expects two ints");
+        return 0;
+    }
+    int a = argv[0].as.as_int;
+    int b = argv[1].as.as_int;
+    *out = value_int(a < b ? a : b);
+    return 1;
+}
+
+static int native_max_int(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "max_int expects two ints");
+        return 0;
+    }
+    int a = argv[0].as.as_int;
+    int b = argv[1].as.as_int;
+    *out = value_int(a > b ? a : b);
+    return 1;
+}
+
+static int native_min_float(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_FLOAT || argv[1].type != VAL_FLOAT) {
+        vm_set_error(vm, "min_float expects two floats");
+        return 0;
+    }
+    double a = argv[0].as.as_float;
+    double b = argv[1].as.as_float;
+    *out = value_float(a < b ? a : b);
+    return 1;
+}
+
+static int native_max_float(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_FLOAT || argv[1].type != VAL_FLOAT) {
+        vm_set_error(vm, "max_float expects two floats");
+        return 0;
+    }
+    double a = argv[0].as.as_float;
+    double b = argv[1].as.as_float;
+    *out = value_float(a > b ? a : b);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -277,6 +329,10 @@ static NativeDef natives[] = {
     {"float_to_string", 1, native_float_to_string},
     {"abs_int",   1, native_abs_int},
     {"abs_float", 1, native_abs_float},
+    {"min_int",   2, native_min_int},
+    {"max_int",   2, native_max_int},
+    {"min_float", 2, native_min_float},
+    {"max_float", 2, native_max_float},
     {NULL,      0, NULL}
 };
 

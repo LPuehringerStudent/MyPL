@@ -132,6 +132,94 @@ TEST(natives_abs_int_rejects_int_min) {
     vm_free(vm);
 }
 
+TEST(natives_min_int_returns_smaller) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(3);
+    argv[1] = value_int(7);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("min_int"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(3, result.as.as_int);
+
+    argv[0] = value_int(10);
+    argv[1] = value_int(2);
+    ASSERT_INT_EQ(1, native_call(vm, native_find("min_int"), 2, argv, &result));
+    ASSERT_INT_EQ(2, result.as.as_int);
+
+    vm_free(vm);
+}
+
+TEST(natives_max_int_returns_larger) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(3);
+    argv[1] = value_int(7);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("max_int"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(7, result.as.as_int);
+
+    argv[0] = value_int(10);
+    argv[1] = value_int(2);
+    ASSERT_INT_EQ(1, native_call(vm, native_find("max_int"), 2, argv, &result));
+    ASSERT_INT_EQ(10, result.as.as_int);
+
+    vm_free(vm);
+}
+
+TEST(natives_min_max_int_reject_float) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(1);
+    argv[1] = value_float(2.0);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("min_int"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+
+    ASSERT_INT_EQ(0, native_call(vm, native_find("max_int"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_min_float_returns_smaller) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_float(3.5);
+    argv[1] = value_float(7.2);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("min_float"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_float == 3.5);
+    vm_free(vm);
+}
+
+TEST(natives_max_float_returns_larger) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_float(3.5);
+    argv[1] = value_float(7.2);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("max_float"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_float == 7.2);
+    vm_free(vm);
+}
+
+TEST(natives_min_max_float_reject_int) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_float(1.0);
+    argv[1] = value_int(2);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("min_float"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+
+    ASSERT_INT_EQ(0, native_call(vm, native_find("max_float"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
 int main(void) {
     RUN_TEST(natives_finds_registered_functions);
     RUN_TEST(natives_length_returns_array_length);
@@ -143,5 +231,11 @@ int main(void) {
     RUN_TEST(natives_abs_float_returns_absolute_value);
     RUN_TEST(natives_abs_float_rejects_int);
     RUN_TEST(natives_abs_int_rejects_int_min);
+    RUN_TEST(natives_min_int_returns_smaller);
+    RUN_TEST(natives_max_int_returns_larger);
+    RUN_TEST(natives_min_max_int_reject_float);
+    RUN_TEST(natives_min_float_returns_smaller);
+    RUN_TEST(natives_max_float_returns_larger);
+    RUN_TEST(natives_min_max_float_reject_int);
     TEST_SUMMARY();
 }
