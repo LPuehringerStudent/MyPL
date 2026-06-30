@@ -16,6 +16,11 @@ void init_chunk(Chunk* chunk) {
 }
 
 void free_chunk(Chunk* chunk) {
+    if (chunk->constants != NULL) {
+        for (int i = 0; i < chunk->constants_count; i++) {
+            value_release(chunk->constants[i]);
+        }
+    }
     free(chunk->code);
     free(chunk->constants);
     init_chunk(chunk);
@@ -40,6 +45,7 @@ int add_constant(Chunk* chunk, Value value) {
         if (new_constants == NULL) return -1;
         chunk->constants = new_constants;
     }
+    value_retain(value);
     chunk->constants[chunk->constants_count] = value;
     chunk->constants_count++;
     return chunk->constants_count - 1;

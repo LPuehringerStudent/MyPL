@@ -88,6 +88,9 @@ Program* create_program(void) {
 void free_expr(Expr* expr) {
     if (expr == NULL) return;
     switch (expr->kind) {
+        case EXPR_LITERAL:
+            value_release(expr->as.literal.value);
+            break;
         case EXPR_VARIABLE:
             free(expr->as.variable.name);
             break;

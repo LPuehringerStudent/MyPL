@@ -5,7 +5,23 @@
 
 #include "compiler.h"
 
+typedef enum {
+    OBJ_STRING,
+    OBJ_ARRAY
+} ObjType;
+
+typedef struct {
+    ObjType type;
+    int ref_count;
+} Obj;
+
+typedef struct {
+    Obj obj;
+    char chars[];
+} StringObj;
+
 struct ArrayObj {
+    Obj obj;
     Value* items;
     int count;
     int capacity;
@@ -13,6 +29,11 @@ struct ArrayObj {
 };
 
 static ArrayObj* array_pool = NULL;
+
+static StringObj* string_obj_from_chars(const char* chars) {
+    if (chars == NULL) return NULL;
+    return (StringObj*)(chars - offsetof(StringObj, chars));
+}
 
 Value value_int(int v) {
     Value value;
@@ -31,7 +52,22 @@ Value value_float(double v) {
 Value value_string(char* s) {
     Value value;
     value.type = VAL_STRING;
-    value.as.as_string = s;
+    if (s == NULL) {
+        value.as.as_string = NULL;
+        return value;
+    }
+    size_t len = strlen(s);
+    StringObj* obj = malloc(sizeof(StringObj) + len + 1);
+    if (obj == NULL) {
+        value.as.as_string = NULL;
+        free(s);
+        return value;
+    }
+    obj->obj.type = OBJ_STRING;
+    obj->obj.ref_count = 1;
+    memcpy(obj->chars, s, len + 1);
+    free(s);
+    value.as.as_string = obj->chars;
     return value;
 }
 
@@ -47,6 +83,38 @@ Value value_array(ArrayObj* array) {
     value.type = VAL_ARRAY;
     value.as.as_array = array;
     return value;
+}
+
+void value_retain(Value v) {
+    if (v.type == VAL_STRING && v.as.as_string != NULL) {
+        string_obj_from_chars(v.as.as_string)->obj.ref_count++;
+    } else if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
+        v.as.as_array->obj.ref_count++;
+    }
+}
+
+void value_release(Value v) {
+    if (v.type == VAL_STRING && v.as.as_string != NULL) {
+        StringObj* obj = string_obj_from_chars(v.as.as_string);
+        if (--obj->obj.ref_count <= 0) {
+            free(obj);
+        }
+    } else if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
+        ArrayObj* array = v.as.as_array;
+        if (--array->obj.ref_count <= 0) {
+            array_free(array);
+        }
+    }
+}
+
+int value_ref_count(Value v) {
+    if (v.type == VAL_STRING && v.as.as_string != NULL) {
+        return string_obj_from_chars(v.as.as_string)->obj.ref_count;
+    }
+    if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
+        return v.as.as_array->obj.ref_count;
+    }
+    return 0;
 }
 
 /* Helper: returns true when either operand is a float. */
@@ -229,6 +297,8 @@ void value_print(Value value) {
 ArrayObj* array_new(void) {
     ArrayObj* array = malloc(sizeof(ArrayObj));
     if (array == NULL) return NULL;
+    array->obj.type = OBJ_ARRAY;
+    array->obj.ref_count = 1;
     array->items = NULL;
     array->count = 0;
     array->capacity = 0;
@@ -239,6 +309,17 @@ ArrayObj* array_new(void) {
 
 void array_free(ArrayObj* array) {
     if (array == NULL) return;
+    ArrayObj** current = &array_pool;
+    while (*current != NULL) {
+        if (*current == array) {
+            *current = array->next;
+            break;
+        }
+        current = &(*current)->next;
+    }
+    for (int i = 0; i < array->count; i++) {
+        value_release(array->items[i]);
+    }
     free(array->items);
     free(array);
 }
@@ -259,6 +340,7 @@ int array_append(ArrayObj* array, Value value) {
         array->items = new_items;
         array->capacity = new_capacity;
     }
+    value_retain(value);
     array->items[array->count++] = value;
     return 1;
 }
@@ -272,6 +354,8 @@ Value array_get(ArrayObj* array, int index) {
 
 void array_set(ArrayObj* array, int index, Value value) {
     if (array == NULL || index < 0 || index >= array->count) return;
+    value_retain(value);
+    value_release(array->items[index]);
     array->items[index] = value;
 }
 

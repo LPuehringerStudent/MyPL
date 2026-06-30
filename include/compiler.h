@@ -78,6 +78,10 @@ Value value_bool(int v);
 Value value_array(ArrayObj* array);
 void value_print(Value value);
 
+void value_retain(Value v);
+void value_release(Value v);
+int  value_ref_count(Value v);
+
 ArrayObj* array_new(void);
 void      array_free(ArrayObj* array);
 int       array_append(ArrayObj* array, Value value);

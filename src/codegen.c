@@ -223,15 +223,6 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
     switch (expr->kind) {
         case EXPR_LITERAL: {
             Value v = expr->as.literal.value;
-            if (v.type == VAL_STRING && v.as.as_string != NULL) {
-                char* copy = malloc(strlen(v.as.as_string) + 1);
-                if (copy == NULL) {
-                    error(compiler, "out of memory");
-                    return;
-                }
-                strcpy(copy, v.as.as_string);
-                v.as.as_string = copy;
-            }
             emit_constant(compiler, v);
             break;
         }

@@ -42,6 +42,7 @@ static int native_append(VM* vm, int argc, Value* argv, Value* out) {
         vm_set_error(vm, "Out of memory");
         return 0;
     }
+    value_retain(argv[0]);
     *out = argv[0];
     return 1;
 }

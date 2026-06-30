@@ -52,6 +52,9 @@ void vm_set_error(VM* vm, const char* message) {
 
 void vm_free(VM* vm) {
     if (vm == NULL) return;
+    for (Value* p = vm->stack; p < vm->stack_top; p++) {
+        value_release(*p);
+    }
     result_free(vm->result);
     array_pool_free_all();
     free(vm);
@@ -80,7 +83,11 @@ static int binary_op(VM* vm, Value (*op)(Value, Value)) {
     Value a;
     if (!pop(vm, &b)) return 0;
     if (!pop(vm, &a)) return 0;
-    return push(vm, op(a, b));
+    Value r = op(a, b);
+    int ok = push(vm, r);
+    value_release(a);
+    value_release(b);
+    return ok;
 }
 
 Value vm_pop(VM* vm) {
@@ -115,7 +122,10 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     set_runtime_error(vm, "Invalid constant index");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                if (!push(vm, vm->chunk->constants[idx])) {
+                Value v = vm->chunk->constants[idx];
+                value_retain(v);
+                if (!push(vm, v)) {
+                    value_release(v);
                     set_runtime_error(vm, "Stack overflow");
                     return INTERPRET_RUNTIME_ERROR;
                 }
@@ -126,7 +136,10 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 uint8_t slot = *vm->ip++;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                if (!push(vm, vm->frame_base[slot])) {
+                Value v = vm->frame_base[slot];
+                value_retain(v);
+                if (!push(vm, v)) {
+                    value_release(v);
                     set_runtime_error(vm, "Invalid local variable slot");
                     return INTERPRET_RUNTIME_ERROR;
                 }
@@ -137,7 +150,10 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 uint8_t slot = *vm->ip++;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                vm->frame_base[slot] = *(vm->stack_top - 1);
+                Value v = *(vm->stack_top - 1);
+                value_retain(v);
+                value_release(vm->frame_base[slot]);
+                vm->frame_base[slot] = v;
                 break;
             }
             case OP_ADD: {
@@ -171,25 +187,32 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_NEGATE: {
                 Value value;
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
+                int ok = 0;
                 if (value.type == VAL_FLOAT) {
-                    if (!push(vm, value_float(-value.as.as_float))) return INTERPRET_RUNTIME_ERROR;
+                    ok = push(vm, value_float(-value.as.as_float));
                 } else if (value.type == VAL_INT) {
-                    if (!push(vm, value_int(-value.as.as_int))) return INTERPRET_RUNTIME_ERROR;
+                    ok = push(vm, value_int(-value.as.as_int));
                 } else {
+                    value_release(value);
                     set_runtime_error(vm, "Cannot negate non-numeric value");
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                value_release(value);
+                if (!ok) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_NOT: {
                 Value value;
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
-                if (!push(vm, value_bool(!value_is_truthy(value)))) return INTERPRET_RUNTIME_ERROR;
+                int ok = push(vm, value_bool(!value_is_truthy(value)));
+                value_release(value);
+                if (!ok) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_POP: {
                 Value value;
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
+                value_release(value);
                 break;
             }
             case OP_SQL: {
@@ -241,7 +264,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 Value field_value;
                 field_value.type = cell.type;
                 if (cell.type == VAL_STRING) {
-                    field_value.as.as_string = strdup(cell.as.as_string);
+                    field_value = value_string(strdup(cell.as.as_string));
                 } else if (cell.type == VAL_FLOAT) {
                     field_value.as.as_float = cell.as.as_float;
                 } else {
@@ -256,7 +279,9 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 vm->ip += 2;
                 Value cond;
                 if (!pop(vm, &cond)) return INTERPRET_RUNTIME_ERROR;
-                if (!value_is_truthy(cond)) {
+                int truthy = value_is_truthy(cond);
+                value_release(cond);
+                if (!truthy) {
                     uint8_t* target = vm->ip + offset;
                     if (target < vm->chunk->code || target > end) {
                         set_runtime_error(vm, "Invalid jump target");
@@ -300,8 +325,10 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (vm->frame_count == 0) {
                     return INTERPRET_OK;
                 }
-                Value result;
-                if (!pop(vm, &result)) return INTERPRET_RUNTIME_ERROR;
+                Value result = *(vm->stack_top - 1);
+                for (Value* p = vm->frame_base; p < vm->stack_top - 1; p++) {
+                    value_release(*p);
+                }
                 vm->frame_count--;
                 vm->frame_base = vm->frames[vm->frame_count];
                 vm->ip = vm->return_ips[vm->frame_count];
@@ -328,9 +355,15 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 }
                 Value result;
                 if (!native_call(vm, idx, argc, argv, &result)) {
+                    for (int i = 0; i < (int)argc; i++) value_release(argv[i]);
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
+                if (!push(vm, result)) {
+                    value_release(result);
+                    for (int i = 0; i < (int)argc; i++) value_release(argv[i]);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                for (int i = 0; i < (int)argc; i++) value_release(argv[i]);
                 break;
             }
             case OP_PRINT: {
@@ -338,6 +371,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!pop(vm, &value)) return INTERPRET_RUNTIME_ERROR;
                 value_print(value);
                 printf("\n");
+                value_release(value);
                 break;
             }
             case OP_ARRAY_BUILD: {
@@ -357,25 +391,35 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (count > 0) {
                     temp = malloc(sizeof(Value) * count);
                     if (temp == NULL) {
+                        array_free(array);
                         set_runtime_error(vm, "Out of memory");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     for (int i = (int)count - 1; i >= 0; i--) {
                         if (!pop(vm, &temp[i])) {
                             free(temp);
+                            array_free(array);
                             return INTERPRET_RUNTIME_ERROR;
                         }
                     }
                     for (int i = 0; i < count; i++) {
                         if (!array_append(array, temp[i])) {
                             free(temp);
+                            array_free(array);
                             set_runtime_error(vm, "Out of memory");
                             return INTERPRET_RUNTIME_ERROR;
                         }
                     }
-                    free(temp);
                 }
-                if (!push(vm, value_array(array))) return INTERPRET_RUNTIME_ERROR;
+                if (!push(vm, value_array(array))) {
+                    array_free(array);
+                    if (temp != NULL) free(temp);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                for (int i = 0; i < (int)count; i++) {
+                    value_release(temp[i]);
+                }
+                free(temp);
                 break;
             }
             case OP_INDEX_GET: {
@@ -384,16 +428,28 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!pop(vm, &idx_val)) return INTERPRET_RUNTIME_ERROR;
                 if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
                 if (arr_val.type != VAL_ARRAY || idx_val.type != VAL_INT) {
+                    value_release(idx_val);
+                    value_release(arr_val);
                     set_runtime_error(vm, "Invalid array index");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 int idx = idx_val.as.as_int;
                 if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                    value_release(idx_val);
+                    value_release(arr_val);
                     set_runtime_error(vm, "Array index out of bounds");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 Value result = array_get(arr_val.as.as_array, idx);
-                if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
+                value_retain(result);
+                if (!push(vm, result)) {
+                    value_release(result);
+                    value_release(idx_val);
+                    value_release(arr_val);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                value_release(idx_val);
+                value_release(arr_val);
                 break;
             }
             case OP_INDEX_SET: {
@@ -404,15 +460,24 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!pop(vm, &idx_val)) return INTERPRET_RUNTIME_ERROR;
                 if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
                 if (arr_val.type != VAL_ARRAY || idx_val.type != VAL_INT) {
+                    value_release(val);
+                    value_release(idx_val);
+                    value_release(arr_val);
                     set_runtime_error(vm, "Invalid array index assignment");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 int idx = idx_val.as.as_int;
                 if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                    value_release(val);
+                    value_release(idx_val);
+                    value_release(arr_val);
                     set_runtime_error(vm, "Array index out of bounds");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 array_set(arr_val.as.as_array, idx, val);
+                value_release(val);
+                value_release(idx_val);
+                value_release(arr_val);
                 break;
             }
             default:

@@ -51,6 +51,7 @@ static int run_file(const char* path) {
         Value v = vm_pop(vm);
         value_print(v);
         printf("\n");
+        value_release(v);
     } else {
         const char* err = vm_get_error(vm);
         fprintf(stderr, "Runtime error: %s\n", err != NULL ? err : "unknown error");
