@@ -726,6 +726,20 @@ TEST(compiler_compiles_abs_float_native) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_nested_index_assignment) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { array<array<int>> a = [[1, 2], [3, 4]]; a[0][1] = 9; return a[0][1]; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(9, result.as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -775,5 +789,6 @@ int main(void) {
     RUN_TEST(compiler_compiles_abs_int_native);
     RUN_TEST(compiler_compiles_min_max_int_natives);
     RUN_TEST(compiler_compiles_abs_float_native);
+    RUN_TEST(compiler_compiles_nested_index_assignment);
     TEST_SUMMARY();
 }

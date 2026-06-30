@@ -239,6 +239,18 @@ TEST(parser_parses_index_assignment) {
     free_program(program);
 }
 
+TEST(parser_parses_nested_index_assignment) {
+    Program* program = parse("proc main() -> int { a[0][1] = 2; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_INDEX_ASSIGN, stmt->kind);
+    ASSERT_INT_EQ(EXPR_INDEX, stmt->as.index_assign.array->kind);
+    ASSERT_INT_EQ(EXPR_VARIABLE, stmt->as.index_assign.array->as.index.array->kind);
+    ASSERT_INT_EQ(EXPR_LITERAL, stmt->as.index_assign.array->as.index.index->kind);
+    ASSERT_INT_EQ(EXPR_LITERAL, stmt->as.index_assign.index->kind);
+    free_program(program);
+}
+
 TEST(parser_parses_import_statement) {
     Program* program = parse("import \"foo.mypl\"; proc main() -> int { return 0; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -288,6 +300,7 @@ int main(void) {
     RUN_TEST(parser_parses_array_literal);
     RUN_TEST(parser_parses_index_expression);
     RUN_TEST(parser_parses_index_assignment);
+    RUN_TEST(parser_parses_nested_index_assignment);
     RUN_TEST(parser_parses_import_statement);
     RUN_TEST(parser_parses_typed_array_variable);
     RUN_TEST(parser_parses_nested_typed_array);

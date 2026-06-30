@@ -332,6 +332,11 @@ static Stmt* assignment(Parser* parser) {
         Expr* array_expr = create_variable_expr(name);
         Expr* index_expr = expression(parser);
         advance(parser); /* ] */
+        while (match(parser, TOKEN_LBRACKET)) {
+            array_expr = create_index_expr(array_expr, index_expr);
+            index_expr = expression(parser);
+            advance(parser); /* ] */
+        }
         advance(parser); /* = */
         Expr* value = expression(parser);
         advance(parser); /* ; */
