@@ -30,7 +30,7 @@ static int run_file(const char* path) {
     Chunk chunk;
     init_chunk(&chunk);
     char error[256];
-    if (!compile_with_context(source, &chunk, error, sizeof(error), NULL)) {
+    if (!compile_with_context_and_path(source, &chunk, path, error, sizeof(error), NULL)) {
         fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
         free(source);
         free_chunk(&chunk);

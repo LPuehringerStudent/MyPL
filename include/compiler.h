@@ -99,5 +99,7 @@ struct Context;
 
 int compile(const char* source, Chunk* chunk, char* error, size_t error_size);
 int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx);
+int compile_with_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size);
+int compile_with_context_and_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size, struct Context* ctx);
 
 #endif

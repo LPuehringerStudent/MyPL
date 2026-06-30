@@ -1,6 +1,9 @@
+#include <libgen.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "compiler.h"
 #include "natives.h"
@@ -50,6 +53,7 @@ typedef struct {
     int loaded_count;
     const char* loading_stack[MAX_LOADING];
     int loading_count;
+    char* current_path;
     struct Context* ctx;
 } Compiler;
 
@@ -200,7 +204,7 @@ static void compile_expr(Compiler* compiler, Expr* expr);
 static void compile_stmt(Compiler* compiler, Stmt* stmt);
 
 static int compiler_load_module(Compiler* compiler, const char* path, char* error, size_t error_size);
-static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size);
+static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, const char* path, char* error, size_t error_size);
 
 static void compile_block(Compiler* compiler, Block* block) {
     int previous_count = compiler->local_count;
@@ -483,68 +487,98 @@ static int is_module_loading(Compiler* compiler, const char* path) {
     return 0;
 }
 
-static int compiler_load_module(Compiler* compiler, const char* path, char* error, size_t error_size) {
-    if (is_module_loading(compiler, path)) {
+static char* path_directory(const char* path) {
+    char* copy = strdup(path);
+    if (copy == NULL) return NULL;
+    char* dir = dirname(copy);
+    char* result = strdup(dir);
+    free(copy);
+    return result;
+}
+
+static char* resolve_import_path(const char* base_dir, const char* import_path) {
+    if (import_path[0] == '/') {
+        return realpath(import_path, NULL);
+    }
+
+    char combined[4096];
+    if (base_dir != NULL) {
+        snprintf(combined, sizeof(combined), "%s/%s", base_dir, import_path);
+    } else {
+        if (getcwd(combined, sizeof(combined)) == NULL) return NULL;
+        size_t len = strlen(combined);
+        snprintf(combined + len, sizeof(combined) - len, "/%s", import_path);
+    }
+    return realpath(combined, NULL);
+}
+
+static int compiler_load_module(Compiler* compiler, const char* import_path, char* error, size_t error_size) {
+    char* resolved = resolve_import_path(compiler->current_path, import_path);
+    if (resolved == NULL) {
         if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Circular import of '%s'", path);
+            snprintf(error, error_size, "Module not found: %s", import_path);
         }
         return 0;
     }
-    if (is_module_loaded(compiler, path)) return 1;
+
+    if (is_module_loading(compiler, resolved)) {
+        free(resolved);
+        if (error != NULL && error_size > 0) {
+            snprintf(error, error_size, "Circular import of '%s'", import_path);
+        }
+        return 0;
+    }
+    if (is_module_loaded(compiler, resolved)) {
+        free(resolved);
+        return 1;
+    }
     if (compiler->loaded_count >= MAX_MODULES) {
+        free(resolved);
         if (error != NULL && error_size > 0) {
             snprintf(error, error_size, "Too many imported modules");
         }
         return 0;
     }
-    if (!os_file_exists(path)) {
+    if (!os_file_exists(resolved)) {
+        free(resolved);
         if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Module not found: %s", path);
+            snprintf(error, error_size, "Module not found: %s", import_path);
         }
         return 0;
     }
 
-    char* source = os_read_file(path);
+    char* source = os_read_file(resolved);
     if (source == NULL) {
+        free(resolved);
         if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Could not read module: %s", path);
+            snprintf(error, error_size, "Could not read module: %s", import_path);
         }
         return 0;
     }
 
-    char* path_copy = malloc(strlen(path) + 1);
-    if (path_copy == NULL) {
-        free(source);
-        if (error != NULL && error_size > 0) {
-            strncpy(error, "out of memory", error_size - 1);
-            error[error_size - 1] = '\0';
-        }
-        return 0;
-    }
-    strcpy(path_copy, path);
     if (compiler->loading_count >= MAX_LOADING) {
-        free(path_copy);
+        free(resolved);
         free(source);
         if (error != NULL && error_size > 0) {
             snprintf(error, error_size, "Too many nested imports");
         }
         return 0;
     }
-    compiler->loading_stack[compiler->loading_count++] = path_copy;
+    compiler->loading_stack[compiler->loading_count++] = resolved;
 
-    int ok = compiler_compile_source(compiler, source, 0, error, error_size);
+    int ok = compiler_compile_source(compiler, source, 0, resolved, error, error_size);
 
     compiler->loading_count--;
     if (ok) {
-        compiler->loaded_paths[compiler->loaded_count++] = path_copy;
+        compiler->loaded_paths[compiler->loaded_count++] = resolved;
     } else {
-        free(path_copy);
+        free(resolved);
     }
     free(source);
     return ok;
 }
 
-static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
+static int do_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
     char parse_error[256] = {0};
     Program* program = parse(source, parse_error, sizeof(parse_error));
     if (program == NULL) {
@@ -638,7 +672,20 @@ static int compiler_compile_source(Compiler* compiler, const char* source, int i
     return 1;
 }
 
-int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx) {
+static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, const char* path, char* error, size_t error_size) {
+    char* saved = compiler->current_path;
+    char* dir = NULL;
+    if (path != NULL) {
+        dir = path_directory(path);
+        compiler->current_path = dir;
+    }
+    int ok = do_compile_source(compiler, source, is_main, error, error_size);
+    if (dir != NULL) free(dir);
+    compiler->current_path = saved;
+    return ok;
+}
+
+int compile_with_context_and_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size, struct Context* ctx) {
     Compiler compiler;
     compiler.chunk = chunk;
     compiler.local_count = 0;
@@ -650,6 +697,7 @@ int compile_with_context(const char* source, Chunk* chunk, char* error, size_t e
     compiler.entry_index = -1;
     compiler.loaded_count = 0;
     compiler.loading_count = 0;
+    compiler.current_path = NULL;
     compiler.ctx = ctx;
 
     if (chunk->count == 0) {
@@ -662,7 +710,7 @@ int compile_with_context(const char* source, Chunk* chunk, char* error, size_t e
         compiler.entry_patch = -1;
     }
 
-    if (!compiler_compile_source(&compiler, source, 1, error, error_size)) {
+    if (!compiler_compile_source(&compiler, source, 1, path, error, error_size)) {
         free_proc_entries(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
@@ -700,6 +748,14 @@ int compile_with_context(const char* source, Chunk* chunk, char* error, size_t e
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
     for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
     return 1;
+}
+
+int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx) {
+    return compile_with_context_and_path(source, chunk, NULL, error, error_size, ctx);
+}
+
+int compile_with_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size) {
+    return compile_with_context_and_path(source, chunk, path, error, error_size, NULL);
 }
 
 int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
