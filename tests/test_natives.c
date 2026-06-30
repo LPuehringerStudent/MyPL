@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,11 +70,78 @@ TEST(natives_wrong_arity_fails) {
     vm_free(vm);
 }
 
+TEST(natives_abs_int_returns_absolute_value) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(-5);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("abs_int"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(5, result.as.as_int);
+
+    argv[0] = value_int(7);
+    ASSERT_INT_EQ(1, native_call(vm, native_find("abs_int"), 1, argv, &result));
+    ASSERT_INT_EQ(7, result.as.as_int);
+
+    vm_free(vm);
+}
+
+TEST(natives_abs_int_rejects_float) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_float(-3.5);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("abs_int"), 1, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_abs_float_returns_absolute_value) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_float(-3.5);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("abs_float"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_float == 3.5);
+
+    argv[0] = value_float(2.0);
+    ASSERT_INT_EQ(1, native_call(vm, native_find("abs_float"), 1, argv, &result));
+    ASSERT_INT_EQ(1, result.as.as_float == 2.0);
+
+    vm_free(vm);
+}
+
+TEST(natives_abs_float_rejects_int) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(-3);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("abs_float"), 1, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_abs_int_rejects_int_min) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(INT_MIN);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("abs_int"), 1, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
 int main(void) {
     RUN_TEST(natives_finds_registered_functions);
     RUN_TEST(natives_length_returns_array_length);
     RUN_TEST(natives_append_adds_element);
     RUN_TEST(natives_clock_returns_non_negative_int);
     RUN_TEST(natives_wrong_arity_fails);
+    RUN_TEST(natives_abs_int_returns_absolute_value);
+    RUN_TEST(natives_abs_int_rejects_float);
+    RUN_TEST(natives_abs_float_returns_absolute_value);
+    RUN_TEST(natives_abs_float_rejects_int);
+    RUN_TEST(natives_abs_int_rejects_int_min);
     TEST_SUMMARY();
 }

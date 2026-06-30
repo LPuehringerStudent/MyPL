@@ -1,6 +1,7 @@
 #include "natives.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,6 +233,34 @@ static int native_float_to_string(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_abs_int(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT) {
+        vm_set_error(vm, "abs_int expects an int");
+        return 0;
+    }
+    int n = argv[0].as.as_int;
+    if (n == INT_MIN) {
+        vm_set_error(vm, "abs_int: absolute value of INT_MIN is undefined");
+        return 0;
+    }
+    *out = value_int(n < 0 ? -n : n);
+    return 1;
+}
+
+static int native_abs_float(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_FLOAT) {
+        vm_set_error(vm, "abs_float expects a float");
+        return 0;
+    }
+    double n = argv[0].as.as_float;
+    *out = value_float(n < 0.0 ? -n : n);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -246,6 +275,8 @@ static NativeDef natives[] = {
     {"trim",    1, native_trim},
     {"int_to_string", 1, native_int_to_string},
     {"float_to_string", 1, native_float_to_string},
+    {"abs_int",   1, native_abs_int},
+    {"abs_float", 1, native_abs_float},
     {NULL,      0, NULL}
 };
 
