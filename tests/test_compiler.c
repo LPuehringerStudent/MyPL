@@ -684,6 +684,48 @@ TEST(compiler_compiles_int_to_string_native) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_abs_int_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return abs_int(-7); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(7, result.as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_min_max_int_natives) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return max_int(3, 8); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(8, result.as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_abs_float_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> float { return abs_float(-2.5); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_float == 2.5);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -730,5 +772,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_concat_native);
     RUN_TEST(compiler_compiles_substring_native);
     RUN_TEST(compiler_compiles_int_to_string_native);
+    RUN_TEST(compiler_compiles_abs_int_native);
+    RUN_TEST(compiler_compiles_min_max_int_natives);
+    RUN_TEST(compiler_compiles_abs_float_native);
     TEST_SUMMARY();
 }
