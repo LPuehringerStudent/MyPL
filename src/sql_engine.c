@@ -1312,6 +1312,22 @@ static int custom_row_get_field(DBDriver* driver, void* row_handle, const char* 
     return 1;
 }
 
+static int custom_result_column_count(DBDriver* driver, void* result_handle) {
+    (void)driver;
+    Result* res = (Result*)result_handle;
+    if (res == NULL || res->row_count == 0) return 0;
+    return res->rows[0].field_count;
+}
+
+static const char* custom_result_column_name(DBDriver* driver, void* result_handle, int index) {
+    (void)driver;
+    Result* res = (Result*)result_handle;
+    if (res == NULL || res->row_count == 0) return NULL;
+    Row* row = &res->rows[0];
+    if (index < 0 || index >= row->field_count) return NULL;
+    return row->fields[index].name;
+}
+
 static void custom_result_free(DBDriver* driver, void* result_handle) {
     (void)driver;
     result_free((Result*)result_handle);
@@ -1340,6 +1356,8 @@ void custom_driver_init(DBDriver* driver) {
     driver->query = custom_query;
     driver->result_next = custom_result_next;
     driver->row_get_field = custom_row_get_field;
+    driver->result_column_count = custom_result_column_count;
+    driver->result_column_name = custom_result_column_name;
     driver->result_free = custom_result_free;
     driver->begin = custom_begin;
     driver->commit = custom_commit;

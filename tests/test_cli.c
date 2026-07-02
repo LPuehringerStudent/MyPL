@@ -87,11 +87,23 @@ TEST(cli_resolves_nested_import_relative_to_importing_file) {
     system("rm -rf /tmp/mypl_nested_import_test");
 }
 
+TEST(cli_accepts_db_flag) {
+    FILE* f = fopen("/tmp/cli_db.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "proc main() -> int { create table t (id int); return 0; }\n");
+    fclose(f);
+    int rc = system("./bin/mydb /tmp/cli_db.mypl --db /tmp/cli_test.db > /tmp/cli_db_out.txt 2>&1");
+    ASSERT_INT_EQ(0, WEXITSTATUS(rc));
+    remove("/tmp/cli_db.mypl");
+    remove("/tmp/cli_test.db");
+}
+
 int main(void) {
     RUN_TEST(cli_runs_file_and_prints_int_result);
     RUN_TEST(cli_runs_file_and_prints_float_result);
     RUN_TEST(cli_returns_nonzero_on_compile_error);
     RUN_TEST(cli_resolves_import_relative_to_importing_file);
     RUN_TEST(cli_resolves_nested_import_relative_to_importing_file);
+    RUN_TEST(cli_accepts_db_flag);
     TEST_SUMMARY();
 }

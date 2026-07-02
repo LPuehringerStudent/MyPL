@@ -124,6 +124,18 @@ static int sqlite_row_get_field(DBDriver* driver, void* row_handle, const char* 
     return 0;
 }
 
+static int sqlite_result_column_count(DBDriver* driver, void* result_handle) {
+    (void)driver;
+    sqlite3_stmt* stmt = (sqlite3_stmt*)result_handle;
+    return sqlite3_column_count(stmt);
+}
+
+static const char* sqlite_result_column_name(DBDriver* driver, void* result_handle, int index) {
+    (void)driver;
+    sqlite3_stmt* stmt = (sqlite3_stmt*)result_handle;
+    return sqlite3_column_name(stmt, index);
+}
+
 static void sqlite_result_free(DBDriver* driver, void* result_handle) {
     (void)driver;
     sqlite3_stmt* stmt = (sqlite3_stmt*)result_handle;
@@ -150,6 +162,8 @@ void sqlite_driver_init(DBDriver* driver) {
     driver->query = sqlite_query;
     driver->result_next = sqlite_result_next;
     driver->row_get_field = sqlite_row_get_field;
+    driver->result_column_count = sqlite_result_column_count;
+    driver->result_column_name = sqlite_result_column_name;
     driver->result_free = sqlite_result_free;
     driver->begin = sqlite_begin;
     driver->commit = sqlite_commit;

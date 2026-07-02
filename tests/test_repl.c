@@ -105,6 +105,14 @@ TEST(repl_reports_single_error_for_invalid_input) {
     ASSERT_INT_EQ(1, parse_error_count);
 }
 
+TEST(repl_connects_to_database) {
+    system("rm -f /tmp/repl_test.db");
+    char out[4096];
+    run_repl(".connect /tmp/repl_test.db\ncreate table t (id int);\n.tables\n.exit\n", out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "t"));
+    remove("/tmp/repl_test.db");
+}
+
 int main(void) {
     system("rm -f mypl.db");
     RUN_TEST(repl_defines_and_calls_procedure);
@@ -115,5 +123,6 @@ int main(void) {
     RUN_TEST(repl_executes_sql_select);
     RUN_TEST(repl_shows_defined_procedures);
     RUN_TEST(repl_reports_single_error_for_invalid_input);
+    RUN_TEST(repl_connects_to_database);
     TEST_SUMMARY();
 }

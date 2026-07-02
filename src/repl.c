@@ -7,6 +7,7 @@
 #include "compiler.h"
 #include "os.h"
 #include "sql_engine.h"
+#include "sqlite_driver.h"
 #include "vm.h"
 
 #define LINE_SIZE 1024
@@ -27,6 +28,8 @@ typedef struct {
     Chunk chunk;
     VM* vm;
     Context ctx;
+    DBDriver driver;
+    int driver_open;
 } ReplSession;
 
 static void string_buffer_init(StringBuffer* buf) {
@@ -60,17 +63,31 @@ static int string_buffer_append(StringBuffer* buf, const char* text) {
     return 1;
 }
 
-static void repl_session_init(ReplSession* session) {
+static void repl_session_init(ReplSession* session, const char* db_path) {
     string_buffer_init(&session->procedures);
     string_buffer_init(&session->main_body);
     session->var_count = 0;
     init_chunk(&session->chunk);
     session->vm = vm_init();
+    session->driver_open = 0;
     session->ctx.db_path = DEFAULT_DB_PATH;
     session->ctx.pager = NULL;
-    catalog_open(&session->ctx);
-    if (session->vm != NULL) {
-        vm_set_context(session->vm, &session->ctx);
+
+    if (db_path != NULL) {
+        sqlite_driver_init(&session->driver);
+        if (session->driver.open(&session->driver, db_path)) {
+            session->driver_open = 1;
+            if (session->vm != NULL) {
+                vm_set_driver(session->vm, &session->driver);
+            }
+        } else {
+            fprintf(stderr, "Could not open database: %s\n", db_path);
+        }
+    } else {
+        catalog_open(&session->ctx);
+        if (session->vm != NULL) {
+            vm_set_context(session->vm, &session->ctx);
+        }
     }
 }
 
@@ -86,7 +103,12 @@ static void repl_session_free(ReplSession* session) {
         session->vm = NULL;
     }
     free_chunk(&session->chunk);
-    catalog_close(&session->ctx);
+    if (session->driver_open) {
+        session->driver.close(&session->driver);
+        session->driver_open = 0;
+    } else {
+        catalog_close(&session->ctx);
+    }
 }
 
 static void trim_trailing_ws(char* s) {
@@ -172,8 +194,9 @@ static int run_source(ReplSession* session, const char* source) {
     free_chunk(&session->chunk);
     init_chunk(&session->chunk);
     char error[256];
+    Context* ctx = session->driver_open ? NULL : &session->ctx;
     if (!compile_with_context_and_path(source, &session->chunk, NULL,
-                                       error, sizeof(error), &session->ctx)) {
+                                       error, sizeof(error), ctx)) {
         fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
         return 1;
     }
@@ -181,7 +204,11 @@ static int run_source(ReplSession* session, const char* source) {
     if (session->vm == NULL) {
         session->vm = vm_init();
         if (session->vm != NULL) {
-            vm_set_context(session->vm, &session->ctx);
+            if (session->driver_open) {
+                vm_set_driver(session->vm, &session->driver);
+            } else {
+                vm_set_context(session->vm, &session->ctx);
+            }
         }
     }
     if (session->vm == NULL) {
@@ -270,6 +297,26 @@ static int cmd_load(ReplSession* session, const char* path) {
     return 0;
 }
 
+static void print_value(Value v) {
+    value_print(v);
+}
+
+static void print_driver_row(ReplSession* session, void* result, void* row, int col_count) {
+    for (int i = 0; i < col_count; i++) {
+        if (i > 0) printf(" | ");
+        const char* name = session->driver.result_column_name(&session->driver, result, i);
+        if (name == NULL) name = "?";
+        Value field;
+        if (session->driver.row_get_field(&session->driver, row, name, &field)) {
+            printf("%s = ", name);
+            print_value(field);
+            value_release(field);
+        } else {
+            printf("%s = ?", name);
+        }
+    }
+}
+
 static void cmd_sql(ReplSession* session, const char* query) {
     if (query == NULL || *query == '\0') {
         fprintf(stderr, "Usage: .sql <query>\n");
@@ -277,6 +324,35 @@ static void cmd_sql(ReplSession* session, const char* query) {
     }
 
     while (*query != '\0' && isspace((unsigned char)*query)) query++;
+
+    if (session->driver_open) {
+        if (strncasecmp(query, "SELECT ", 7) == 0) {
+            void* result = NULL;
+            if (!session->driver.query(&session->driver, query, NULL, 0, &result)) {
+                printf("(empty result)\n");
+                return;
+            }
+            int col_count = session->driver.result_column_count(&session->driver, result);
+            void* row = NULL;
+            int first = 1;
+            while (session->driver.result_next(&session->driver, result, &row)) {
+                if (!first) printf("\n");
+                first = 0;
+                print_driver_row(session, result, row, col_count);
+            }
+            if (first) {
+                printf("(empty result)\n");
+            } else {
+                printf("\n");
+            }
+            session->driver.result_free(&session->driver, result);
+            return;
+        }
+        if (!session->driver.exec(&session->driver, query, NULL, 0)) {
+            fprintf(stderr, "SQL error: could not execute '%s'\n", query);
+        }
+        return;
+    }
 
     if (strncasecmp(query, "SELECT ", 7) == 0) {
         Result* res = sql_exec(query, &session->ctx);
@@ -316,7 +392,30 @@ static void cmd_sql(ReplSession* session, const char* query) {
 }
 
 static void cmd_tables(ReplSession* session) {
-    (void)session;
+    if (session->driver_open) {
+        void* result = NULL;
+        if (!session->driver.query(&session->driver,
+                                   "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+                                   NULL, 0, &result)) {
+            printf("(no tables)\n");
+            return;
+        }
+        void* row = NULL;
+        int first = 1;
+        while (session->driver.result_next(&session->driver, result, &row)) {
+            Value name;
+            if (session->driver.row_get_field(&session->driver, row, "name", &name)) {
+                print_value(name);
+                printf("\n");
+                value_release(name);
+                first = 0;
+            }
+        }
+        session->driver.result_free(&session->driver, result);
+        if (first) printf("(no tables)\n");
+        return;
+    }
+
     int count = catalog_table_count(&session->ctx);
     if (count == 0) {
         printf("(no tables)\n");
@@ -337,7 +436,95 @@ static const char* type_name(int type) {
     }
 }
 
+static void print_driver_table_schema(ReplSession* session, const char* table_name) {
+    char query[512];
+    snprintf(query, sizeof(query), "PRAGMA table_info(%s)", table_name);
+    void* result = NULL;
+    if (!session->driver.query(&session->driver, query, NULL, 0, &result)) {
+        return;
+    }
+    printf("%s(", table_name);
+    void* row = NULL;
+    int first_col = 1;
+    while (session->driver.result_next(&session->driver, result, &row)) {
+        Value name;
+        Value type;
+        int has_name = session->driver.row_get_field(&session->driver, row, "name", &name);
+        int has_type = session->driver.row_get_field(&session->driver, row, "type", &type);
+        if (has_name && name.type == VAL_STRING) {
+            if (!first_col) printf(", ");
+            first_col = 0;
+            printf("%s", name.as.as_string ? name.as.as_string : "?");
+            if (has_type && type.type == VAL_STRING && type.as.as_string != NULL) {
+                printf(" %s", type.as.as_string);
+            }
+        }
+        value_release(name);
+        value_release(type);
+    }
+    printf(")\n");
+    session->driver.result_free(&session->driver, result);
+}
+
+static int cmd_connect(ReplSession* session, const char* path) {
+    if (path == NULL || *path == '\0') {
+        fprintf(stderr, "Usage: .connect <path>\n");
+        return 1;
+    }
+    while (*path != '\0' && isspace((unsigned char)*path)) path++;
+
+    if (session->driver_open) {
+        session->driver.close(&session->driver);
+        session->driver_open = 0;
+    } else {
+        catalog_close(&session->ctx);
+        session->ctx.db_path = DEFAULT_DB_PATH;
+        session->ctx.pager = NULL;
+    }
+
+    sqlite_driver_init(&session->driver);
+    if (!session->driver.open(&session->driver, path)) {
+        fprintf(stderr, "Could not open database: %s\n", path);
+        return 1;
+    }
+    session->driver_open = 1;
+    if (session->vm != NULL) {
+        vm_set_driver(session->vm, &session->driver);
+    }
+    printf("Connected to %s\n", path);
+    return 0;
+}
+
 static void cmd_schema(ReplSession* session, const char* table_name) {
+    if (session->driver_open) {
+        if (table_name != NULL) {
+            print_driver_table_schema(session, table_name);
+            return;
+        }
+        void* result = NULL;
+        if (!session->driver.query(&session->driver,
+                                   "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+                                   NULL, 0, &result)) {
+            printf("(no tables)\n");
+            return;
+        }
+        void* row = NULL;
+        int first = 1;
+        while (session->driver.result_next(&session->driver, result, &row)) {
+            Value name;
+            if (session->driver.row_get_field(&session->driver, row, "name", &name)) {
+                if (name.type == VAL_STRING && name.as.as_string != NULL) {
+                    print_driver_table_schema(session, name.as.as_string);
+                    first = 0;
+                }
+                value_release(name);
+            }
+        }
+        session->driver.result_free(&session->driver, result);
+        if (first) printf("(no tables)\n");
+        return;
+    }
+
     int count = catalog_table_count(&session->ctx);
     if (count == 0) {
         printf("(no tables)\n");
@@ -393,13 +580,14 @@ static void print_repl_help(void) {
     printf("  .tables           List all tables in the catalog\n");
     printf("  .schema [table]   Show schema for all tables or one table\n");
     printf("  .sql <query>      Execute a SQL DDL or SELECT query\n");
+    printf("  .connect <path>   Connect to a SQLite database\n");
     printf("  .vars             Show current REPL variables\n");
     printf("  .defs             Show defined procedures\n");
 }
 
-void repl_run(void) {
+void repl_run(const char* db_path) {
     ReplSession session;
-    repl_session_init(&session);
+    repl_session_init(&session, db_path);
 
     printf("MyPL REPL (type '.help' for commands, '.exit' to quit)\n");
 
@@ -456,6 +644,10 @@ void repl_run(void) {
             }
             if (strncmp(line, ".sql ", 5) == 0) {
                 cmd_sql(&session, line + 5);
+                continue;
+            }
+            if (strncmp(line, ".connect ", 9) == 0) {
+                cmd_connect(&session, line + 9);
                 continue;
             }
             fprintf(stderr, "Unknown command: %s\n", line);
