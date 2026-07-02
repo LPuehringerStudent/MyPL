@@ -1,0 +1,41 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev gcovr
+
+    - name: Build with coverage
+      run: |
+        make clean
+        make all \
+          CFLAGS="-Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude -fprofile-arcs -ftest-coverage" \
+          LDFLAGS="-lsqlite3 -lm -lgcov"
+
+    - name: Run tests
+      run: |
+        make test \
+          CFLAGS="-Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude -fprofile-arcs -ftest-coverage" \
+          LDFLAGS="-lsqlite3 -lm -lgcov"
+
+    - name: Generate coverage report
+      run: gcovr --xml-pretty --output coverage.xml
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: coverage.xml
+        fail_ci_if_error: false
+        verbose: true
