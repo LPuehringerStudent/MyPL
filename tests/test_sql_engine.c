@@ -183,6 +183,36 @@ TEST(sql_compiler_loop_uses_persisted_table) {
     cleanup(path);
 }
 
+TEST(custom_driver_runs_create_and_insert) {
+    char* path = make_temp_path();
+    DBDriver driver;
+    custom_driver_init(&driver);
+    int rc = driver.open(&driver, path);
+    ASSERT_INT_EQ(1, rc);
+    rc = driver.exec(&driver, "CREATE TABLE users (id INT, name STRING)");
+    ASSERT_INT_EQ(1, rc);
+    rc = driver.exec(&driver, "INSERT INTO users VALUES (1, 'alice')");
+    ASSERT_INT_EQ(1, rc);
+
+    void* result = NULL;
+    rc = driver.query(&driver, "SELECT id, name FROM users", &result);
+    ASSERT_INT_EQ(1, rc);
+
+    void* row = NULL;
+    rc = driver.result_next(&driver, result, &row);
+    ASSERT_INT_EQ(1, rc);
+
+    Value id;
+    rc = driver.row_get_field(&driver, row, "id", &id);
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(VAL_INT, id.type);
+    ASSERT_INT_EQ(1, id.as.as_int);
+
+    driver.result_free(&driver, result);
+    driver.close(&driver);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -191,5 +221,6 @@ int main(void) {
     RUN_TEST(sql_where_greater_than_int);
     RUN_TEST(sql_select_unknown_table_returns_empty_result);
     RUN_TEST(sql_compiler_loop_uses_persisted_table);
+    RUN_TEST(custom_driver_runs_create_and_insert);
     TEST_SUMMARY();
 }

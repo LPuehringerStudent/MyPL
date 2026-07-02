@@ -79,6 +79,28 @@ Cell    row_get_field(Row* row, const char* name);
 /* out_type receives one of VAL_INT, VAL_FLOAT, VAL_STRING on success. */
 int sql_query_column_type(Context* ctx, const char* query, const char* column_name, int* out_type);
 
+/* -------------------------------------------------------------------------- */
+/* Database driver abstraction                                                */
+/* -------------------------------------------------------------------------- */
+
+typedef struct DBDriver DBDriver;
+
+struct DBDriver {
+    void* impl;
+    int (*open)(DBDriver* driver, const char* connection_string);
+    void (*close)(DBDriver* driver);
+    int (*exec)(DBDriver* driver, const char* sql);
+    int (*query)(DBDriver* driver, const char* sql, void** result_handle);
+    int (*result_next)(DBDriver* driver, void* result_handle, void** row_handle);
+    int (*row_get_field)(DBDriver* driver, void* row_handle, const char* name, Value* out);
+    void (*result_free)(DBDriver* driver, void* result_handle);
+    int (*begin)(DBDriver* driver);
+    int (*commit)(DBDriver* driver);
+    int (*rollback)(DBDriver* driver);
+};
+
+void custom_driver_init(DBDriver* driver);
+
 /* Storage layer */
 #define PAGE_SIZE 4096
 

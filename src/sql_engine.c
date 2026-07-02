@@ -1247,3 +1247,99 @@ Cell row_get_field(Row* row, const char* name) {
     }
     return empty;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Custom engine DBDriver implementation                                      */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    Context ctx;
+} CustomDriverImpl;
+
+static int custom_open(DBDriver* driver, const char* connection_string) {
+    CustomDriverImpl* impl = malloc(sizeof(CustomDriverImpl));
+    if (impl == NULL) return 0;
+    impl->ctx.db_path = connection_string != NULL ? connection_string : "mypl.db";
+    impl->ctx.pager = NULL;
+    if (!catalog_open(&impl->ctx)) {
+        free(impl);
+        return 0;
+    }
+    driver->impl = impl;
+    return 1;
+}
+
+static void custom_close(DBDriver* driver) {
+    CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
+    if (impl == NULL) return;
+    catalog_close(&impl->ctx);
+    free(impl);
+    driver->impl = NULL;
+}
+
+static int custom_exec(DBDriver* driver, const char* sql) {
+    CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
+    return sql_exec_ddl(sql, &impl->ctx);
+}
+
+static int custom_query(DBDriver* driver, const char* sql, void** result_handle) {
+    CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
+    Result* res = sql_exec(sql, &impl->ctx);
+    if (res == NULL) return 0;
+    *result_handle = res;
+    return 1;
+}
+
+static int custom_result_next(DBDriver* driver, void* result_handle, void** row_handle) {
+    (void)driver;
+    Row* row = result_next((Result*)result_handle);
+    if (row == NULL) return 0;
+    *row_handle = row;
+    return 1;
+}
+
+static int custom_row_get_field(DBDriver* driver, void* row_handle, const char* name, Value* out) {
+    (void)driver;
+    Cell cell = row_get_field((Row*)row_handle, name);
+    switch (cell.type) {
+        case VAL_INT:    *out = value_int(cell.as.as_int);       break;
+        case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
+        case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
+        default:         *out = value_int(0);                     break;
+    }
+    return 1;
+}
+
+static void custom_result_free(DBDriver* driver, void* result_handle) {
+    (void)driver;
+    result_free((Result*)result_handle);
+}
+
+static int custom_begin(DBDriver* driver) {
+    (void)driver;
+    return 0; /* not supported by custom engine */
+}
+
+static int custom_commit(DBDriver* driver) {
+    (void)driver;
+    return 0; /* not supported by custom engine */
+}
+
+static int custom_rollback(DBDriver* driver) {
+    (void)driver;
+    return 0; /* not supported by custom engine */
+}
+
+void custom_driver_init(DBDriver* driver) {
+    driver->impl = NULL;
+    driver->open = custom_open;
+    driver->close = custom_close;
+    driver->exec = custom_exec;
+    driver->query = custom_query;
+    driver->result_next = custom_result_next;
+    driver->row_get_field = custom_row_get_field;
+    driver->result_free = custom_result_free;
+    driver->begin = custom_begin;
+    driver->commit = custom_commit;
+    driver->rollback = custom_rollback;
+}
