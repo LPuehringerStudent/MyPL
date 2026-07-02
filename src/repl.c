@@ -259,6 +259,7 @@ static int cmd_load(ReplSession* session, const char* path) {
     const char* p = source;
     while (*p != '\0') {
         while (*p != '\0' && isspace((unsigned char)*p)) p++;
+        if (*p == '\0') break;
         if (strncmp(p, "proc ", 5) == 0) {
             const char* start = p;
             while (*p != '\0' && *p != '}') p++;
