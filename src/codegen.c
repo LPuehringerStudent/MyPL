@@ -21,6 +21,7 @@ typedef struct {
     const char* name;
     int length;
     int depth;
+    Type* type;
 } Local;
 
 typedef struct {
@@ -162,12 +163,23 @@ static int resolve_local(Compiler* compiler, const char* name, int length) {
     return -1;
 }
 
-static int add_local(Compiler* compiler, const char* name, int length) {
+static Type* resolve_local_type(Compiler* compiler, const char* name, int length) {
+    for (int i = compiler->local_count - 1; i >= 0; i--) {
+        Local* local = &compiler->locals[i];
+        if (local->length == length && memcmp(local->name, name, (size_t)length) == 0) {
+            return local->type;
+        }
+    }
+    return NULL;
+}
+
+static int add_local(Compiler* compiler, const char* name, int length, Type* type) {
     if (compiler->local_count >= MAX_LOCALS) return -1;
     Local* local = &compiler->locals[compiler->local_count];
     local->name = name;
     local->length = length;
     local->depth = compiler->scope_depth;
+    local->type = type;
     return compiler->local_count++;
 }
 
@@ -333,6 +345,39 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             }
             break;
         }
+        case EXPR_SQL_PARAM: {
+            const char* name = expr->as.sql_param.name;
+            int slot = resolve_local(compiler, name, (int)strlen(name));
+            if (slot < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", name);
+                error(compiler, msg);
+                return;
+            }
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            break;
+        }
+        case EXPR_ROW_FIELD: {
+            RowFieldExpr* rf = &expr->as.row_field;
+            compile_expr(compiler, rf->row);
+            if (compiler->had_error) return;
+            char* field_name = malloc((size_t)strlen(rf->field) + 1);
+            if (field_name == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(field_name, rf->field);
+            int field_idx = add_constant(compiler->chunk, value_string(field_name));
+            if (field_idx < 0) {
+                free(field_name);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_ROW_GET);
+            emit_u16(compiler, (uint16_t)field_idx);
+            break;
+        }
         default:
             error(compiler, "unsupported expression");
             break;
@@ -345,7 +390,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             VarDeclStmt* d = &stmt->as.var_decl;
             compile_expr(compiler, d->initializer);
             if (compiler->had_error) return;
-            int slot = add_local(compiler, d->name, (int)strlen(d->name));
+            int slot = add_local(compiler, d->name, (int)strlen(d->name), d->type);
             if (slot < 0) {
                 error(compiler, "too many locals");
                 return;
@@ -413,7 +458,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             /* Bind iterator variable to a local slot. The value is unused
                because fields are read with OP_GET_FIELD, but we need a slot
                so any nested locals keep correct offsets. */
-            int slot = add_local(compiler, f->var_name, (int)strlen(f->var_name));
+            int slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
             if (slot < 0) {
                 error(compiler, "too many locals");
                 return;
@@ -456,6 +501,53 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             compile_expr(compiler, stmt->as.expr_stmt.value);
             if (compiler->had_error) return;
             emit_byte(compiler, OP_POP);
+            break;
+        }
+        case STMT_SQL_DDL:
+        case STMT_SQL_DML: {
+            SqlStmt* s = &stmt->as.sql_stmt;
+            for (int i = 0; i < s->param_count; i++) {
+                compile_expr(compiler, s->params[i]);
+                if (compiler->had_error) return;
+                const char* name = s->params[i]->as.sql_param.name;
+                Type* t = resolve_local_type(compiler, name, (int)strlen(name));
+                if (t != NULL && t->kind == TYPE_STRING) {
+                    emit_byte(compiler, OP_SQL_BIND_STRING);
+                } else if (t != NULL && t->kind == TYPE_FLOAT) {
+                    emit_byte(compiler, OP_SQL_BIND_FLOAT);
+                } else {
+                    emit_byte(compiler, OP_SQL_BIND_INT);
+                }
+            }
+            char* sql_copy = malloc((size_t)strlen(s->sql) + 1);
+            if (sql_copy == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(sql_copy, s->sql);
+            int sql_idx = add_constant(compiler->chunk, value_string(sql_copy));
+            if (sql_idx < 0) {
+                free(sql_copy);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_SQL_EXEC);
+            emit_u16(compiler, (uint16_t)sql_idx);
+            break;
+        }
+        case STMT_SQL_TRANSACTION: {
+            int kind = stmt->as.sql_transaction.kind;
+            if (kind == 0) {
+                emit_byte(compiler, OP_SQL_BEGIN);
+            } else if (kind == 1) {
+                emit_byte(compiler, OP_SQL_COMMIT);
+            } else {
+                emit_byte(compiler, OP_SQL_ROLLBACK);
+            }
+            break;
+        }
+        case STMT_SQL_QUERY: {
+            error(compiler, "SQL query assignment is not supported yet");
             break;
         }
         default:
@@ -643,7 +735,7 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         int idx = find_proc(compiler, proc->name);
         compiler->procs[idx].offset = compiler->chunk->count;
         for (int p = 0; p < proc->param_count; p++) {
-            add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name));
+            add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name), proc->params[p].type);
         }
         compile_block(compiler, proc->body);
         if (compiler->had_error) {

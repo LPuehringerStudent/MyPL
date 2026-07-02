@@ -514,7 +514,7 @@ Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value) {
     return stmt;
 }
 
-Stmt* create_sql_stmt(int kind, const char* sql, Expr** params, int param_count) {
+Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) {
         free(sql);

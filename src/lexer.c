@@ -77,7 +77,6 @@ static Token string(Lexer* lexer) {
 
 static TokenType identifier_type(Lexer* lexer);
 static Token sql_query(Lexer* lexer);
-static int is_sql_keyword(TokenType type);
 
 static Token identifier(Lexer* lexer) {
     while (is_alpha(peek(lexer)) || is_digit(peek(lexer))) {
@@ -164,14 +163,6 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
     }
     return TOKEN_IDENT;
-}
-
-static int is_sql_keyword(TokenType type) {
-    return type == TOKEN_CREATE || type == TOKEN_DROP || type == TOKEN_TABLE ||
-           type == TOKEN_INSERT || type == TOKEN_INTO || type == TOKEN_VALUES ||
-           type == TOKEN_UPDATE || type == TOKEN_SET ||
-           type == TOKEN_DELETE || type == TOKEN_FROM || type == TOKEN_WHERE ||
-           type == TOKEN_BEGIN || type == TOKEN_COMMIT || type == TOKEN_ROLLBACK;
 }
 
 static Token make_token(Lexer* lexer, TokenType type) {

@@ -740,6 +740,15 @@ TEST(compiler_compiles_nested_index_assignment) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_emits_sql_exec) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile("proc main() -> int { create table t (id int); return 0; }", &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -790,5 +799,6 @@ int main(void) {
     RUN_TEST(compiler_compiles_min_max_int_natives);
     RUN_TEST(compiler_compiles_abs_float_native);
     RUN_TEST(compiler_compiles_nested_index_assignment);
+    RUN_TEST(compiler_emits_sql_exec);
     TEST_SUMMARY();
 }

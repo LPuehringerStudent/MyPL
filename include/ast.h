@@ -258,7 +258,7 @@ Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
 Stmt* create_expr_stmt(Expr* value);
 Stmt* create_import_stmt(const char* path);
-Stmt* create_sql_stmt(int kind, const char* sql, Expr** params, int param_count);
+Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count);
 Stmt* create_sql_transaction_stmt(int kind);
 
 Expr* create_literal_expr(Value value);
