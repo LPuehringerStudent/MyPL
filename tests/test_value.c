@@ -134,6 +134,14 @@ TEST(is_truthy_non_null_string_is_true) {
     ASSERT_INT_EQ(1, value_is_truthy(value_string(strdup("hello"))));
 }
 
+TEST(row_value_holds_handle_and_type) {
+    int dummy_row = 42;
+    Value v = value_row(&dummy_row);
+    ASSERT_INT_EQ(VAL_ROW, v.type);
+    ASSERT_PTR_EQ(&dummy_row, v.as.as_row_handle);
+    value_release(v);
+}
+
 int main(void) {
     RUN_TEST(add_ints);
     RUN_TEST(sub_ints);
@@ -156,5 +164,6 @@ int main(void) {
     RUN_TEST(is_truthy_float_nonzero_is_true);
     RUN_TEST(is_truthy_null_string_is_false);
     RUN_TEST(is_truthy_non_null_string_is_true);
+    RUN_TEST(row_value_holds_handle_and_type);
     TEST_SUMMARY();
 }

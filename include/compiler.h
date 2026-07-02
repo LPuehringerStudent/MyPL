@@ -39,7 +39,8 @@ typedef enum {
     VAL_FLOAT,
     VAL_STRING,
     VAL_BOOL,
-    VAL_ARRAY
+    VAL_ARRAY,
+    VAL_ROW
 } ValueType;
 
 typedef struct {
@@ -76,6 +77,7 @@ Value value_float(double v);
 Value value_string(char* s);
 Value value_bool(int v);
 Value value_array(ArrayObj* array);
+Value value_row(void* row_handle);
 void value_print(Value value);
 
 void value_retain(Value v);

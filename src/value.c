@@ -85,6 +85,13 @@ Value value_array(ArrayObj* array) {
     return value;
 }
 
+Value value_row(void* row_handle) {
+    Value value;
+    value.type = VAL_ROW;
+    value.as.as_row_handle = row_handle;
+    return value;
+}
+
 void value_retain(Value v) {
     if (v.type == VAL_STRING && v.as.as_string != NULL) {
         string_obj_from_chars(v.as.as_string)->obj.ref_count++;
@@ -288,6 +295,9 @@ void value_print(Value value) {
             printf("]");
             break;
         }
+        case VAL_ROW:
+            printf("(row)");
+            break;
         default:
             printf("?");
             break;

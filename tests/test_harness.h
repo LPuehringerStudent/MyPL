@@ -101,6 +101,21 @@ static int current_test_failed = 0;
         }                                                       \
     } while (0)
 
+#define ASSERT_PTR_EQ(expected, actual)                         \
+    do {                                                        \
+        const void* _expected = (expected);                     \
+        const void* _actual = (actual);                         \
+        if (_expected != _actual) {                             \
+            current_test_failed = 1;                            \
+            tests_failed++;                                     \
+            fprintf(stderr,                                     \
+                    "  FAIL: %s at %s:%d: expected pointer %p, got %p\n", \
+                    current_test_name, __FILE__, __LINE__,      \
+                    _expected, _actual);                        \
+            return;                                             \
+        }                                                       \
+    } while (0)
+
 #define TEST_SUMMARY()                                          \
     do {                                                        \
         printf("\n%d run, %d passed, %d failed\n",              \
