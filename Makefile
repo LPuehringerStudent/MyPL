@@ -1,6 +1,6 @@
 CC      = cc
 CFLAGS  = -Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude
-LDFLAGS =
+LDFLAGS = -lsqlite3 -lm
 
 SRCDIR  = src
 OBJDIR  = build
@@ -42,6 +42,7 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_gc tests/test_gc.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_repl tests/test_repl.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_typecheck tests/test_typecheck.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sqlite tests/test_sqlite.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(BINDIR)/test_value
 	$(BINDIR)/test_chunk
 	$(BINDIR)/test_compiler
@@ -58,6 +59,7 @@ test: $(TARGET)
 	$(BINDIR)/test_gc
 	$(BINDIR)/test_repl
 	$(BINDIR)/test_typecheck
+	$(BINDIR)/test_sqlite
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)
