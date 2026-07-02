@@ -77,6 +77,7 @@ static Token string(Lexer* lexer) {
 
 static TokenType identifier_type(Lexer* lexer);
 static Token sql_query(Lexer* lexer);
+static int is_sql_keyword(TokenType type);
 
 static Token identifier(Lexer* lexer) {
     while (is_alpha(peek(lexer)) || is_digit(peek(lexer))) {
@@ -105,17 +106,29 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 'b':
             if (length == 4 && memcmp(lexer->start, "bool", 4) == 0) return TOKEN_BOOL_TYPE;
+            if (length == 5 && memcmp(lexer->start, "begin", 5) == 0) return TOKEN_BEGIN;
             break;
-        case 'f':
-            if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
-            if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
-            if (length == 5 && memcmp(lexer->start, "false", 5) == 0) return TOKEN_FALSE;
+        case 'c':
+            if (length == 6 && memcmp(lexer->start, "commit", 6) == 0) return TOKEN_COMMIT;
+            if (length == 6 && memcmp(lexer->start, "create", 6) == 0) return TOKEN_CREATE;
+            break;
+        case 'd':
+            if (length == 6 && memcmp(lexer->start, "delete", 6) == 0) return TOKEN_DELETE;
+            if (length == 4 && memcmp(lexer->start, "drop", 4) == 0) return TOKEN_DROP;
             break;
         case 'e':
             if (length == 4 && memcmp(lexer->start, "else", 4) == 0) return TOKEN_ELSE;
             break;
+        case 'f':
+            if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
+            if (length == 4 && memcmp(lexer->start, "from", 4) == 0) return TOKEN_FROM;
+            if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
+            if (length == 5 && memcmp(lexer->start, "false", 5) == 0) return TOKEN_FALSE;
+            break;
         case 'i':
             if (length == 2 && memcmp(lexer->start, "if", 2) == 0) return TOKEN_IF;
+            if (length == 6 && memcmp(lexer->start, "insert", 6) == 0) return TOKEN_INSERT;
+            if (length == 4 && memcmp(lexer->start, "into", 4) == 0) return TOKEN_INTO;
             if (length == 3 && memcmp(lexer->start, "int", 3) == 0) return TOKEN_INT_TYPE;
             if (length == 2 && memcmp(lexer->start, "in", 2) == 0) return TOKEN_IN;
             if (length == 6 && memcmp(lexer->start, "import", 6) == 0) return TOKEN_IMPORT;
@@ -125,19 +138,40 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 5 && memcmp(lexer->start, "print", 5) == 0) return TOKEN_PRINT;
             break;
         case 'r':
+            if (length == 8 && memcmp(lexer->start, "rollback", 8) == 0) return TOKEN_ROLLBACK;
             if (length == 6 && memcmp(lexer->start, "return", 6) == 0) return TOKEN_RETURN;
             break;
         case 'S':
             if (length == 6 && memcmp(lexer->start, "SELECT", 6) == 0) return TOKEN_SQL_QUERY;
             break;
         case 's':
+            if (length == 6 && memcmp(lexer->start, "select", 6) == 0) return TOKEN_SQL_QUERY;
+            if (length == 3 && memcmp(lexer->start, "set", 3) == 0) return TOKEN_SET;
             if (length == 6 && memcmp(lexer->start, "string", 6) == 0) return TOKEN_STRING_TYPE;
             break;
         case 't':
+            if (length == 5 && memcmp(lexer->start, "table", 5) == 0) return TOKEN_TABLE;
             if (length == 4 && memcmp(lexer->start, "true", 4) == 0) return TOKEN_TRUE;
+            break;
+        case 'u':
+            if (length == 6 && memcmp(lexer->start, "update", 6) == 0) return TOKEN_UPDATE;
+            break;
+        case 'v':
+            if (length == 6 && memcmp(lexer->start, "values", 6) == 0) return TOKEN_VALUES;
+            break;
+        case 'w':
+            if (length == 5 && memcmp(lexer->start, "where", 5) == 0) return TOKEN_WHERE;
             break;
     }
     return TOKEN_IDENT;
+}
+
+static int is_sql_keyword(TokenType type) {
+    return type == TOKEN_CREATE || type == TOKEN_DROP || type == TOKEN_TABLE ||
+           type == TOKEN_INSERT || type == TOKEN_INTO || type == TOKEN_VALUES ||
+           type == TOKEN_UPDATE || type == TOKEN_SET ||
+           type == TOKEN_DELETE || type == TOKEN_FROM || type == TOKEN_WHERE ||
+           type == TOKEN_BEGIN || type == TOKEN_COMMIT || type == TOKEN_ROLLBACK;
 }
 
 static Token make_token(Lexer* lexer, TokenType type) {
@@ -227,6 +261,7 @@ Token lexer_next_token(Lexer* lexer) {
         case '!':
             if (match(lexer, '=')) return make_token(lexer, TOKEN_NE);
             return make_token(lexer, TOKEN_BANG);
+        case '?': return make_token(lexer, TOKEN_QUESTION);
         case '.': return make_token(lexer, TOKEN_DOT);
         case '_':
         case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':

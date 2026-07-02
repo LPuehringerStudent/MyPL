@@ -258,6 +258,27 @@ TEST(ast_sql_stmt_node_exists) {
     free_stmt(stmt);
 }
 
+TEST(parser_parses_create_table) {
+    Program* program = parse("proc main() -> int { create table t (id int); return 0; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_SQL_DDL, stmt->kind);
+    ASSERT_STRING_EQ("create table t (id int)", stmt->as.sql_stmt.sql);
+    free_program(program);
+}
+
+TEST(parser_parses_insert_with_param) {
+    Program* program = parse("proc main() -> int { int x = 1; insert into t values (?x); return 0; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[1];
+    ASSERT_INT_EQ(STMT_SQL_DML, stmt->kind);
+    ASSERT_STRING_EQ("insert into t values (?)", stmt->as.sql_stmt.sql);
+    ASSERT_INT_EQ(1, stmt->as.sql_stmt.param_count);
+    ASSERT_INT_EQ(EXPR_SQL_PARAM, stmt->as.sql_stmt.params[0]->kind);
+    ASSERT_STRING_EQ("x", stmt->as.sql_stmt.params[0]->as.sql_param.name);
+    free_program(program);
+}
+
 TEST(parser_parses_import_statement) {
     Program* program = parse("import \"foo.mypl\"; proc main() -> int { return 0; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -309,6 +330,8 @@ int main(void) {
     RUN_TEST(parser_parses_index_assignment);
     RUN_TEST(parser_parses_nested_index_assignment);
     RUN_TEST(ast_sql_stmt_node_exists);
+    RUN_TEST(parser_parses_create_table);
+    RUN_TEST(parser_parses_insert_with_param);
     RUN_TEST(parser_parses_import_statement);
     RUN_TEST(parser_parses_typed_array_variable);
     RUN_TEST(parser_parses_nested_typed_array);

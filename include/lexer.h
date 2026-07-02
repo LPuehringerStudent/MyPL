@@ -12,6 +12,22 @@ typedef enum {
     TOKEN_PRINT,
     TOKEN_IMPORT,
 
+    /* SQL keywords */
+    TOKEN_CREATE,
+    TOKEN_DROP,
+    TOKEN_TABLE,
+    TOKEN_INSERT,
+    TOKEN_INTO,
+    TOKEN_VALUES,
+    TOKEN_UPDATE,
+    TOKEN_SET,
+    TOKEN_DELETE,
+    TOKEN_FROM,
+    TOKEN_WHERE,
+    TOKEN_BEGIN,
+    TOKEN_COMMIT,
+    TOKEN_ROLLBACK,
+
     /* types */
     TOKEN_INT_TYPE,
     TOKEN_FLOAT_TYPE,
@@ -40,6 +56,7 @@ typedef enum {
     TOKEN_LT,
     TOKEN_GT,
     TOKEN_BANG,
+    TOKEN_QUESTION,
     TOKEN_PLUS,
     TOKEN_MINUS,
     TOKEN_STAR,

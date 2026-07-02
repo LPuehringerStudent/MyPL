@@ -86,6 +86,85 @@ static char* copy_token_lexeme_trimmed(const Token* token) {
 
 static Expr* expression(Parser* parser);
 
+static int is_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static Stmt* sql_statement(Parser* parser, int kind) {
+    const char* sql_start = parser->previous.start;
+    while (!check(parser, TOKEN_SEMICOLON) && !check(parser, TOKEN_EOF)) {
+        advance(parser);
+    }
+    if (check(parser, TOKEN_EOF)) {
+        error_at_current(parser, "expected ';' after SQL statement");
+        return NULL;
+    }
+    int sql_len = (int)(parser->current.start - sql_start);
+    char* sql = malloc((size_t)sql_len + 1);
+    if (sql == NULL) {
+        error_at_current(parser, "out of memory");
+        return NULL;
+    }
+    memcpy(sql, sql_start, (size_t)sql_len);
+    sql[sql_len] = '\0';
+
+    Expr** params = NULL;
+    int param_count = 0;
+    char* out = sql;
+    const char* p = sql;
+    while (*p != '\0') {
+        if (*p == '?') {
+            const char* ident = p + 1;
+            const char* q = ident;
+            while (is_ident_char(*q)) q++;
+            if (q > ident) {
+                int name_len = (int)(q - ident);
+                char* name = malloc((size_t)name_len + 1);
+                if (name == NULL) {
+                    free(sql);
+                    for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                    free(params);
+                    error_at_current(parser, "out of memory");
+                    return NULL;
+                }
+                memcpy(name, ident, (size_t)name_len);
+                name[name_len] = '\0';
+                Expr** new_params = realloc(params, sizeof(Expr*) * (size_t)(param_count + 1));
+                if (new_params == NULL) {
+                    free(name);
+                    free(sql);
+                    for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                    free(params);
+                    error_at_current(parser, "out of memory");
+                    return NULL;
+                }
+                params = new_params;
+                params[param_count++] = create_sql_param_expr(name);
+                free(name);
+
+                /* Copy '?' and skip identifier in output SQL. */
+                *out++ = '?';
+                p = q;
+                continue;
+            }
+        }
+        *out++ = *p++;
+    }
+    *out = '\0';
+
+    Stmt* stmt = create_sql_stmt(kind, sql, params, param_count);
+    free(sql);
+    if (stmt == NULL) {
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
+        error_at_current(parser, "out of memory");
+        return NULL;
+    }
+    advance(parser); /* consume ; */
+    return stmt;
+}
+
 static Expr* grouping(Parser* parser) {
     Expr* expr = expression(parser);
     advance(parser); /* consume ) */
@@ -148,11 +227,18 @@ static Expr* variable(Parser* parser) {
 static Expr* field(Parser* parser, Expr* left) {
     advance(parser); /* field name */
     char* field_name = copy_token_lexeme(&parser->previous);
-    Expr* expr = create_field_expr(left->as.variable.name, field_name);
+    Expr* expr;
+    if (left->kind == EXPR_VARIABLE) {
+        expr = create_field_expr(left->as.variable.name, field_name);
+    } else {
+        expr = create_row_field_expr(left, field_name);
+    }
     expr->loc.line = parser->previous.line;
     expr->loc.column = parser->previous.column;
     free(field_name);
-    free_expr(left);
+    if (left->kind == EXPR_VARIABLE) {
+        free_expr(left);
+    }
     return expr;
 }
 
@@ -257,6 +343,11 @@ static Type* parse_type(Parser* parser) {
     if (match(parser, TOKEN_FLOAT_TYPE)) return &type_float;
     if (match(parser, TOKEN_STRING_TYPE)) return &type_string;
     if (match(parser, TOKEN_BOOL_TYPE)) return &type_bool;
+    if (check(parser, TOKEN_IDENT) && parser->current.length == 3 &&
+        strncmp(parser->current.start, "row", 3) == 0) {
+        advance(parser);
+        return &type_row;
+    }
     if (match(parser, TOKEN_ARRAY_TYPE)) {
         if (match(parser, TOKEN_LT)) {
             Type* element = parse_type(parser);
@@ -495,6 +586,24 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_FOR)) return for_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
     if (match(parser, TOKEN_PRINT)) return print_statement(parser);
+    if (match(parser, TOKEN_CREATE) || match(parser, TOKEN_DROP)) {
+        return sql_statement(parser, STMT_SQL_DDL);
+    }
+    if (match(parser, TOKEN_INSERT) || match(parser, TOKEN_UPDATE) || match(parser, TOKEN_DELETE)) {
+        return sql_statement(parser, STMT_SQL_DML);
+    }
+    if (match(parser, TOKEN_BEGIN)) {
+        advance(parser); /* consume ; */
+        return create_sql_transaction_stmt(0);
+    }
+    if (match(parser, TOKEN_COMMIT)) {
+        advance(parser); /* consume ; */
+        return create_sql_transaction_stmt(1);
+    }
+    if (match(parser, TOKEN_ROLLBACK)) {
+        advance(parser); /* consume ; */
+        return create_sql_transaction_stmt(2);
+    }
     if (check(parser, TOKEN_IDENT)) return assignment(parser);
     error_at_current(parser, "expected statement");
     return NULL;
