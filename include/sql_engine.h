@@ -61,6 +61,13 @@ Table* catalog_create_table(Context* ctx, const char* name, const char** columns
 Table* catalog_find_table(Context* ctx, const char* name);
 void   catalog_insert(Context* ctx, Table* table, Cell* cells);
 
+/* Catalog introspection */
+int         catalog_table_count(Context* ctx);
+const char* catalog_table_name(Context* ctx, int index);
+int         catalog_table_column_count(Context* ctx, int index);
+const char* catalog_table_column_name(Context* ctx, int index, int col);
+int         catalog_table_column_type(Context* ctx, int index, int col);
+
 /* SQL execution */
 Result* sql_exec(const char* query, Context* ctx);
 int     sql_exec_ddl(const char* query, Context* ctx);

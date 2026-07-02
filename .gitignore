@@ -6,6 +6,9 @@ build/
 *.so
 mydb
 
+# Runtime/test artifacts
+*.db
+
 # IDE
 .idea/
 .vscode/

@@ -40,6 +40,7 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_strings tests/test_strings.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_file_io tests/test_file_io.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_gc tests/test_gc.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_repl tests/test_repl.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_typecheck tests/test_typecheck.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(BINDIR)/test_value
 	$(BINDIR)/test_chunk
@@ -55,6 +56,7 @@ test: $(TARGET)
 	$(BINDIR)/test_strings
 	$(BINDIR)/test_file_io
 	$(BINDIR)/test_gc
+	$(BINDIR)/test_repl
 	$(BINDIR)/test_typecheck
 
 clean:

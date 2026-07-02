@@ -22,5 +22,9 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk);
 const char*     vm_get_error(VM* vm);
 void            vm_set_error(VM* vm, const char* message);
 Value           vm_pop(VM* vm);
+int             vm_stack_depth(VM* vm);
+Value           vm_stack_get(VM* vm, int index);
+int             vm_local_count(VM* vm);
+Value           vm_local_get(VM* vm, int index);
 
 #endif

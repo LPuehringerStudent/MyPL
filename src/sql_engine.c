@@ -201,6 +201,37 @@ Table* catalog_find_table(Context* ctx, const char* name) {
     return NULL;
 }
 
+int catalog_table_count(Context* ctx) {
+    (void)ctx;
+    return g_catalog_count;
+}
+
+const char* catalog_table_name(Context* ctx, int index) {
+    (void)ctx;
+    if (index < 0 || index >= g_catalog_count) return NULL;
+    return g_catalog[index]->name;
+}
+
+int catalog_table_column_count(Context* ctx, int index) {
+    (void)ctx;
+    if (index < 0 || index >= g_catalog_count) return 0;
+    return g_catalog[index]->column_count;
+}
+
+const char* catalog_table_column_name(Context* ctx, int index, int col) {
+    (void)ctx;
+    if (index < 0 || index >= g_catalog_count) return NULL;
+    if (col < 0 || col >= g_catalog[index]->column_count) return NULL;
+    return g_catalog[index]->columns[col].name;
+}
+
+int catalog_table_column_type(Context* ctx, int index, int col) {
+    (void)ctx;
+    if (index < 0 || index >= g_catalog_count) return 0;
+    if (col < 0 || col >= g_catalog[index]->column_count) return 0;
+    return g_catalog[index]->columns[col].type;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Row serialization                                                          */
 /* -------------------------------------------------------------------------- */

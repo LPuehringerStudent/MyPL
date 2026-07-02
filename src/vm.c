@@ -15,6 +15,9 @@ struct VM {
     uint8_t*      return_ips[STACK_MAX];
     int           frame_count;
     Value*        frame_base;
+    int           local_count;
+    Value         repl_locals[STACK_MAX];
+    int           repl_local_count;
     Result*       result;
     Row*          row;
     struct Context* context;
@@ -29,6 +32,8 @@ VM* vm_init(void) {
     vm->stack_top = vm->stack;
     vm->frame_count = 0;
     vm->frame_base = vm->stack;
+    vm->local_count = 0;
+    vm->repl_local_count = 0;
     vm->result = NULL;
     vm->row = NULL;
     vm->context = NULL;
@@ -54,6 +59,9 @@ void vm_free(VM* vm) {
     if (vm == NULL) return;
     for (Value* p = vm->stack; p < vm->stack_top; p++) {
         value_release(*p);
+    }
+    for (int i = 0; i < vm->repl_local_count; i++) {
+        value_release(vm->repl_locals[i]);
     }
     result_free(vm->result);
     array_pool_free_all();
@@ -96,6 +104,30 @@ Value vm_pop(VM* vm) {
     return value;
 }
 
+int vm_stack_depth(VM* vm) {
+    if (vm == NULL) return 0;
+    return (int)(vm->stack_top - vm->stack);
+}
+
+Value vm_stack_get(VM* vm, int index) {
+    if (vm == NULL || index < 0 || index >= vm_stack_depth(vm)) {
+        return value_int(0);
+    }
+    return vm->stack[index];
+}
+
+int vm_local_count(VM* vm) {
+    if (vm == NULL) return 0;
+    return vm->repl_local_count;
+}
+
+Value vm_local_get(VM* vm, int index) {
+    if (vm == NULL || index < 0 || index >= vm->repl_local_count) {
+        return value_int(0);
+    }
+    return vm->repl_locals[index];
+}
+
 void vm_set_context(VM* vm, struct Context* ctx) {
     if (vm == NULL) return;
     vm->context = ctx;
@@ -105,6 +137,8 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
     vm->chunk = chunk;
     vm->ip = chunk->code;
     vm->error_message[0] = '\0';
+    vm->local_count = 0;
+    vm->repl_local_count = 0;
     uint8_t* end = chunk->code + chunk->count;
 
     for (;;) {
@@ -136,6 +170,9 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 uint8_t slot = *vm->ip++;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
+                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                    vm->local_count = slot + 1;
+                }
                 Value v = vm->frame_base[slot];
                 value_retain(v);
                 if (!push(vm, v)) {
@@ -150,10 +187,23 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 uint8_t slot = *vm->ip++;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
+                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                    vm->local_count = slot + 1;
+                }
                 Value v = *(vm->stack_top - 1);
                 value_retain(v);
                 value_release(vm->frame_base[slot]);
                 vm->frame_base[slot] = v;
+                if (vm->frame_count == 1) {
+                    if (slot < vm->repl_local_count) {
+                        value_release(vm->repl_locals[slot]);
+                    }
+                    vm->repl_locals[slot] = v;
+                    value_retain(v);
+                    if (slot + 1 > vm->repl_local_count) {
+                        vm->repl_local_count = slot + 1;
+                    }
+                }
                 break;
             }
             case OP_ADD: {
