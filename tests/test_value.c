@@ -57,6 +57,7 @@ TEST(value_types_use_enum_constants) {
     ASSERT_INT_EQ(VAL_INT, i.type);
     ASSERT_INT_EQ(VAL_FLOAT, f.type);
     ASSERT_INT_EQ(VAL_STRING, s.type);
+    value_release(s);
 }
 
 TEST(add_int_and_float_returns_float) {
@@ -72,6 +73,7 @@ TEST(sub_int_and_string_returns_zero) {
     Value b = value_string(strdup("x"));
     Value r = value_sub(a, b);
     ASSERT_INT_EQ(0, r.as.as_int);
+    value_release(b);
 }
 
 TEST(mul_float_and_int_returns_float) {
@@ -87,6 +89,7 @@ TEST(div_string_and_int_returns_zero) {
     Value b = value_int(4);
     Value r = value_div(a, b);
     ASSERT_INT_EQ(0, r.as.as_int);
+    value_release(a);
 }
 
 TEST(eq_int_and_float_coerces) {
@@ -131,7 +134,9 @@ TEST(is_truthy_null_string_is_false) {
 }
 
 TEST(is_truthy_non_null_string_is_true) {
-    ASSERT_INT_EQ(1, value_is_truthy(value_string(strdup("hello"))));
+    Value v = value_string(strdup("hello"));
+    ASSERT_INT_EQ(1, value_is_truthy(v));
+    value_release(v);
 }
 
 TEST(row_value_holds_handle_and_type) {
