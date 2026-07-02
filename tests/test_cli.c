@@ -88,6 +88,7 @@ TEST(cli_resolves_nested_import_relative_to_importing_file) {
 }
 
 TEST(cli_accepts_db_flag) {
+    remove("/tmp/cli_test.db");
     FILE* f = fopen("/tmp/cli_db.mypl", "w");
     ASSERT_PTR_NOT_NULL(f);
     fprintf(f, "proc main() -> int { create table t (id int); return 0; }\n");
