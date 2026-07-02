@@ -17,7 +17,7 @@ TARGET      = $(BINDIR)/mypl
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS) | $(BINDIR)
-	$(CC) $(LDFLAGS) -o $@ $(OBJECTS)
+	$(CC) -o $@ $(OBJECTS) $(LDFLAGS)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
