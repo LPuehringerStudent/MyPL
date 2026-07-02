@@ -89,8 +89,8 @@ struct DBDriver {
     void* impl;
     int (*open)(DBDriver* driver, const char* connection_string);
     void (*close)(DBDriver* driver);
-    int (*exec)(DBDriver* driver, const char* sql);
-    int (*query)(DBDriver* driver, const char* sql, void** result_handle);
+    int (*exec)(DBDriver* driver, const char* sql, Value* params, int param_count);
+    int (*query)(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle);
     int (*result_next)(DBDriver* driver, void* result_handle, void** row_handle);
     int (*row_get_field)(DBDriver* driver, void* row_handle, const char* name, Value* out);
     void (*result_free)(DBDriver* driver, void* result_handle);

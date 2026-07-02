@@ -1277,12 +1277,14 @@ static void custom_close(DBDriver* driver) {
     driver->impl = NULL;
 }
 
-static int custom_exec(DBDriver* driver, const char* sql) {
+static int custom_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
+    (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
     return sql_exec_ddl(sql, &impl->ctx);
 }
 
-static int custom_query(DBDriver* driver, const char* sql, void** result_handle) {
+static int custom_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {
+    (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
     Result* res = sql_exec(sql, &impl->ctx);
     if (res == NULL) return 0;

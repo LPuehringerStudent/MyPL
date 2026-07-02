@@ -189,13 +189,13 @@ TEST(custom_driver_runs_create_and_insert) {
     custom_driver_init(&driver);
     int rc = driver.open(&driver, path);
     ASSERT_INT_EQ(1, rc);
-    rc = driver.exec(&driver, "CREATE TABLE users (id INT, name STRING)");
+    rc = driver.exec(&driver, "CREATE TABLE users (id INT, name STRING)", NULL, 0);
     ASSERT_INT_EQ(1, rc);
-    rc = driver.exec(&driver, "INSERT INTO users VALUES (1, 'alice')");
+    rc = driver.exec(&driver, "INSERT INTO users VALUES (1, 'alice')", NULL, 0);
     ASSERT_INT_EQ(1, rc);
 
     void* result = NULL;
-    rc = driver.query(&driver, "SELECT id, name FROM users", &result);
+    rc = driver.query(&driver, "SELECT id, name FROM users", NULL, 0, &result);
     ASSERT_INT_EQ(1, rc);
 
     void* row = NULL;

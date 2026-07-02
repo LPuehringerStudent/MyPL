@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include <sqlite3.h>
+#include "sql_engine.h"
+#include "compiler.h"
+#include "sqlite_driver.h"
 
 TEST(sqlite3_is_linked) {
     sqlite3* db = NULL;
@@ -8,7 +11,71 @@ TEST(sqlite3_is_linked) {
     sqlite3_close(db);
 }
 
+TEST(sqlite_driver_crud) {
+    DBDriver driver;
+    sqlite_driver_init(&driver);
+    int rc = driver.open(&driver, ":memory:");
+    ASSERT_INT_EQ(1, rc);
+    rc = driver.exec(&driver, "CREATE TABLE t (id INTEGER, name TEXT)", NULL, 0);
+    ASSERT_INT_EQ(1, rc);
+    rc = driver.exec(&driver, "INSERT INTO t VALUES (1, 'alice')", NULL, 0);
+    ASSERT_INT_EQ(1, rc);
+
+    void* result = NULL;
+    rc = driver.query(&driver, "SELECT id, name FROM t", NULL, 0, &result);
+    ASSERT_INT_EQ(1, rc);
+
+    void* row = NULL;
+    rc = driver.result_next(&driver, result, &row);
+    ASSERT_INT_EQ(1, rc);
+
+    Value id;
+    rc = driver.row_get_field(&driver, row, "id", &id);
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(VAL_INT, id.type);
+    ASSERT_INT_EQ(1, id.as.as_int);
+
+    Value name;
+    rc = driver.row_get_field(&driver, row, "name", &name);
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(VAL_STRING, name.type);
+    ASSERT_STRING_EQ("alice", name.as.as_string);
+
+    driver.result_free(&driver, result);
+    driver.close(&driver);
+}
+
+TEST(sqlite_driver_parameter_binding) {
+    DBDriver driver;
+    sqlite_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, ":memory:"));
+    ASSERT_INT_EQ(1, driver.exec(&driver, "CREATE TABLE t (id INTEGER, name TEXT)", NULL, 0));
+
+    Value params[2];
+    params[0] = value_int(42);
+    params[1] = value_string(strdup("bob"));
+    ASSERT_INT_EQ(1, driver.exec(&driver, "INSERT INTO t VALUES (?, ?)", params, 2));
+
+    Value qparams[1];
+    qparams[0] = value_int(42);
+    void* result = NULL;
+    ASSERT_INT_EQ(1, driver.query(&driver, "SELECT id, name FROM t WHERE id = ?", qparams, 1, &result));
+
+    void* row = NULL;
+    ASSERT_INT_EQ(1, driver.result_next(&driver, result, &row));
+
+    Value name;
+    ASSERT_INT_EQ(1, driver.row_get_field(&driver, row, "name", &name));
+    ASSERT_STRING_EQ("bob", name.as.as_string);
+
+    value_release(params[1]);
+    driver.result_free(&driver, result);
+    driver.close(&driver);
+}
+
 int main(void) {
     RUN_TEST(sqlite3_is_linked);
+    RUN_TEST(sqlite_driver_crud);
+    RUN_TEST(sqlite_driver_parameter_binding);
     TEST_SUMMARY();
 }
