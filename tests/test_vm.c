@@ -481,7 +481,7 @@ TEST(vm_sub_string_and_int_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
-    int a = add_constant(&chunk, value_string("x"));
+    int a = add_constant(&chunk, value_string(strdup("x")));
     int b = add_constant(&chunk, value_int(2));
 
     write_chunk(&chunk, OP_CONST);
@@ -504,7 +504,7 @@ TEST(vm_mul_float_and_string_returns_zero) {
     init_chunk(&chunk);
 
     int a = add_constant(&chunk, value_float(2.0));
-    int b = add_constant(&chunk, value_string("x"));
+    int b = add_constant(&chunk, value_string(strdup("x")));
 
     write_chunk(&chunk, OP_CONST);
     write_chunk_u16(&chunk, (uint16_t)a);
@@ -525,7 +525,7 @@ TEST(vm_div_string_and_int_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
-    int a = add_constant(&chunk, value_string("x"));
+    int a = add_constant(&chunk, value_string(strdup("x")));
     int b = add_constant(&chunk, value_int(2));
 
     write_chunk(&chunk, OP_CONST);
@@ -591,7 +591,7 @@ TEST(vm_gt_string_and_int_returns_zero) {
     Chunk chunk;
     init_chunk(&chunk);
 
-    int a = add_constant(&chunk, value_string("x"));
+    int a = add_constant(&chunk, value_string(strdup("x")));
     int b = add_constant(&chunk, value_int(2));
 
     write_chunk(&chunk, OP_CONST);
