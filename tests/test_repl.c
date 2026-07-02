@@ -12,7 +12,7 @@ static int run_repl(const char* input, char* output, size_t output_size) {
     fprintf(in, "%s", input);
     fclose(in);
 
-    int rc = system("./bin/mydb < /tmp/repl_in.txt > /tmp/repl_out.txt 2>&1");
+    int rc = system("timeout 5 ./bin/mydb < /tmp/repl_in.txt > /tmp/repl_out.txt 2>&1");
     FILE* f = fopen("/tmp/repl_out.txt", "r");
     if (f == NULL) {
         output[0] = '\0';
@@ -92,6 +92,19 @@ TEST(repl_shows_defined_procedures) {
     ASSERT_INT_EQ(1, output_contains(out, "proc inc"));
 }
 
+TEST(repl_reports_single_error_for_invalid_input) {
+    char out[4096];
+    run_repl("var x = 5;\n.exit\n", out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "Compile error"));
+    int parse_error_count = 0;
+    const char* p = out;
+    while ((p = strstr(p, "Parse error")) != NULL) {
+        parse_error_count++;
+        p++;
+    }
+    ASSERT_INT_EQ(1, parse_error_count);
+}
+
 int main(void) {
     system("rm -f mypl.db");
     RUN_TEST(repl_defines_and_calls_procedure);
@@ -101,5 +114,6 @@ int main(void) {
     RUN_TEST(repl_lists_tables_and_schema);
     RUN_TEST(repl_executes_sql_select);
     RUN_TEST(repl_shows_defined_procedures);
+    RUN_TEST(repl_reports_single_error_for_invalid_input);
     TEST_SUMMARY();
 }

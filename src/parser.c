@@ -46,7 +46,6 @@ static void error_at_current(Parser* parser, const char* message) {
              "Parse error at line %d:%d: %s (got token %d)",
              parser->current.line, parser->current.column, message,
              parser->current.type);
-    fprintf(stderr, "%s\n", parser->error_message);
     parser->had_error = 1;
 }
 
@@ -278,11 +277,16 @@ static Stmt* statement(Parser* parser);
 static Block* block(Parser* parser) {
     Block* result = create_block();
     advance(parser); /* { */
-    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF) &&
+           !parser->had_error) {
         Stmt** new_stmts = realloc(result->stmts,
             sizeof(Stmt*) * (size_t)(result->stmt_count + 1));
         result->stmts = new_stmts;
         result->stmts[result->stmt_count++] = statement(parser);
+    }
+    if (parser->had_error) {
+        free_block(result);
+        return NULL;
     }
     if (!check(parser, TOKEN_RBRACE)) {
         error_at_current(parser, "expected '}'");
@@ -642,7 +646,7 @@ Program* parse(const char* source, char* error, size_t error_size) {
     advance(&parser);
 
     Program* program = create_program();
-    while (!check(&parser, TOKEN_EOF)) {
+    while (!check(&parser, TOKEN_EOF) && !parser.had_error) {
         if (match(&parser, TOKEN_IMPORT)) {
             parse_import(&parser, program);
         } else if (match(&parser, TOKEN_PROC)) {
