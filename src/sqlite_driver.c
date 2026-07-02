@@ -1,4 +1,5 @@
 #include <sqlite3.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -11,13 +12,19 @@ typedef struct {
 
 static int sqlite_open(DBDriver* driver, const char* conn) {
     SQLiteImpl* impl = calloc(1, sizeof(SQLiteImpl));
-    if (impl == NULL) return 0;
+    if (impl == NULL) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "out of memory");
+        return 0;
+    }
     int rc = sqlite3_open(conn, &impl->db);
     if (rc != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+        sqlite3_close(impl->db);
         free(impl);
         return 0;
     }
     driver->impl = impl;
+    driver->error_message[0] = '\0';
     return 1;
 }
 
@@ -29,7 +36,7 @@ static void sqlite_close(DBDriver* driver) {
     driver->impl = NULL;
 }
 
-static int bind_params(sqlite3_stmt* stmt, Value* params, int param_count) {
+static int bind_params(DBDriver* driver, sqlite3_stmt* stmt, Value* params, int param_count) {
     for (int i = 0; i < param_count; i++) {
         int idx = i + 1;
         Value v = params[i];
@@ -52,7 +59,11 @@ static int bind_params(sqlite3_stmt* stmt, Value* params, int param_count) {
                 rc = sqlite3_bind_null(stmt, idx);
                 break;
         }
-        if (rc != SQLITE_OK) return 0;
+        if (rc != SQLITE_OK) {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "parameter %d: %s", idx, sqlite3_errmsg((sqlite3*)stmt));
+            return 0;
+        }
     }
     return 1;
 }
@@ -61,12 +72,18 @@ static int sqlite_exec(DBDriver* driver, const char* sql, Value* params, int par
     SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
     sqlite3_stmt* stmt = NULL;
     int rc = sqlite3_prepare_v2(impl->db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return 0;
-    if (!bind_params(stmt, params, param_count)) {
+    if (rc != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    if (!bind_params(driver, stmt, params, param_count)) {
         sqlite3_finalize(stmt);
         return 0;
     }
     rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+    }
     sqlite3_finalize(stmt);
     return (rc == SQLITE_DONE || rc == SQLITE_ROW) ? 1 : 0;
 }
@@ -75,12 +92,16 @@ static int sqlite_query(DBDriver* driver, const char* sql, Value* params, int pa
     SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
     sqlite3_stmt* stmt = NULL;
     int rc = sqlite3_prepare_v2(impl->db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return 0;
-    if (!bind_params(stmt, params, param_count)) {
+    if (rc != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    if (!bind_params(driver, stmt, params, param_count)) {
         sqlite3_finalize(stmt);
         return 0;
     }
     *result_handle = stmt;
+    driver->error_message[0] = '\0';
     return 1;
 }
 
@@ -94,12 +115,12 @@ static int sqlite_result_next(DBDriver* driver, void* result_handle, void** row_
 }
 
 static int sqlite_row_get_field(DBDriver* driver, void* row_handle, const char* name, Value* out) {
-    (void)driver;
     sqlite3_stmt* stmt = (sqlite3_stmt*)row_handle;
     int count = sqlite3_column_count(stmt);
     for (int i = 0; i < count; i++) {
         const char* col_name = sqlite3_column_name(stmt, i);
         if (col_name != NULL && strcmp(col_name, name) == 0) {
+            driver->error_message[0] = '\0';
             int type = sqlite3_column_type(stmt, i);
             switch (type) {
                 case SQLITE_INTEGER:
@@ -120,6 +141,8 @@ static int sqlite_row_get_field(DBDriver* driver, void* row_handle, const char* 
             }
         }
     }
+    snprintf(driver->error_message, sizeof(driver->error_message),
+             "column '%s' not found", name);
     *out = value_int(0);
     return 0;
 }

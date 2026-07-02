@@ -1258,14 +1258,20 @@ typedef struct {
 
 static int custom_open(DBDriver* driver, const char* connection_string) {
     CustomDriverImpl* impl = malloc(sizeof(CustomDriverImpl));
-    if (impl == NULL) return 0;
+    if (impl == NULL) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "out of memory");
+        return 0;
+    }
     impl->ctx.db_path = connection_string != NULL ? connection_string : "mypl.db";
     impl->ctx.pager = NULL;
     if (!catalog_open(&impl->ctx)) {
+        snprintf(driver->error_message, sizeof(driver->error_message),
+                 "could not open catalog: %s", impl->ctx.db_path);
         free(impl);
         return 0;
     }
     driver->impl = impl;
+    driver->error_message[0] = '\0';
     return 1;
 }
 
@@ -1280,14 +1286,26 @@ static void custom_close(DBDriver* driver) {
 static int custom_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
     (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
-    return sql_exec_ddl(sql, &impl->ctx);
+    int ok = sql_exec_ddl(sql, &impl->ctx);
+    if (!ok) {
+        snprintf(driver->error_message, sizeof(driver->error_message),
+                 "custom engine: could not execute '%s'", sql);
+    } else {
+        driver->error_message[0] = '\0';
+    }
+    return ok;
 }
 
 static int custom_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {
     (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
     Result* res = sql_exec(sql, &impl->ctx);
-    if (res == NULL) return 0;
+    if (res == NULL) {
+        snprintf(driver->error_message, sizeof(driver->error_message),
+                 "custom engine: could not execute '%s'", sql);
+        return 0;
+    }
+    driver->error_message[0] = '\0';
     *result_handle = res;
     return 1;
 }
@@ -1301,14 +1319,18 @@ static int custom_result_next(DBDriver* driver, void* result_handle, void** row_
 }
 
 static int custom_row_get_field(DBDriver* driver, void* row_handle, const char* name, Value* out) {
-    (void)driver;
     Cell cell = row_get_field((Row*)row_handle, name);
     switch (cell.type) {
         case VAL_INT:    *out = value_int(cell.as.as_int);       break;
         case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
         case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
-        default:         *out = value_int(0);                     break;
+        default:
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "column '%s' not found", name);
+            *out = value_int(0);
+            return 0;
     }
+    driver->error_message[0] = '\0';
     return 1;
 }
 

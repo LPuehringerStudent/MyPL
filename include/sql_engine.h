@@ -87,6 +87,7 @@ typedef struct DBDriver DBDriver;
 
 struct DBDriver {
     void* impl;
+    char error_message[256];
     int (*open)(DBDriver* driver, const char* connection_string);
     void (*close)(DBDriver* driver);
     int (*exec)(DBDriver* driver, const char* sql, Value* params, int param_count);

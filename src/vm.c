@@ -50,6 +50,16 @@ static void set_runtime_error(VM* vm, const char* message) {
     snprintf(vm->error_message, sizeof(vm->error_message), "%s", message);
 }
 
+static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
+    if (vm->driver != NULL && vm->driver->error_message[0] != '\0') {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "%s: %s", prefix, vm->driver->error_message);
+        set_runtime_error(vm, msg);
+    } else {
+        set_runtime_error(vm, prefix);
+    }
+}
+
 const char* vm_get_error(VM* vm) {
     if (vm == NULL) return NULL;
     return vm->error_message[0] != '\0' ? vm->error_message : NULL;
@@ -294,7 +304,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         vm->driver->result_free(vm->driver, vm->result_handle);
                     }
                     if (!vm->driver->query(vm->driver, query_value.as.as_string, NULL, 0, &vm->result_handle)) {
-                        set_runtime_error(vm, "SQL query failed");
+                        set_runtime_error_from_driver(vm, "SQL query failed");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                 } else {
@@ -345,7 +355,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (vm->driver != NULL) {
                     if (!vm->driver->row_get_field(vm->driver, vm->row_handle,
                                                    name_value.as.as_string, &field_value)) {
-                        set_runtime_error(vm, "Field access failed");
+                        set_runtime_error_from_driver(vm, "Field access failed");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                 } else {
@@ -590,7 +600,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 }
                 vm->sql_param_count = 0;
                 if (!ok) {
-                    set_runtime_error(vm, "SQL execution failed");
+                    set_runtime_error_from_driver(vm, "SQL execution failed");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -619,7 +629,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (!vm->driver->begin(vm->driver)) {
-                    set_runtime_error(vm, "BEGIN failed");
+                    set_runtime_error_from_driver(vm, "BEGIN failed");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -630,7 +640,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (!vm->driver->commit(vm->driver)) {
-                    set_runtime_error(vm, "COMMIT failed");
+                    set_runtime_error_from_driver(vm, "COMMIT failed");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -641,7 +651,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (!vm->driver->rollback(vm->driver)) {
-                    set_runtime_error(vm, "ROLLBACK failed");
+                    set_runtime_error_from_driver(vm, "ROLLBACK failed");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -667,7 +677,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!vm->driver->row_get_field(vm->driver, row_value.as.as_row_handle,
                                                name_value.as.as_string, &field_value)) {
                     value_release(row_value);
-                    set_runtime_error(vm, "Field access failed");
+                    set_runtime_error_from_driver(vm, "Field access failed");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (!push(vm, field_value)) {
