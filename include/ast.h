@@ -10,6 +10,7 @@ typedef enum {
     TYPE_STRING,
     TYPE_BOOL,
     TYPE_ARRAY,
+    TYPE_ROW,
     TYPE_UNKNOWN
 } TypeKind;
 
@@ -22,6 +23,7 @@ extern Type type_int;
 extern Type type_float;
 extern Type type_string;
 extern Type type_bool;
+extern Type type_row;
 extern Type type_unknown;
 
 Type* type_new(TypeKind kind, Type* element_type);
@@ -41,7 +43,9 @@ typedef enum {
     EXPR_FIELD,
     EXPR_CALL,
     EXPR_ARRAY,
-    EXPR_INDEX
+    EXPR_INDEX,
+    EXPR_SQL_PARAM,
+    EXPR_ROW_FIELD
 } ExprKind;
 
 typedef enum {
@@ -53,7 +57,11 @@ typedef enum {
     STMT_PRINT,
     STMT_INDEX_ASSIGN,
     STMT_EXPR,
-    STMT_IMPORT
+    STMT_IMPORT,
+    STMT_SQL_DDL,
+    STMT_SQL_DML,
+    STMT_SQL_QUERY,
+    STMT_SQL_TRANSACTION
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -136,6 +144,16 @@ typedef struct {
     Expr* value;
 } ExprStmt;
 
+typedef struct {
+    char* sql;
+    Expr** params;
+    int param_count;
+} SqlStmt;
+
+typedef struct {
+    int kind; /* 0=begin, 1=commit, 2=rollback */
+} SqlTransactionStmt;
+
 struct Stmt {
     StmtKind kind;
     SourceLoc loc;
@@ -149,6 +167,8 @@ struct Stmt {
         IndexAssignStmt index_assign;
         ExprStmt expr_stmt;
         ImportStmt import_stmt;
+        SqlStmt sql_stmt;
+        SqlTransactionStmt sql_transaction;
     } as;
 };
 
@@ -192,6 +212,15 @@ typedef struct {
     Expr* index;
 } IndexExpr;
 
+typedef struct {
+    char* name;
+} SqlParamExpr;
+
+typedef struct {
+    Expr* row;
+    char* field;
+} RowFieldExpr;
+
 struct Expr {
     ExprKind kind;
     SourceLoc loc;
@@ -204,6 +233,8 @@ struct Expr {
         CallExpr call;
         ArrayExpr array;
         IndexExpr index;
+        SqlParamExpr sql_param;
+        RowFieldExpr row_field;
     } as;
 };
 
@@ -227,6 +258,8 @@ Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
 Stmt* create_expr_stmt(Expr* value);
 Stmt* create_import_stmt(const char* path);
+Stmt* create_sql_stmt(int kind, const char* sql, Expr** params, int param_count);
+Stmt* create_sql_transaction_stmt(int kind);
 
 Expr* create_literal_expr(Value value);
 Expr* create_variable_expr(const char* name);
@@ -234,9 +267,10 @@ Expr* create_binary_expr(TokenType op, Expr* left, Expr* right);
 Expr* create_unary_expr(TokenType op, Expr* operand);
 Expr* create_field_expr(const char* row, const char* field);
 Expr* create_call_expr(const char* name, Expr** args, int arg_count);
-
 Expr* create_array_expr(Expr** elements, int count);
 Expr* create_index_expr(Expr* array, Expr* index);
+Expr* create_sql_param_expr(const char* name);
+Expr* create_row_field_expr(Expr* row, const char* field);
 Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value);
 
 #endif

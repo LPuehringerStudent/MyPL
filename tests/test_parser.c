@@ -251,6 +251,13 @@ TEST(parser_parses_nested_index_assignment) {
     free_program(program);
 }
 
+TEST(ast_sql_stmt_node_exists) {
+    Stmt* stmt = create_sql_stmt(STMT_SQL_DDL, "CREATE TABLE t (id int)", NULL, 0);
+    ASSERT_PTR_NOT_NULL(stmt);
+    ASSERT_INT_EQ(STMT_SQL_DDL, stmt->kind);
+    free_stmt(stmt);
+}
+
 TEST(parser_parses_import_statement) {
     Program* program = parse("import \"foo.mypl\"; proc main() -> int { return 0; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -301,6 +308,7 @@ int main(void) {
     RUN_TEST(parser_parses_index_expression);
     RUN_TEST(parser_parses_index_assignment);
     RUN_TEST(parser_parses_nested_index_assignment);
+    RUN_TEST(ast_sql_stmt_node_exists);
     RUN_TEST(parser_parses_import_statement);
     RUN_TEST(parser_parses_typed_array_variable);
     RUN_TEST(parser_parses_nested_typed_array);

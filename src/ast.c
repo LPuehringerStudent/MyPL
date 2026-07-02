@@ -7,6 +7,7 @@ Type type_int      = { TYPE_INT,    NULL };
 Type type_float    = { TYPE_FLOAT,  NULL };
 Type type_string   = { TYPE_STRING, NULL };
 Type type_bool     = { TYPE_BOOL,   NULL };
+Type type_row      = { TYPE_ROW,    NULL };
 Type type_unknown  = { TYPE_UNKNOWN, NULL };
 
 Type* type_new(TypeKind kind, Type* element_type) {
@@ -20,7 +21,7 @@ Type* type_new(TypeKind kind, Type* element_type) {
 Type* type_copy(Type* t) {
     if (t == NULL) return NULL;
     if (t == &type_int || t == &type_float || t == &type_string ||
-        t == &type_bool || t == &type_unknown) {
+        t == &type_bool || t == &type_row || t == &type_unknown) {
         return t;
     }
     return type_new(t->kind, type_copy(t->element_type));
@@ -29,7 +30,7 @@ Type* type_copy(Type* t) {
 void type_free(Type* t) {
     if (t == NULL) return;
     if (t == &type_int || t == &type_float || t == &type_string ||
-        t == &type_bool || t == &type_unknown) {
+        t == &type_bool || t == &type_row || t == &type_unknown) {
         return;
     }
     type_free(t->element_type);
@@ -61,6 +62,7 @@ const char* type_name(Type* t) {
         case TYPE_STRING: return "string";
         case TYPE_BOOL:   return "bool";
         case TYPE_ARRAY:  return "array";
+        case TYPE_ROW:    return "row";
         case TYPE_UNKNOWN: return "unknown";
     }
     return "unknown";
@@ -121,6 +123,13 @@ void free_expr(Expr* expr) {
         case EXPR_INDEX:
             free_expr(expr->as.index.array);
             free_expr(expr->as.index.index);
+            break;
+        case EXPR_SQL_PARAM:
+            free(expr->as.sql_param.name);
+            break;
+        case EXPR_ROW_FIELD:
+            free_expr(expr->as.row_field.row);
+            free(expr->as.row_field.field);
             break;
         default:
             break;
@@ -224,6 +233,17 @@ void free_stmt(Stmt* stmt) {
             break;
         case STMT_IMPORT:
             free(stmt->as.import_stmt.path);
+            break;
+        case STMT_SQL_DDL:
+        case STMT_SQL_DML:
+        case STMT_SQL_QUERY:
+            free(stmt->as.sql_stmt.sql);
+            for (int i = 0; i < stmt->as.sql_stmt.param_count; i++) {
+                free_expr(stmt->as.sql_stmt.params[i]);
+            }
+            free(stmt->as.sql_stmt.params);
+            break;
+        case STMT_SQL_TRANSACTION:
             break;
     }
     free(stmt);
@@ -492,4 +512,62 @@ Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value) {
     stmt->as.index_assign.index = index;
     stmt->as.index_assign.value = value;
     return stmt;
+}
+
+Stmt* create_sql_stmt(int kind, const char* sql, Expr** params, int param_count) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free(sql);
+        for (int i = 0; i < param_count; i++) {
+            free_expr(params[i]);
+        }
+        free(params);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = kind;
+    stmt->as.sql_stmt.sql = copy_string(sql);
+    stmt->as.sql_stmt.params = params;
+    stmt->as.sql_stmt.param_count = param_count;
+    return stmt;
+}
+
+Stmt* create_sql_transaction_stmt(int kind) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_SQL_TRANSACTION;
+    stmt->as.sql_transaction.kind = kind;
+    return stmt;
+}
+
+Expr* create_sql_param_expr(const char* name) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) return NULL;
+    expr->loc = (SourceLoc){0, 0};
+    expr->kind = EXPR_SQL_PARAM;
+    expr->as.sql_param.name = copy_string(name);
+    if (expr->as.sql_param.name == NULL && name != NULL) {
+        free(expr);
+        return NULL;
+    }
+    return expr;
+}
+
+Expr* create_row_field_expr(Expr* row, const char* field) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        free_expr(row);
+        return NULL;
+    }
+    expr->loc = (SourceLoc){0, 0};
+    expr->kind = EXPR_ROW_FIELD;
+    expr->as.row_field.row = row;
+    expr->as.row_field.field = copy_string(field);
+    if (expr->as.row_field.field == NULL && field != NULL) {
+        free_expr(row);
+        free(expr);
+        return NULL;
+    }
+    return expr;
 }
