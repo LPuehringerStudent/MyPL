@@ -590,6 +590,15 @@ TEST(typecheck_rejects_replace_with_int_old) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_sql_param) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { int x = 1; insert into t values (?x); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    free_program(program);
+}
+
 TEST(typecheck_rejects_repeat_with_float_count) {
     char error[256];
     Program* program = parse("proc main() -> string { string s = repeat(\"a\", 3.0); return s; }", error, sizeof(error));
@@ -662,5 +671,6 @@ int main(void) {
     RUN_TEST(typecheck_rejects_join_with_string_parts);
     RUN_TEST(typecheck_rejects_replace_with_int_old);
     RUN_TEST(typecheck_rejects_repeat_with_float_count);
+    RUN_TEST(typecheck_accepts_sql_param);
     TEST_SUMMARY();
 }

@@ -698,6 +698,26 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
             }
             return &type_unknown;
         }
+
+        case EXPR_SQL_PARAM: {
+            Type* t = resolve_local(tc, expr->as.sql_param.name);
+            if (t == NULL) {
+                type_error(tc, expr->loc, "Undefined variable '%s'",
+                           expr->as.sql_param.name);
+                return &type_unknown;
+            }
+            return t;
+        }
+
+        case EXPR_ROW_FIELD: {
+            Type* base = infer_expr(tc, expr->as.row_field.row, NULL);
+            if (tc->had_error) return NULL;
+            if (base == NULL || base->kind != TYPE_ROW) {
+                type_error(tc, expr->loc, "Cannot access field on non-row expression");
+                return &type_unknown;
+            }
+            return &type_unknown;
+        }
     }
 
     return NULL;
@@ -840,6 +860,22 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
 
         case STMT_IMPORT: {
             /* imports have no type checking */
+            break;
+        }
+
+        case STMT_SQL_DDL:
+        case STMT_SQL_DML:
+        case STMT_SQL_QUERY: {
+            SqlStmt* s = &stmt->as.sql_stmt;
+            for (int i = 0; i < s->param_count; i++) {
+                infer_expr(tc, s->params[i], NULL);
+                if (tc->had_error) return;
+            }
+            break;
+        }
+
+        case STMT_SQL_TRANSACTION: {
+            /* no type checking needed */
             break;
         }
     }
