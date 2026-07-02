@@ -18,9 +18,12 @@ struct VM {
     int           local_count;
     Value         repl_locals[STACK_MAX];
     int           repl_local_count;
-    Result*       result;
-    Row*          row;
+    void*         result_handle;
+    void*         row_handle;
     struct Context* context;
+    DBDriver*     driver;
+    Value         sql_params[16];
+    int           sql_param_count;
     char          error_message[256];
 };
 
@@ -34,9 +37,11 @@ VM* vm_init(void) {
     vm->frame_base = vm->stack;
     vm->local_count = 0;
     vm->repl_local_count = 0;
-    vm->result = NULL;
-    vm->row = NULL;
+    vm->result_handle = NULL;
+    vm->row_handle = NULL;
     vm->context = NULL;
+    vm->driver = NULL;
+    vm->sql_param_count = 0;
     vm->error_message[0] = '\0';
     return vm;
 }
@@ -63,7 +68,11 @@ void vm_free(VM* vm) {
     for (int i = 0; i < vm->repl_local_count; i++) {
         value_release(vm->repl_locals[i]);
     }
-    result_free(vm->result);
+    if (vm->driver != NULL && vm->result_handle != NULL) {
+        vm->driver->result_free(vm->driver, vm->result_handle);
+    } else if (vm->driver == NULL) {
+        result_free((Result*)vm->result_handle);
+    }
     array_pool_free_all();
     free(vm);
 }
@@ -131,6 +140,11 @@ Value vm_local_get(VM* vm, int index) {
 void vm_set_context(VM* vm, struct Context* ctx) {
     if (vm == NULL) return;
     vm->context = ctx;
+}
+
+void vm_set_driver(VM* vm, DBDriver* driver) {
+    if (vm == NULL) return;
+    vm->driver = driver;
 }
 
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
@@ -275,28 +289,45 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     set_runtime_error(vm, "Invalid SQL query");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                Context* ctx = vm->context;
-                if (ctx == NULL || ctx->pager == NULL) return INTERPRET_RUNTIME_ERROR;
-                result_free(vm->result);
-                vm->result = sql_exec(query_value.as.as_string, ctx);
-                if (vm->result == NULL) return INTERPRET_RUNTIME_ERROR;
-                vm->row = NULL;
+                if (vm->driver != NULL) {
+                    if (vm->result_handle != NULL) {
+                        vm->driver->result_free(vm->driver, vm->result_handle);
+                    }
+                    if (!vm->driver->query(vm->driver, query_value.as.as_string, NULL, 0, &vm->result_handle)) {
+                        set_runtime_error(vm, "SQL query failed");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                } else {
+                    Context* ctx = vm->context;
+                    if (ctx == NULL || ctx->pager == NULL) return INTERPRET_RUNTIME_ERROR;
+                    result_free((Result*)vm->result_handle);
+                    vm->result_handle = sql_exec(query_value.as.as_string, ctx);
+                    if (vm->result_handle == NULL) return INTERPRET_RUNTIME_ERROR;
+                }
+                vm->row_handle = NULL;
                 break;
             }
             case OP_SQL_NEXT: {
                 if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
                 int16_t offset = (int16_t)read_u16(vm->ip);
                 vm->ip += 2;
-                Row* next = result_next(vm->result);
-                if (next == NULL) {
+                int has_row = 0;
+                if (vm->driver != NULL) {
+                    void* next = NULL;
+                    has_row = vm->driver->result_next(vm->driver, vm->result_handle, &next);
+                    vm->row_handle = has_row ? next : NULL;
+                } else {
+                    Row* next = result_next((Result*)vm->result_handle);
+                    has_row = next != NULL;
+                    vm->row_handle = next;
+                }
+                if (!has_row) {
                     uint8_t* target = vm->ip + offset;
                     if (target < vm->chunk->code || target > end) {
                         set_runtime_error(vm, "Invalid SQL query");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     vm->ip = target;
-                } else {
-                    vm->row = next;
                 }
                 break;
             }
@@ -310,15 +341,23 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     set_runtime_error(vm, "Invalid field access");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                Cell cell = row_get_field(vm->row, name_value.as.as_string);
                 Value field_value;
-                field_value.type = cell.type;
-                if (cell.type == VAL_STRING) {
-                    field_value = value_string(strdup(cell.as.as_string));
-                } else if (cell.type == VAL_FLOAT) {
-                    field_value.as.as_float = cell.as.as_float;
+                if (vm->driver != NULL) {
+                    if (!vm->driver->row_get_field(vm->driver, vm->row_handle,
+                                                   name_value.as.as_string, &field_value)) {
+                        set_runtime_error(vm, "Field access failed");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
                 } else {
-                    field_value.as.as_int = cell.as.as_int;
+                    Cell cell = row_get_field((Row*)vm->row_handle, name_value.as.as_string);
+                    field_value.type = cell.type;
+                    if (cell.type == VAL_STRING) {
+                        field_value = value_string(strdup(cell.as.as_string));
+                    } else if (cell.type == VAL_FLOAT) {
+                        field_value.as.as_float = cell.as.as_float;
+                    } else {
+                        field_value.as.as_int = cell.as.as_int;
+                    }
                 }
                 if (!push(vm, field_value)) return INTERPRET_RUNTIME_ERROR;
                 break;
@@ -528,6 +567,115 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 value_release(val);
                 value_release(idx_val);
                 value_release(arr_val);
+                break;
+            }
+            case OP_SQL_EXEC: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value sql_value = vm->chunk->constants[idx];
+                if (sql_value.type != VAL_STRING || sql_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid SQL statement");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (vm->driver == NULL) {
+                    set_runtime_error(vm, "No database driver");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                int ok = vm->driver->exec(vm->driver, sql_value.as.as_string,
+                                          vm->sql_params, vm->sql_param_count);
+                for (int i = 0; i < vm->sql_param_count; i++) {
+                    value_release(vm->sql_params[i]);
+                }
+                vm->sql_param_count = 0;
+                if (!ok) {
+                    set_runtime_error(vm, "SQL execution failed");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_SQL_BIND_INT:
+            case OP_SQL_BIND_FLOAT:
+            case OP_SQL_BIND_STRING: {
+                Value v;
+                if (!pop(vm, &v)) return INTERPRET_RUNTIME_ERROR;
+                if (vm->driver == NULL) {
+                    value_release(v);
+                    set_runtime_error(vm, "No database driver");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (vm->sql_param_count >= 16) {
+                    value_release(v);
+                    set_runtime_error(vm, "Too many SQL parameters");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                vm->sql_params[vm->sql_param_count++] = v;
+                break;
+            }
+            case OP_SQL_BEGIN: {
+                if (vm->driver == NULL) {
+                    set_runtime_error(vm, "No database driver");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!vm->driver->begin(vm->driver)) {
+                    set_runtime_error(vm, "BEGIN failed");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_SQL_COMMIT: {
+                if (vm->driver == NULL) {
+                    set_runtime_error(vm, "No database driver");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!vm->driver->commit(vm->driver)) {
+                    set_runtime_error(vm, "COMMIT failed");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_SQL_ROLLBACK: {
+                if (vm->driver == NULL) {
+                    set_runtime_error(vm, "No database driver");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!vm->driver->rollback(vm->driver)) {
+                    set_runtime_error(vm, "ROLLBACK failed");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_ROW_GET: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value name_value = vm->chunk->constants[idx];
+                if (name_value.type != VAL_STRING || name_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid field access");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value row_value;
+                if (!pop(vm, &row_value)) return INTERPRET_RUNTIME_ERROR;
+                if (row_value.type != VAL_ROW || vm->driver == NULL) {
+                    value_release(row_value);
+                    set_runtime_error(vm, "Cannot access field on non-row value");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value field_value;
+                if (!vm->driver->row_get_field(vm->driver, row_value.as.as_row_handle,
+                                               name_value.as.as_string, &field_value)) {
+                    value_release(row_value);
+                    set_runtime_error(vm, "Field access failed");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!push(vm, field_value)) {
+                    value_release(field_value);
+                    value_release(row_value);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                value_release(row_value);
                 break;
             }
             default:

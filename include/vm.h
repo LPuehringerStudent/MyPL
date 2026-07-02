@@ -2,6 +2,7 @@
 #define MYDB_VM_H
 
 #include "compiler.h"
+#include "sql_engine.h"
 
 struct Context;
 
@@ -18,6 +19,7 @@ typedef enum {
 VM*             vm_init(void);
 void            vm_free(VM* vm);
 void            vm_set_context(VM* vm, struct Context* ctx);
+void            vm_set_driver(VM* vm, struct DBDriver* driver);
 InterpretResult vm_interpret(VM* vm, Chunk* chunk);
 const char*     vm_get_error(VM* vm);
 void            vm_set_error(VM* vm, const char* message);
