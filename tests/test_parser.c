@@ -144,6 +144,19 @@ TEST(parser_parses_else_branch) {
     free_program(program);
 }
 
+TEST(parser_parses_else_if_chain) {
+    Program* program = parse("proc main() -> int { if 0 { return 1; } else if 1 { return 2; } else { return 3; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_IF, stmt->kind);
+    ASSERT_PTR_NOT_NULL(stmt->as.if_stmt.else_block);
+    ASSERT_INT_EQ(1, stmt->as.if_stmt.else_block->stmt_count);
+    Stmt* nested = stmt->as.if_stmt.else_block->stmts[0];
+    ASSERT_INT_EQ(STMT_IF, nested->kind);
+    ASSERT_PTR_NOT_NULL(nested->as.if_stmt.else_block);
+    free_program(program);
+}
+
 TEST(parser_parses_return_statement) {
     Program* program = parse("proc main() -> int { return 42; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -160,6 +173,18 @@ TEST(parser_parses_for_sql_loop) {
     ASSERT_INT_EQ(STMT_FOR, stmt->kind);
     ASSERT_INT_EQ(0, strcmp("row", stmt->as.for_stmt.var_name));
     ASSERT_INT_EQ(0, strcmp("SELECT * FROM users", stmt->as.for_stmt.sql_query));
+    free_program(program);
+}
+
+TEST(parser_parses_for_sql_loop_with_param) {
+    Program* program = parse("proc main() -> int { int id = 1; for row in SELECT * FROM users WHERE id = ?id { return 0; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[1];
+    ASSERT_INT_EQ(STMT_FOR, stmt->kind);
+    ASSERT_STRING_EQ("SELECT * FROM users WHERE id = ?", stmt->as.for_stmt.sql_query);
+    ASSERT_INT_EQ(1, stmt->as.for_stmt.param_count);
+    ASSERT_INT_EQ(EXPR_SQL_PARAM, stmt->as.for_stmt.params[0]->kind);
+    ASSERT_STRING_EQ("id", stmt->as.for_stmt.params[0]->as.sql_param.name);
     free_program(program);
 }
 
@@ -318,8 +343,10 @@ int main(void) {
     RUN_TEST(parser_parses_assignment);
     RUN_TEST(parser_parses_if_statement);
     RUN_TEST(parser_parses_else_branch);
+    RUN_TEST(parser_parses_else_if_chain);
     RUN_TEST(parser_parses_return_statement);
     RUN_TEST(parser_parses_for_sql_loop);
+    RUN_TEST(parser_parses_for_sql_loop_with_param);
     RUN_TEST(parser_parses_call_expression);
     RUN_TEST(parser_parses_procedure_parameters);
     RUN_TEST(parser_reports_error_for_missing_brace);

@@ -437,6 +437,21 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         }
         case STMT_FOR: {
             ForStmt* f = &stmt->as.for_stmt;
+
+            for (int i = 0; i < f->param_count; i++) {
+                compile_expr(compiler, f->params[i]);
+                if (compiler->had_error) return;
+                const char* name = f->params[i]->as.sql_param.name;
+                Type* t = resolve_local_type(compiler, name, (int)strlen(name));
+                if (t != NULL && t->kind == TYPE_STRING) {
+                    emit_byte(compiler, OP_SQL_BIND_STRING);
+                } else if (t != NULL && t->kind == TYPE_FLOAT) {
+                    emit_byte(compiler, OP_SQL_BIND_FLOAT);
+                } else {
+                    emit_byte(compiler, OP_SQL_BIND_INT);
+                }
+            }
+
             char* query = malloc((size_t)strlen(f->sql_query) + 1);
             if (query == NULL) {
                 error(compiler, "out of memory");

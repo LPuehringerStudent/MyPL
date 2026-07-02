@@ -215,6 +215,10 @@ void free_stmt(Stmt* stmt) {
         case STMT_FOR:
             free(stmt->as.for_stmt.var_name);
             free(stmt->as.for_stmt.sql_query);
+            for (int i = 0; i < stmt->as.for_stmt.param_count; i++) {
+                free_expr(stmt->as.for_stmt.params[i]);
+            }
+            free(stmt->as.for_stmt.params);
             free_block(stmt->as.for_stmt.body);
             break;
         case STMT_RETURN:
@@ -300,9 +304,11 @@ Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block) {
     return stmt;
 }
 
-Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body) {
+Stmt* create_for_stmt(const char* var_name, const char* sql_query, Expr** params, int param_count, Block* body) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) {
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
         free_block(body);
         return NULL;
     }
@@ -310,17 +316,23 @@ Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body) 
     stmt->kind = STMT_FOR;
     stmt->as.for_stmt.var_name = copy_string(var_name);
     if (stmt->as.for_stmt.var_name == NULL && var_name != NULL) {
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
         free_block(body);
         free(stmt);
         return NULL;
     }
     stmt->as.for_stmt.sql_query = copy_string(sql_query);
     if (stmt->as.for_stmt.sql_query == NULL && sql_query != NULL) {
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
         free(stmt->as.for_stmt.var_name);
         free_block(body);
         free(stmt);
         return NULL;
     }
+    stmt->as.for_stmt.params = params;
+    stmt->as.for_stmt.param_count = param_count;
     stmt->as.for_stmt.body = body;
     return stmt;
 }

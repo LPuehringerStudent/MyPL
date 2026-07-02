@@ -100,6 +100,18 @@ TEST(compiler_compiles_else_branch) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_else_if_chain) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { if 0 { return 1; } else if 0 { return 2; } else { return 3; } }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(3, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_unary_minus) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -757,6 +769,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_if_statement);
     RUN_TEST(compiler_compiles_if_true_branch);
     RUN_TEST(compiler_compiles_else_branch);
+    RUN_TEST(compiler_compiles_else_if_chain);
     RUN_TEST(compiler_compiles_unary_minus);
     RUN_TEST(compiler_compiles_unary_not);
     RUN_TEST(compiler_compiles_unary_not_true);

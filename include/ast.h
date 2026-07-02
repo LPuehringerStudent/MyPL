@@ -123,6 +123,8 @@ typedef struct {
 typedef struct {
     char* var_name;
     char* sql_query;
+    Expr** params;
+    int param_count;
     Block* body;
 } ForStmt;
 
@@ -253,7 +255,7 @@ Block* create_block(void);
 Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init);
 Stmt* create_assign_stmt(const char* name, Expr* value);
 Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
-Stmt* create_for_stmt(const char* var_name, const char* sql_query, Block* body);
+Stmt* create_for_stmt(const char* var_name, const char* sql_query, Expr** params, int param_count, Block* body);
 Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
 Stmt* create_expr_stmt(Expr* value);

@@ -303,15 +303,28 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     if (vm->result_handle != NULL) {
                         vm->driver->result_free(vm->driver, vm->result_handle);
                     }
-                    if (!vm->driver->query(vm->driver, query_value.as.as_string, NULL, 0, &vm->result_handle)) {
+                    if (!vm->driver->query(vm->driver, query_value.as.as_string,
+                                           vm->sql_params, vm->sql_param_count, &vm->result_handle)) {
+                        for (int i = 0; i < vm->sql_param_count; i++) {
+                            value_release(vm->sql_params[i]);
+                        }
+                        vm->sql_param_count = 0;
                         set_runtime_error_from_driver(vm, "SQL query failed");
                         return INTERPRET_RUNTIME_ERROR;
                     }
+                    for (int i = 0; i < vm->sql_param_count; i++) {
+                        value_release(vm->sql_params[i]);
+                    }
+                    vm->sql_param_count = 0;
                 } else {
                     Context* ctx = vm->context;
                     if (ctx == NULL || ctx->pager == NULL) return INTERPRET_RUNTIME_ERROR;
                     result_free((Result*)vm->result_handle);
                     vm->result_handle = sql_exec(query_value.as.as_string, ctx);
+                    for (int i = 0; i < vm->sql_param_count; i++) {
+                        value_release(vm->sql_params[i]);
+                    }
+                    vm->sql_param_count = 0;
                     if (vm->result_handle == NULL) return INTERPRET_RUNTIME_ERROR;
                 }
                 vm->row_handle = NULL;

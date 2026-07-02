@@ -607,6 +607,26 @@ TEST(typecheck_rejects_repeat_with_float_count) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_for_loop_with_sql_param) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { int id = 1; for row in SELECT id FROM users WHERE id = ?id { return 0; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_for_loop_with_undefined_sql_param) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for row in SELECT id FROM users WHERE id = ?missing { return 0; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -672,5 +692,7 @@ int main(void) {
     RUN_TEST(typecheck_rejects_replace_with_int_old);
     RUN_TEST(typecheck_rejects_repeat_with_float_count);
     RUN_TEST(typecheck_accepts_sql_param);
+    RUN_TEST(typecheck_accepts_for_loop_with_sql_param);
+    RUN_TEST(typecheck_rejects_for_loop_with_undefined_sql_param);
     TEST_SUMMARY();
 }

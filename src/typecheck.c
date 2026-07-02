@@ -805,6 +805,13 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 return;
             }
             ForStmt* f = &stmt->as.for_stmt;
+            for (int i = 0; i < f->param_count; i++) {
+                infer_expr(tc, f->params[i], NULL);
+                if (tc->had_error) {
+                    pop_scope(tc);
+                    return;
+                }
+            }
             int saved_row_count = tc->row_count;
             if (tc->ctx != NULL) {
                 if (!bind_row(tc, f->var_name, f->sql_query)) {
