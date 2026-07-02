@@ -1,0 +1,28 @@
+proc init() -> int {
+    create table if not exists todos (
+        id integer primary key autoincrement,
+        title string,
+        done int
+    );
+    return 0;
+}
+
+proc add(title string) -> int {
+    insert into todos (title, done) values (?title, 0);
+    return 0;
+}
+
+proc list() -> int {
+    for todo in select id, title, done from todos {
+        print concat(int_to_string(todo.id), concat(": ", todo.title));
+    }
+    return 0;
+}
+
+proc main() -> int {
+    init();
+    add("buy milk");
+    add("walk dog");
+    list();
+    return 0;
+}
