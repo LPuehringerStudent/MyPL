@@ -4,7 +4,7 @@
 #include <sys/wait.h>
 
 TEST(cli_runs_file_and_prints_int_result) {
-    int rc = system("./bin/mydb tests/fixtures/add.mypl > /tmp/mypl_out.txt 2>&1");
+    int rc = system("./bin/mypl tests/fixtures/add.mypl > /tmp/mypl_out.txt 2>&1");
     ASSERT_INT_EQ(0, WEXITSTATUS(rc));
     FILE* f = fopen("/tmp/mypl_out.txt", "r");
     char buf[64];
@@ -14,7 +14,7 @@ TEST(cli_runs_file_and_prints_int_result) {
 }
 
 TEST(cli_runs_file_and_prints_float_result) {
-    int rc = system("./bin/mydb tests/fixtures/float.mypl > /tmp/mypl_out.txt 2>&1");
+    int rc = system("./bin/mypl tests/fixtures/float.mypl > /tmp/mypl_out.txt 2>&1");
     ASSERT_INT_EQ(0, WEXITSTATUS(rc));
     FILE* f = fopen("/tmp/mypl_out.txt", "r");
     char buf[64];
@@ -24,7 +24,7 @@ TEST(cli_runs_file_and_prints_float_result) {
 }
 
 TEST(cli_returns_nonzero_on_compile_error) {
-    int rc = system("./bin/mydb tests/fixtures/error.mypl > /dev/null 2>&1");
+    int rc = system("./bin/mypl tests/fixtures/error.mypl > /dev/null 2>&1");
     ASSERT_INT_EQ(1, WEXITSTATUS(rc));
 }
 
@@ -42,7 +42,7 @@ TEST(cli_resolves_import_relative_to_importing_file) {
     fprintf(f, "import \"lib/helper.mypl\";\nproc main() -> int { return double(21); }\n");
     fclose(f);
 
-    int rc = system("./bin/mydb /tmp/mypl_import_test/main.mypl > /tmp/mypl_out.txt 2>&1");
+    int rc = system("./bin/mypl /tmp/mypl_import_test/main.mypl > /tmp/mypl_out.txt 2>&1");
     ASSERT_INT_EQ(0, WEXITSTATUS(rc));
 
     FILE* out = fopen("/tmp/mypl_out.txt", "r");
@@ -74,7 +74,7 @@ TEST(cli_resolves_nested_import_relative_to_importing_file) {
     fprintf(f, "import \"lib/helper.mypl\";\nproc main() -> int { return call_triple(7); }\n");
     fclose(f);
 
-    int rc = system("./bin/mydb /tmp/mypl_nested_import_test/main.mypl > /tmp/mypl_out.txt 2>&1");
+    int rc = system("./bin/mypl /tmp/mypl_nested_import_test/main.mypl > /tmp/mypl_out.txt 2>&1");
     ASSERT_INT_EQ(0, WEXITSTATUS(rc));
 
     FILE* out = fopen("/tmp/mypl_out.txt", "r");
@@ -92,7 +92,7 @@ TEST(cli_accepts_db_flag) {
     ASSERT_PTR_NOT_NULL(f);
     fprintf(f, "proc main() -> int { create table t (id int); return 0; }\n");
     fclose(f);
-    int rc = system("./bin/mydb /tmp/cli_db.mypl --db /tmp/cli_test.db > /tmp/cli_db_out.txt 2>&1");
+    int rc = system("./bin/mypl /tmp/cli_db.mypl --db /tmp/cli_test.db > /tmp/cli_db_out.txt 2>&1");
     ASSERT_INT_EQ(0, WEXITSTATUS(rc));
     remove("/tmp/cli_db.mypl");
     remove("/tmp/cli_test.db");

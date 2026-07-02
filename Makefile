@@ -10,7 +10,7 @@ SOURCES     = $(wildcard $(SRCDIR)/*.c)
 OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES))
 LIB_OBJECTS = $(filter-out $(OBJDIR)/main.o,$(OBJECTS))
 
-TARGET      = $(BINDIR)/mydb
+TARGET      = $(BINDIR)/mypl
 
 .PHONY: all clean test
 

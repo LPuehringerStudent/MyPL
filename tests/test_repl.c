@@ -12,7 +12,7 @@ static int run_repl(const char* input, char* output, size_t output_size) {
     fprintf(in, "%s", input);
     fclose(in);
 
-    int rc = system("timeout 5 ./bin/mydb < /tmp/repl_in.txt > /tmp/repl_out.txt 2>&1");
+    int rc = system("timeout 5 ./bin/mypl < /tmp/repl_in.txt > /tmp/repl_out.txt 2>&1");
     FILE* f = fopen("/tmp/repl_out.txt", "r");
     if (f == NULL) {
         output[0] = '\0';
