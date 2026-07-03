@@ -147,6 +147,36 @@ static int sqlite_row_get_field(DBDriver* driver, void* row_handle, const char* 
     return 0;
 }
 
+static int sqlite_row_get_column(DBDriver* driver, void* row_handle, int index, Value* out) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)row_handle;
+    int count = sqlite3_column_count(stmt);
+    if (index < 0 || index >= count) {
+        snprintf(driver->error_message, sizeof(driver->error_message),
+                 "column index %d out of range", index);
+        *out = value_int(0);
+        return 0;
+    }
+    driver->error_message[0] = '\0';
+    int type = sqlite3_column_type(stmt, index);
+    switch (type) {
+        case SQLITE_INTEGER:
+            *out = value_int(sqlite3_column_int(stmt, index));
+            return 1;
+        case SQLITE_FLOAT:
+            *out = value_float(sqlite3_column_double(stmt, index));
+            return 1;
+        case SQLITE_TEXT:
+            *out = value_string(strdup((const char*)sqlite3_column_text(stmt, index)));
+            return 1;
+        case SQLITE_NULL:
+            *out = value_int(0);
+            return 1;
+        default:
+            *out = value_int(0);
+            return 1;
+    }
+}
+
 static int sqlite_result_column_count(DBDriver* driver, void* result_handle) {
     (void)driver;
     sqlite3_stmt* stmt = (sqlite3_stmt*)result_handle;
@@ -185,6 +215,7 @@ void sqlite_driver_init(DBDriver* driver) {
     driver->query = sqlite_query;
     driver->result_next = sqlite_result_next;
     driver->row_get_field = sqlite_row_get_field;
+    driver->row_get_column = sqlite_row_get_column;
     driver->result_column_count = sqlite_result_column_count;
     driver->result_column_name = sqlite_result_column_name;
     driver->result_free = sqlite_result_free;

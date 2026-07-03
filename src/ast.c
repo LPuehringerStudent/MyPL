@@ -246,6 +246,10 @@ void free_stmt(Stmt* stmt) {
                 free_expr(stmt->as.sql_stmt.params[i]);
             }
             free(stmt->as.sql_stmt.params);
+            for (int i = 0; i < stmt->as.sql_stmt.into_count; i++) {
+                free(stmt->as.sql_stmt.into_vars[i]);
+            }
+            free(stmt->as.sql_stmt.into_vars);
             break;
         case STMT_SQL_TRANSACTION:
             break;
@@ -526,7 +530,7 @@ Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value) {
     return stmt;
 }
 
-Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count) {
+Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char** into_vars, int into_count) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) {
         free(sql);
@@ -534,6 +538,10 @@ Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count) {
             free_expr(params[i]);
         }
         free(params);
+        for (int i = 0; i < into_count; i++) {
+            free(into_vars[i]);
+        }
+        free(into_vars);
         return NULL;
     }
     stmt->loc = (SourceLoc){0, 0};
@@ -541,6 +549,8 @@ Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count) {
     stmt->as.sql_stmt.sql = copy_string(sql);
     stmt->as.sql_stmt.params = params;
     stmt->as.sql_stmt.param_count = param_count;
+    stmt->as.sql_stmt.into_vars = into_vars;
+    stmt->as.sql_stmt.into_count = into_count;
     return stmt;
 }
 

@@ -183,6 +183,60 @@ TEST(sqlite_end_to_end_for_loop_string_parameter_binding) {
     driver.close(&driver);
 }
 
+TEST(sqlite_end_to_end_select_into_single_value) {
+    DBDriver driver;
+    sqlite_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, ":memory:"));
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile_with_context_and_path(
+        "proc main() -> int { int my_id = 0; create table t (id int, name string); insert into t values (1, \"alice\"); SELECT id INTO my_id FROM t WHERE name = \"alice\"; return my_id; }",
+        &chunk, NULL, error, sizeof(error), NULL);
+    ASSERT_INT_EQ(1, ok);
+
+    VM* vm = vm_init();
+    vm_set_driver(vm, &driver);
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(result);
+
+    vm_free(vm);
+    free_chunk(&chunk);
+    driver.close(&driver);
+}
+
+TEST(sqlite_end_to_end_select_into_multi_value) {
+    DBDriver driver;
+    sqlite_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, ":memory:"));
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile_with_context_and_path(
+        "proc main() -> int { int my_id = 0; string my_name = \"\"; create table t (id int, name string); insert into t values (1, \"alice\"); SELECT id, name INTO my_id, my_name FROM t WHERE name = \"alice\"; return my_id; }",
+        &chunk, NULL, error, sizeof(error), NULL);
+    ASSERT_INT_EQ(1, ok);
+
+    VM* vm = vm_init();
+    vm_set_driver(vm, &driver);
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(result);
+
+    vm_free(vm);
+    free_chunk(&chunk);
+    driver.close(&driver);
+}
+
 int main(void) {
     RUN_TEST(sqlite3_is_linked);
     RUN_TEST(sqlite_driver_crud);
@@ -191,5 +245,7 @@ int main(void) {
     RUN_TEST(sqlite_end_to_end_parameter_binding);
     RUN_TEST(sqlite_end_to_end_for_loop_parameter_binding);
     RUN_TEST(sqlite_end_to_end_for_loop_string_parameter_binding);
+    RUN_TEST(sqlite_end_to_end_select_into_single_value);
+    RUN_TEST(sqlite_end_to_end_select_into_multi_value);
     TEST_SUMMARY();
 }

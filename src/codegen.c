@@ -562,7 +562,60 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             break;
         }
         case STMT_SQL_QUERY: {
-            error(compiler, "SQL query assignment is not supported yet");
+            SqlStmt* s = &stmt->as.sql_stmt;
+            if (s->into_count == 0) {
+                error(compiler, "SELECT statement requires INTO");
+                return;
+            }
+            for (int i = 0; i < s->into_count; i++) {
+                int slot = resolve_local(compiler, s->into_vars[i], (int)strlen(s->into_vars[i]));
+                if (slot < 0) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Undefined variable '%s'", s->into_vars[i]);
+                    error(compiler, msg);
+                    return;
+                }
+            }
+            for (int i = 0; i < s->param_count; i++) {
+                compile_expr(compiler, s->params[i]);
+                if (compiler->had_error) return;
+                const char* name = s->params[i]->as.sql_param.name;
+                Type* t = resolve_local_type(compiler, name, (int)strlen(name));
+                if (t != NULL && t->kind == TYPE_STRING) {
+                    emit_byte(compiler, OP_SQL_BIND_STRING);
+                } else if (t != NULL && t->kind == TYPE_FLOAT) {
+                    emit_byte(compiler, OP_SQL_BIND_FLOAT);
+                } else {
+                    emit_byte(compiler, OP_SQL_BIND_INT);
+                }
+            }
+            char* sql_copy = malloc((size_t)strlen(s->sql) + 1);
+            if (sql_copy == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(sql_copy, s->sql);
+            int sql_idx = add_constant(compiler->chunk, value_string(sql_copy));
+            if (sql_idx < 0) {
+                free(sql_copy);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_SQL);
+            emit_u16(compiler, (uint16_t)sql_idx);
+
+            int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
+
+            for (int i = 0; i < s->into_count; i++) {
+                int slot = resolve_local(compiler, s->into_vars[i], (int)strlen(s->into_vars[i]));
+                emit_byte(compiler, OP_SQL_GET_COLUMN);
+                emit_u16(compiler, (uint16_t)i);
+                emit_byte(compiler, OP_SET_LOCAL);
+                emit_byte(compiler, (uint8_t)slot);
+                emit_byte(compiler, OP_POP);
+            }
+
+            patch_jump(compiler, exit_jump);
             break;
         }
         default:

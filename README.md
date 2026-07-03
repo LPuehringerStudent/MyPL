@@ -43,10 +43,27 @@ Run it against a SQLite database:
 ./bin/mypl examples/todo.mypl --db todos.db
 ```
 
+## SELECT INTO
+
+MyPL can assign query results directly to local variables:
+
+```mypl
+proc lookup_user(search_id int) -> int {
+    string name = "";
+    int age = 0;
+    SELECT name, age INTO name, age FROM users WHERE id = ?search_id;
+    print concat(name, concat(" is ", int_to_string(age)));
+    return 0;
+}
+```
+
+See `examples/select_into.mypl` for a runnable example.
+
 ## Features
 
 - C-like syntax.
 - Embedded SQL with parameter binding (`?var`).
+- `SELECT ... INTO` assignment for single or multiple scalar variables.
 - SQLite backend (`--db <path>`).
 - Custom SQL engine fallback when no `--db` is supplied.
 - Interactive REPL with `.connect`, `.tables`, `.schema`, `.sql`, `.vars`, and

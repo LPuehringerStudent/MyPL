@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,6 +79,34 @@ static int is_ident_char(char c) {
            (c >= '0' && c <= '9') || c == '_';
 }
 
+static int is_word_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static int ascii_case_eq(char a, char b) {
+    if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+    return a == b;
+}
+
+static const char* find_word(const char* s, const char* word) {
+    size_t len = strlen(word);
+    for (const char* p = s; *p != '\0'; p++) {
+        if ((p == s || !is_word_char(p[-1])) && !is_word_char(p[len])) {
+            int match = 1;
+            for (size_t i = 0; i < len; i++) {
+                if (!ascii_case_eq(p[i], word[i])) {
+                    match = 0;
+                    break;
+                }
+            }
+            if (match) return p;
+        }
+    }
+    return NULL;
+}
+
 static Stmt* sql_statement(Parser* parser, int kind) {
     const char* sql_start = parser->previous.start;
     while (!check(parser, TOKEN_SEMICOLON) && !check(parser, TOKEN_EOF)) {
@@ -140,11 +169,107 @@ static Stmt* sql_statement(Parser* parser, int kind) {
     }
     *out = '\0';
 
-    Stmt* stmt = create_sql_stmt(kind, sql, params, param_count);
+    char** into_vars = NULL;
+    int into_count = 0;
+    char* final_sql = sql;
+    if (kind == STMT_SQL_QUERY) {
+        const char* into_pos = find_word(sql, "into");
+        if (into_pos != NULL) {
+            const char* from_pos = find_word(into_pos + 4, "from");
+            if (from_pos == NULL) {
+                free(sql);
+                for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                free(params);
+                error_at_current(parser, "expected FROM after INTO in SELECT statement");
+                return NULL;
+            }
+            const char* list_start = into_pos + 4;
+            while (*list_start != '\0' && isspace((unsigned char)*list_start)) list_start++;
+            const char* list_end = from_pos;
+            while (list_end > list_start && isspace((unsigned char)list_end[-1])) list_end--;
+            if (list_end == list_start) {
+                free(sql);
+                for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                free(params);
+                error_at_current(parser, "expected variable name after INTO");
+                return NULL;
+            }
+
+            const char* p = list_start;
+            while (p < list_end) {
+                while (p < list_end && isspace((unsigned char)*p)) p++;
+                const char* part_start = p;
+                while (p < list_end && *p != ',') p++;
+                const char* part_end = p;
+                while (part_end > part_start && isspace((unsigned char)part_end[-1])) part_end--;
+                if (part_end == part_start) {
+                    for (int i = 0; i < into_count; i++) free(into_vars[i]);
+                    free(into_vars);
+                    free(sql);
+                    for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                    free(params);
+                    error_at_current(parser, "expected variable name in INTO list");
+                    return NULL;
+                }
+                int var_len = (int)(part_end - part_start);
+                char* var_name = malloc((size_t)var_len + 1);
+                if (var_name == NULL) {
+                    for (int i = 0; i < into_count; i++) free(into_vars[i]);
+                    free(into_vars);
+                    free(sql);
+                    for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                    free(params);
+                    error_at_current(parser, "out of memory");
+                    return NULL;
+                }
+                memcpy(var_name, part_start, (size_t)var_len);
+                var_name[var_len] = '\0';
+                char** new_vars = realloc(into_vars, sizeof(char*) * (size_t)(into_count + 1));
+                if (new_vars == NULL) {
+                    free(var_name);
+                    for (int i = 0; i < into_count; i++) free(into_vars[i]);
+                    free(into_vars);
+                    free(sql);
+                    for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                    free(params);
+                    error_at_current(parser, "out of memory");
+                    return NULL;
+                }
+                into_vars = new_vars;
+                into_vars[into_count++] = var_name;
+                if (p < list_end) p++; /* skip comma */
+            }
+
+            int prefix_len = (int)(into_pos - sql);
+            int suffix_len = (int)strlen(from_pos);
+            int new_len = prefix_len + 5 + suffix_len; /* " FROM " + suffix, but keep one space before FROM */
+            final_sql = malloc((size_t)new_len + 1);
+            if (final_sql == NULL) {
+                for (int i = 0; i < into_count; i++) free(into_vars[i]);
+                free(into_vars);
+                free(sql);
+                for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                free(params);
+                error_at_current(parser, "out of memory");
+                return NULL;
+            }
+            /* Trim trailing whitespace from prefix. */
+            while (prefix_len > 0 && isspace((unsigned char)sql[prefix_len - 1])) prefix_len--;
+            memcpy(final_sql, sql, (size_t)prefix_len);
+            final_sql[prefix_len] = ' ';
+            memcpy(final_sql + prefix_len + 1, from_pos, (size_t)suffix_len);
+            final_sql[prefix_len + 1 + suffix_len] = '\0';
+        }
+    }
+
+    Stmt* stmt = create_sql_stmt(kind, final_sql, params, param_count, into_vars, into_count);
+    if (final_sql != sql) free(final_sql);
     free(sql);
     if (stmt == NULL) {
         for (int i = 0; i < param_count; i++) free_expr(params[i]);
         free(params);
+        for (int i = 0; i < into_count; i++) free(into_vars[i]);
+        free(into_vars);
         error_at_current(parser, "out of memory");
         return NULL;
     }
@@ -681,6 +806,9 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_ROLLBACK)) {
         advance(parser); /* consume ; */
         return create_sql_transaction_stmt(2);
+    }
+    if (match(parser, TOKEN_SQL_QUERY)) {
+        return sql_statement(parser, STMT_SQL_QUERY);
     }
     if (check(parser, TOKEN_IDENT)) return assignment(parser);
     error_at_current(parser, "expected statement");

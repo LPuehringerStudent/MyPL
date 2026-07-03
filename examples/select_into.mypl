@@ -1,0 +1,17 @@
+proc main() -> int {
+    create table users (id int, name string, age int);
+    insert into users values (1, "alice", 30);
+    insert into users values (2, "bob", 25);
+
+    string name = "";
+    SELECT name INTO name FROM users WHERE id = 1;
+    print name;
+
+    int user_id = 0;
+    int user_age = 0;
+    SELECT id, age INTO user_id, user_age FROM users WHERE name = "bob";
+    print user_id;
+    print user_age;
+
+    return 0;
+}
