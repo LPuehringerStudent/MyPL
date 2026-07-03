@@ -702,6 +702,26 @@ TEST(vm_executes_unary_not) {
     free_chunk(&chunk);
 }
 
+TEST(vm_reports_source_line_on_runtime_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+
+    int idx = add_constant(&chunk, value_string(strdup("x")));
+    int line = 7;
+    write_chunk_line(&chunk, OP_CONST, line);
+    write_chunk_u16_line(&chunk, (uint16_t)idx, line);
+    write_chunk_line(&chunk, OP_NEGATE, line);
+    write_chunk_line(&chunk, OP_RETURN, line);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    const char* msg = vm_get_error(vm);
+    ASSERT_PTR_NOT_NULL(msg);
+    ASSERT_INT_EQ(1, strstr(msg, "[line 7]") != NULL);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(vm_executes_pop) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -1007,6 +1027,7 @@ int main(void) {
     RUN_TEST(vm_executes_procedure_call_with_arguments);
     RUN_TEST(vm_executes_unary_minus);
     RUN_TEST(vm_executes_unary_not);
+    RUN_TEST(vm_reports_source_line_on_runtime_error);
     RUN_TEST(vm_executes_pop);
     RUN_TEST(vm_executes_bool_not_true);
     RUN_TEST(vm_executes_array_build_and_index);

@@ -974,6 +974,29 @@ TEST(compiler_emits_sql_exec) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_reports_source_line_on_native_error) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile(
+        "proc main() -> int {\n"
+        "    int x = 0;\n"
+        "    assert(x, \"boom\");\n"
+        "    return 0;\n"
+        "}",
+        &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    const char* msg = vm_get_error(vm);
+    ASSERT_PTR_NOT_NULL(msg);
+    ASSERT_INT_EQ(1, strstr(msg, "[line 3]") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, "boom") != NULL);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -1037,5 +1060,6 @@ int main(void) {
     RUN_TEST(compiler_compiles_abs_float_native);
     RUN_TEST(compiler_compiles_nested_index_assignment);
     RUN_TEST(compiler_emits_sql_exec);
+    RUN_TEST(compiler_reports_source_line_on_native_error);
     TEST_SUMMARY();
 }

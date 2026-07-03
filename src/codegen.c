@@ -68,6 +68,7 @@ typedef struct {
     struct Context* ctx;
     LoopContext loops[MAX_LOOP_NESTING];
     int loop_count;
+    int current_line;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -134,11 +135,11 @@ static void error(Compiler* compiler, const char* message) {
 }
 
 static void emit_byte(Compiler* compiler, uint8_t byte) {
-    write_chunk(compiler->chunk, byte);
+    write_chunk_line(compiler->chunk, byte, compiler->current_line);
 }
 
 static void emit_u16(Compiler* compiler, uint16_t value) {
-    write_chunk_u16(compiler->chunk, value);
+    write_chunk_u16_line(compiler->chunk, value, compiler->current_line);
 }
 
 static int emit_jump(Compiler* compiler, uint8_t op) {
@@ -298,6 +299,9 @@ static void compile_block(Compiler* compiler, Block* block) {
 }
 
 static void compile_expr(Compiler* compiler, Expr* expr) {
+    if (expr != NULL && expr->loc.line > 0) {
+        compiler->current_line = expr->loc.line;
+    }
     switch (expr->kind) {
         case EXPR_LITERAL: {
             Value v = expr->as.literal.value;
@@ -451,6 +455,9 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
 }
 
 static void compile_stmt(Compiler* compiler, Stmt* stmt) {
+    if (stmt != NULL && stmt->loc.line > 0) {
+        compiler->current_line = stmt->loc.line;
+    }
     switch (stmt->kind) {
         case STMT_VAR_DECL: {
             VarDeclStmt* d = &stmt->as.var_decl;
@@ -777,9 +784,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 int skip_error = emit_jump(compiler, OP_JMP);
                 patch_jump(compiler, exit_jump);
 
-                char msg[256];
-                snprintf(msg, sizeof(msg), "SELECT INTO found no matching row at line %d:%d",
-                         stmt->loc.line, stmt->loc.column);
+                const char* msg = "SELECT INTO found no matching row";
                 char* msg_copy = malloc(strlen(msg) + 1);
                 if (msg_copy == NULL) {
                     error(compiler, "out of memory");
