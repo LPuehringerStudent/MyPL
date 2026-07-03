@@ -108,7 +108,8 @@ static const char* find_word(const char* s, const char* word) {
 }
 
 static Stmt* sql_statement(Parser* parser, int kind) {
-    const char* sql_start = parser->previous.start;
+    Token start_token = parser->previous;
+    const char* sql_start = start_token.start;
     while (!check(parser, TOKEN_SEMICOLON) && !check(parser, TOKEN_EOF)) {
         advance(parser);
     }
@@ -263,6 +264,10 @@ static Stmt* sql_statement(Parser* parser, int kind) {
     }
 
     Stmt* stmt = create_sql_stmt(kind, final_sql, params, param_count, into_vars, into_count);
+    if (stmt != NULL) {
+        stmt->loc.line = start_token.line;
+        stmt->loc.column = start_token.column;
+    }
     if (final_sql != sql) free(final_sql);
     free(sql);
     if (stmt == NULL) {

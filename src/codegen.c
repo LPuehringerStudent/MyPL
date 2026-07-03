@@ -466,6 +466,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             emit_byte(compiler, OP_SQL);
             emit_u16(compiler, (uint16_t)query_idx);
+            emit_u16(compiler, (uint16_t)stmt->loc.line);
 
             int loop_start = compiler->chunk->count;
             int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
@@ -548,6 +549,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             emit_byte(compiler, OP_SQL_EXEC);
             emit_u16(compiler, (uint16_t)sql_idx);
+            emit_u16(compiler, (uint16_t)stmt->loc.line);
             break;
         }
         case STMT_SQL_TRANSACTION: {
@@ -610,6 +612,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             emit_byte(compiler, OP_SQL);
             emit_u16(compiler, (uint16_t)sql_idx);
+            emit_u16(compiler, (uint16_t)stmt->loc.line);
 
             if (into_array) {
                 int slot = resolve_local(compiler, s->into_vars[0], (int)strlen(s->into_vars[0]));
@@ -629,7 +632,28 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     emit_byte(compiler, OP_POP);
                 }
 
+                int skip_error = emit_jump(compiler, OP_JMP);
                 patch_jump(compiler, exit_jump);
+
+                char msg[256];
+                snprintf(msg, sizeof(msg), "SELECT INTO found no matching row at line %d:%d",
+                         stmt->loc.line, stmt->loc.column);
+                char* msg_copy = malloc(strlen(msg) + 1);
+                if (msg_copy == NULL) {
+                    error(compiler, "out of memory");
+                    return;
+                }
+                strcpy(msg_copy, msg);
+                int msg_idx = add_constant(compiler->chunk, value_string(msg_copy));
+                if (msg_idx < 0) {
+                    free(msg_copy);
+                    error(compiler, "too many constants");
+                    return;
+                }
+                emit_byte(compiler, OP_RUNTIME_ERROR);
+                emit_u16(compiler, (uint16_t)msg_idx);
+
+                patch_jump(compiler, skip_error);
             }
             break;
         }

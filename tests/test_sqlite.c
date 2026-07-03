@@ -264,6 +264,35 @@ TEST(sqlite_end_to_end_select_into_array_row) {
     driver.close(&driver);
 }
 
+TEST(sqlite_reports_source_line_on_sql_error) {
+    DBDriver driver;
+    sqlite_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, ":memory:"));
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile_with_context_and_path(
+        "proc main() -> int {\n"
+        "    int x = 0;\n"
+        "    SELECT id INTO x FROM missing_table;\n"
+        "    return x;\n"
+        "}",
+        &chunk, NULL, error, sizeof(error), NULL);
+    ASSERT_INT_EQ(1, ok);
+
+    VM* vm = vm_init();
+    vm_set_driver(vm, &driver);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    const char* msg = vm_get_error(vm);
+    ASSERT_PTR_NOT_NULL(msg);
+    ASSERT_INT_EQ(1, strstr(msg, "SQL error at line 3") != NULL);
+
+    vm_free(vm);
+    free_chunk(&chunk);
+    driver.close(&driver);
+}
+
 int main(void) {
     RUN_TEST(sqlite3_is_linked);
     RUN_TEST(sqlite_driver_crud);
@@ -275,5 +304,6 @@ int main(void) {
     RUN_TEST(sqlite_end_to_end_select_into_single_value);
     RUN_TEST(sqlite_end_to_end_select_into_multi_value);
     RUN_TEST(sqlite_end_to_end_select_into_array_row);
+    RUN_TEST(sqlite_reports_source_line_on_sql_error);
     TEST_SUMMARY();
 }

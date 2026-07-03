@@ -24,6 +24,7 @@ struct VM {
     DBDriver*     driver;
     Value         sql_params[16];
     int           sql_param_count;
+    int           sql_line;
     char          error_message[256];
 };
 
@@ -42,6 +43,7 @@ VM* vm_init(void) {
     vm->context = NULL;
     vm->driver = NULL;
     vm->sql_param_count = 0;
+    vm->sql_line = 0;
     vm->error_message[0] = '\0';
     return vm;
 }
@@ -57,6 +59,26 @@ static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
         set_runtime_error(vm, msg);
     } else {
         set_runtime_error(vm, prefix);
+    }
+}
+
+static void set_runtime_error_sql(VM* vm, const char* message) {
+    if (vm->sql_line > 0) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "SQL error at line %d: %s", vm->sql_line, message);
+        set_runtime_error(vm, msg);
+    } else {
+        set_runtime_error(vm, message);
+    }
+}
+
+static void set_runtime_error_from_driver_sql(VM* vm, const char* prefix) {
+    if (vm->driver != NULL && vm->driver->error_message[0] != '\0') {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "%s: %s", prefix, vm->driver->error_message);
+        set_runtime_error_sql(vm, msg);
+    } else {
+        set_runtime_error_sql(vm, prefix);
     }
 }
 
@@ -290,13 +312,16 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_SQL: {
-                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t idx = read_u16(vm->ip);
                 vm->ip += 2;
+                uint16_t line = read_u16(vm->ip);
+                vm->ip += 2;
+                vm->sql_line = (int)line;
                 if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
                 Value query_value = vm->chunk->constants[idx];
                 if (query_value.type != VAL_STRING || query_value.as.as_string == NULL) {
-                    set_runtime_error(vm, "Invalid SQL query");
+                    set_runtime_error_sql(vm, "Invalid SQL query");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (vm->driver != NULL) {
@@ -309,7 +334,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                             value_release(vm->sql_params[i]);
                         }
                         vm->sql_param_count = 0;
-                        set_runtime_error_from_driver(vm, "SQL query failed");
+                        set_runtime_error_from_driver_sql(vm, "SQL query failed");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     for (int i = 0; i < vm->sql_param_count; i++) {
@@ -318,14 +343,20 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     vm->sql_param_count = 0;
                 } else {
                     Context* ctx = vm->context;
-                    if (ctx == NULL || ctx->pager == NULL) return INTERPRET_RUNTIME_ERROR;
+                    if (ctx == NULL || ctx->pager == NULL) {
+                        set_runtime_error_sql(vm, "No database context");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
                     result_free((Result*)vm->result_handle);
                     vm->result_handle = sql_exec(query_value.as.as_string, ctx);
                     for (int i = 0; i < vm->sql_param_count; i++) {
                         value_release(vm->sql_params[i]);
                     }
                     vm->sql_param_count = 0;
-                    if (vm->result_handle == NULL) return INTERPRET_RUNTIME_ERROR;
+                    if (vm->result_handle == NULL) {
+                        set_runtime_error_sql(vm, "SQL query failed");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
                 }
                 vm->row_handle = NULL;
                 break;
@@ -593,17 +624,20 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 break;
             }
             case OP_SQL_EXEC: {
-                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t idx = read_u16(vm->ip);
                 vm->ip += 2;
+                uint16_t line = read_u16(vm->ip);
+                vm->ip += 2;
+                vm->sql_line = (int)line;
                 if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
                 Value sql_value = vm->chunk->constants[idx];
                 if (sql_value.type != VAL_STRING || sql_value.as.as_string == NULL) {
-                    set_runtime_error(vm, "Invalid SQL statement");
+                    set_runtime_error_sql(vm, "Invalid SQL statement");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (vm->driver == NULL) {
-                    set_runtime_error(vm, "No database driver");
+                    set_runtime_error_sql(vm, "No database driver");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 int ok = vm->driver->exec(vm->driver, sql_value.as.as_string,
@@ -613,7 +647,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 }
                 vm->sql_param_count = 0;
                 if (!ok) {
-                    set_runtime_error_from_driver(vm, "SQL execution failed");
+                    set_runtime_error_from_driver_sql(vm, "SQL execution failed");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
@@ -703,13 +737,13 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 Value value;
                 if (vm->driver != NULL) {
                     if (!vm->driver->row_get_column(vm->driver, vm->row_handle, (int)idx, &value)) {
-                        set_runtime_error_from_driver(vm, "Column access failed");
+                        set_runtime_error_from_driver_sql(vm, "Column access failed");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                 } else {
                     Row* row = (Row*)vm->row_handle;
                     if (row == NULL || idx >= (uint16_t)row->field_count) {
-                        set_runtime_error(vm, "Invalid column index");
+                        set_runtime_error_sql(vm, "Invalid column index");
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     Cell cell = row->fields[idx].value;
@@ -726,7 +760,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
             case OP_SQL_TO_ARRAY: {
                 ArrayObj* array = array_new();
                 if (array == NULL) {
-                    set_runtime_error(vm, "out of memory");
+                    set_runtime_error_sql(vm, "out of memory");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 if (vm->driver != NULL) {
@@ -737,7 +771,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         if (!has_row) break;
                         RowObj* row_obj = row_obj_new(column_count);
                         if (row_obj == NULL) {
-                            set_runtime_error(vm, "out of memory");
+                            set_runtime_error_sql(vm, "out of memory");
                             value_release(value_array(array));
                             return INTERPRET_RUNTIME_ERROR;
                         }
@@ -745,7 +779,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                             const char* name = vm->driver->result_column_name(vm->driver, vm->result_handle, i);
                             Value col_value;
                             if (!vm->driver->row_get_column(vm->driver, row_handle, i, &col_value)) {
-                                set_runtime_error_from_driver(vm, "Column access failed");
+                                set_runtime_error_from_driver_sql(vm, "Column access failed");
                                 row_obj_free(row_obj);
                                 value_release(value_array(array));
                                 return INTERPRET_RUNTIME_ERROR;
@@ -757,7 +791,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         if (!array_append(array, row_value)) {
                             value_release(row_value);
                             value_release(value_array(array));
-                            set_runtime_error(vm, "out of memory");
+                            set_runtime_error_sql(vm, "out of memory");
                             return INTERPRET_RUNTIME_ERROR;
                         }
                         value_release(row_value);
@@ -766,6 +800,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 } else {
                     Context* ctx = vm->context;
                     if (ctx == NULL || ctx->pager == NULL) {
+                        set_runtime_error_sql(vm, "No database context");
                         value_release(value_array(array));
                         return INTERPRET_RUNTIME_ERROR;
                     }
@@ -775,7 +810,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         if (row == NULL) break;
                         RowObj* row_obj = row_obj_new(row->field_count);
                         if (row_obj == NULL) {
-                            set_runtime_error(vm, "out of memory");
+                            set_runtime_error_sql(vm, "out of memory");
                             value_release(value_array(array));
                             return INTERPRET_RUNTIME_ERROR;
                         }
@@ -795,7 +830,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         if (!array_append(array, row_value)) {
                             value_release(row_value);
                             value_release(value_array(array));
-                            set_runtime_error(vm, "out of memory");
+                            set_runtime_error_sql(vm, "out of memory");
                             return INTERPRET_RUNTIME_ERROR;
                         }
                         value_release(row_value);
@@ -809,6 +844,19 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
+            }
+            case OP_RUNTIME_ERROR: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value msg_value = vm->chunk->constants[idx];
+                if (msg_value.type != VAL_STRING || msg_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Runtime error");
+                } else {
+                    set_runtime_error(vm, msg_value.as.as_string);
+                }
+                return INTERPRET_RUNTIME_ERROR;
             }
             default:
                 set_runtime_error(vm, "Unknown opcode");
