@@ -5,9 +5,12 @@ typedef enum {
     /* keywords */
     TOKEN_PROC,
     TOKEN_FOR,
+    TOKEN_WHILE,
     TOKEN_IF,
     TOKEN_ELSE,
     TOKEN_RETURN,
+    TOKEN_BREAK,
+    TOKEN_CONTINUE,
     TOKEN_IN,
     TOKEN_PRINT,
     TOKEN_IMPORT,
