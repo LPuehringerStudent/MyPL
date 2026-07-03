@@ -39,7 +39,8 @@ typedef enum {
     OP_SQL_BEGIN,
     OP_SQL_COMMIT,
     OP_SQL_ROLLBACK,
-    OP_ROW_GET
+    OP_ROW_GET,
+    OP_SQL_GET_COLUMN
 } OpCode;
 
 typedef enum {

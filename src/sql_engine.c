@@ -1334,6 +1334,25 @@ static int custom_row_get_field(DBDriver* driver, void* row_handle, const char* 
     return 1;
 }
 
+static int custom_row_get_column(DBDriver* driver, void* row_handle, int index, Value* out) {
+    (void)driver;
+    Row* row = (Row*)row_handle;
+    if (row == NULL || index < 0 || index >= row->field_count) {
+        *out = value_int(0);
+        return 0;
+    }
+    Cell cell = row->fields[index].value;
+    switch (cell.type) {
+        case VAL_INT:    *out = value_int(cell.as.as_int);       break;
+        case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
+        case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
+        default:
+            *out = value_int(0);
+            return 0;
+    }
+    return 1;
+}
+
 static int custom_result_column_count(DBDriver* driver, void* result_handle) {
     (void)driver;
     Result* res = (Result*)result_handle;
@@ -1378,6 +1397,7 @@ void custom_driver_init(DBDriver* driver) {
     driver->query = custom_query;
     driver->result_next = custom_result_next;
     driver->row_get_field = custom_row_get_field;
+    driver->row_get_column = custom_row_get_column;
     driver->result_column_count = custom_result_column_count;
     driver->result_column_name = custom_result_column_name;
     driver->result_free = custom_result_free;

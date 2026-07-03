@@ -871,12 +871,34 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         }
 
         case STMT_SQL_DDL:
-        case STMT_SQL_DML:
+        case STMT_SQL_DML: {
+            SqlStmt* s = &stmt->as.sql_stmt;
+            for (int i = 0; i < s->param_count; i++) {
+                infer_expr(tc, s->params[i], NULL);
+                if (tc->had_error) return;
+            }
+            break;
+        }
         case STMT_SQL_QUERY: {
             SqlStmt* s = &stmt->as.sql_stmt;
             for (int i = 0; i < s->param_count; i++) {
                 infer_expr(tc, s->params[i], NULL);
                 if (tc->had_error) return;
+            }
+            if (s->into_count == 0) {
+                type_error(tc, stmt->loc, "SELECT statement requires INTO");
+                return;
+            }
+            for (int i = 0; i < s->into_count; i++) {
+                Type* t = resolve_local(tc, s->into_vars[i]);
+                if (t == NULL) {
+                    type_error(tc, stmt->loc, "Undefined variable '%s'", s->into_vars[i]);
+                    return;
+                }
+                if (t->kind != TYPE_INT && t->kind != TYPE_FLOAT && t->kind != TYPE_STRING && t->kind != TYPE_BOOL) {
+                    type_error(tc, stmt->loc, "SELECT INTO target must be a scalar variable");
+                    return;
+                }
             }
             break;
         }

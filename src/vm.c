@@ -701,6 +701,33 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 value_release(row_value);
                 break;
             }
+            case OP_SQL_GET_COLUMN: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                Value value;
+                if (vm->driver != NULL) {
+                    if (!vm->driver->row_get_column(vm->driver, vm->row_handle, (int)idx, &value)) {
+                        set_runtime_error_from_driver(vm, "Column access failed");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                } else {
+                    Row* row = (Row*)vm->row_handle;
+                    if (row == NULL || idx >= (uint16_t)row->field_count) {
+                        set_runtime_error(vm, "Invalid column index");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    Cell cell = row->fields[idx].value;
+                    switch (cell.type) {
+                        case VAL_INT:    value = value_int(cell.as.as_int);       break;
+                        case VAL_FLOAT:  value = value_float(cell.as.as_float);   break;
+                        case VAL_STRING: value = value_string(strdup(cell.as.as_string)); break;
+                        default:         value = value_int(0);                    break;
+                    }
+                }
+                if (!push(vm, value)) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
             default:
                 set_runtime_error(vm, "Unknown opcode");
                 return INTERPRET_RUNTIME_ERROR;

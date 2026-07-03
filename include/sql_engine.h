@@ -94,6 +94,7 @@ struct DBDriver {
     int (*query)(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle);
     int (*result_next)(DBDriver* driver, void* result_handle, void** row_handle);
     int (*row_get_field)(DBDriver* driver, void* row_handle, const char* name, Value* out);
+    int (*row_get_column)(DBDriver* driver, void* row_handle, int index, Value* out);
     int (*result_column_count)(DBDriver* driver, void* result_handle);
     const char* (*result_column_name)(DBDriver* driver, void* result_handle, int index);
     void (*result_free)(DBDriver* driver, void* result_handle);

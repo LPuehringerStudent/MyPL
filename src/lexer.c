@@ -90,7 +90,7 @@ static Token identifier(Lexer* lexer) {
 }
 
 static Token sql_query(Lexer* lexer) {
-    while (peek(lexer) != '{' && !is_at_end(lexer)) {
+    while (peek(lexer) != '{' && peek(lexer) != ';' && !is_at_end(lexer)) {
         if (peek(lexer) == '\n') lexer->line++;
         advance(lexer);
     }
