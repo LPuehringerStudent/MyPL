@@ -87,6 +87,7 @@ TEST(cli_resolves_nested_import_relative_to_importing_file) {
     system("rm -rf /tmp/mypl_nested_import_test");
 }
 
+#ifdef USE_SQLITE
 TEST(cli_accepts_db_flag) {
     remove("/tmp/cli_test.db");
     FILE* f = fopen("/tmp/cli_db.mypl", "w");
@@ -98,6 +99,7 @@ TEST(cli_accepts_db_flag) {
     remove("/tmp/cli_db.mypl");
     remove("/tmp/cli_test.db");
 }
+#endif
 
 int main(void) {
     RUN_TEST(cli_runs_file_and_prints_int_result);
@@ -105,6 +107,8 @@ int main(void) {
     RUN_TEST(cli_returns_nonzero_on_compile_error);
     RUN_TEST(cli_resolves_import_relative_to_importing_file);
     RUN_TEST(cli_resolves_nested_import_relative_to_importing_file);
+#ifdef USE_SQLITE
     RUN_TEST(cli_accepts_db_flag);
+#endif
     TEST_SUMMARY();
 }

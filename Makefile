@@ -1,12 +1,24 @@
 CC      = cc
 CFLAGS  = -Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude
-LDFLAGS = -lsqlite3 -lm
+LDFLAGS = -lm
+
+USE_SQLITE ?= 1
+
+ifeq ($(USE_SQLITE),1)
+CFLAGS  += -DUSE_SQLITE
+LDFLAGS += -lsqlite3
+endif
 
 SRCDIR  = src
 OBJDIR  = build
 BINDIR  = bin
 
 SOURCES     = $(wildcard $(SRCDIR)/*.c)
+
+ifeq ($(USE_SQLITE),0)
+SOURCES := $(filter-out $(SRCDIR)/sqlite_driver.c,$(SOURCES))
+endif
+
 OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES))
 LIB_OBJECTS = $(filter-out $(OBJDIR)/main.o,$(OBJECTS))
 
@@ -42,7 +54,9 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_gc tests/test_gc.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_repl tests/test_repl.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_typecheck tests/test_typecheck.c $(LIB_OBJECTS) $(LDFLAGS)
+ifeq ($(USE_SQLITE),1)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sqlite tests/test_sqlite.c $(LIB_OBJECTS) $(LDFLAGS)
+endif
 	$(BINDIR)/test_value
 	$(BINDIR)/test_chunk
 	$(BINDIR)/test_compiler
@@ -59,7 +73,9 @@ test: $(TARGET)
 	$(BINDIR)/test_gc
 	$(BINDIR)/test_repl
 	$(BINDIR)/test_typecheck
+ifeq ($(USE_SQLITE),1)
 	$(BINDIR)/test_sqlite
+endif
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)
