@@ -68,16 +68,97 @@ static int bind_params(DBDriver* driver, sqlite3_stmt* stmt, Value* params, int 
     return 1;
 }
 
+static int is_sql_alpha_(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static int is_sql_alnum_(char c) {
+    return is_sql_alpha_(c) || (c >= '0' && c <= '9');
+}
+
+static int sql_token_eq(const char* start, int len, const char* word) {
+    int wlen = (int)strlen(word);
+    if (len != wlen) return 0;
+    for (int i = 0; i < len; i++) {
+        char a = start[i];
+        char b = word[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+/*
+ * Map MyPL type names to SQLite storage-class names so that string
+ * columns keep TEXT affinity (instead of SQLite's default NUMERIC).
+ * Quoted strings are left untouched so literal data is not altered.
+ */
+static char* sqlite_normalize_types(const char* sql) {
+    size_t len = strlen(sql);
+    char* out = malloc(len * 2 + 1);
+    if (out == NULL) return NULL;
+    size_t j = 0;
+    const char* p = sql;
+    while (*p != '\0') {
+        if (*p == '\'' || *p == '"') {
+            char quote = *p;
+            out[j++] = *p++;
+            while (*p != '\0' && *p != quote) {
+                out[j++] = *p++;
+            }
+            if (*p == quote) {
+                out[j++] = *p++;
+            }
+            continue;
+        }
+        if (is_sql_alpha_(*p)) {
+            const char* start = p;
+            while (is_sql_alnum_(*p)) p++;
+            int tlen = (int)(p - start);
+            const char* replacement = NULL;
+            if (sql_token_eq(start, tlen, "string")) {
+                replacement = "TEXT";
+            } else if (sql_token_eq(start, tlen, "int")) {
+                replacement = "INTEGER";
+            } else if (sql_token_eq(start, tlen, "float")) {
+                replacement = "REAL";
+            } else if (sql_token_eq(start, tlen, "bool")) {
+                replacement = "INTEGER";
+            }
+            if (replacement != NULL) {
+                size_t rlen = strlen(replacement);
+                memcpy(out + j, replacement, rlen);
+                j += rlen;
+            } else {
+                memcpy(out + j, start, (size_t)tlen);
+                j += (size_t)tlen;
+            }
+            continue;
+        }
+        out[j++] = *p++;
+    }
+    out[j] = '\0';
+    return out;
+}
+
 static int sqlite_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
     SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
+    char* normalized = sqlite_normalize_types(sql);
+    if (normalized == NULL) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "out of memory");
+        return 0;
+    }
     sqlite3_stmt* stmt = NULL;
-    int rc = sqlite3_prepare_v2(impl->db, sql, -1, &stmt, NULL);
+    int rc = sqlite3_prepare_v2(impl->db, normalized, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+        free(normalized);
         return 0;
     }
     if (!bind_params(driver, stmt, params, param_count)) {
         sqlite3_finalize(stmt);
+        free(normalized);
         return 0;
     }
     rc = sqlite3_step(stmt);
@@ -85,21 +166,30 @@ static int sqlite_exec(DBDriver* driver, const char* sql, Value* params, int par
         snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
     }
     sqlite3_finalize(stmt);
+    free(normalized);
     return (rc == SQLITE_DONE || rc == SQLITE_ROW) ? 1 : 0;
 }
 
 static int sqlite_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {
     SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
+    char* normalized = sqlite_normalize_types(sql);
+    if (normalized == NULL) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "out of memory");
+        return 0;
+    }
     sqlite3_stmt* stmt = NULL;
-    int rc = sqlite3_prepare_v2(impl->db, sql, -1, &stmt, NULL);
+    int rc = sqlite3_prepare_v2(impl->db, normalized, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+        free(normalized);
         return 0;
     }
     if (!bind_params(driver, stmt, params, param_count)) {
         sqlite3_finalize(stmt);
+        free(normalized);
         return 0;
     }
+    free(normalized);
     *result_handle = stmt;
     driver->error_message[0] = '\0';
     return 1;

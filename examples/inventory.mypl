@@ -1,0 +1,105 @@
+/*
+ * Catalog-backed inventory service example.
+ *
+ * Manages a small product catalog, lists stock, flags low-stock items,
+ * and processes a sale with quantity validation.
+ */
+
+proc init_catalog() -> int {
+    create table products (
+        id int primary key,
+        name string,
+        stock int,
+        price int
+    );
+
+    insert into products values (1, "Wireless Mouse", 50, 25);
+    insert into products values (2, "Mechanical Keyboard", 15, 75);
+    insert into products values (3, "USB-C Cable", 200, 12);
+    insert into products values (4, "Monitor 27 inch", 8, 300);
+    insert into products values (5, "Laptop Stand", 0, 45);
+
+    return 0;
+}
+
+proc add_product(id int, name string, stock int, price int) -> int {
+    insert into products (id, name, stock, price) values (?id, ?name, ?stock, ?price);
+    print concat("Added product: ", name);
+    return 0;
+}
+
+proc list_inventory() -> int {
+    print("Current inventory:");
+    print("ID | Name | Stock | Price");
+    print("---|------|-------|------");
+    for p in select id, name, stock, price from products order by id {
+        print concat(
+            concat(int_to_string(p.id), " | "),
+            concat(p.name,
+                concat(" | ",
+                    concat(int_to_string(p.stock),
+                        concat(" | $", int_to_string(p.price))
+                    )
+                )
+            )
+        );
+    }
+    print("");
+    return 0;
+}
+
+proc low_stock_report(threshold int) -> int {
+    print concat("Low stock report (threshold: ", concat(int_to_string(threshold), "):"));
+    for p in select id, name, stock from products where stock < ?threshold order by stock asc {
+        print concat(
+            concat(int_to_string(p.id), ": "),
+            concat(p.name,
+                concat(" - ", concat(int_to_string(p.stock), " left"))
+            )
+        );
+    }
+    print("");
+    return 0;
+}
+
+proc process_sale(product_id int, qty int) -> int {
+    int available = 0;
+    SELECT stock INTO available FROM products WHERE id = ?product_id;
+
+    if qty > available {
+        print concat("Sale failed: only ", concat(int_to_string(available), " in stock"));
+        return 1;
+    }
+
+    int new_stock = available - qty;
+    update products set stock = ?new_stock where id = ?product_id;
+
+    int price = 0;
+    SELECT price INTO price FROM products WHERE id = ?product_id;
+    int total = price * qty;
+
+    print concat(
+        concat("Sold ", concat(int_to_string(qty), " x product ")),
+        concat(int_to_string(product_id), concat(" for $", int_to_string(total)))
+    );
+    return 0;
+}
+
+proc main() -> int {
+    init_catalog();
+    list_inventory();
+
+    add_product(6, "Webcam 1080p", 30, 60);
+    list_inventory();
+
+    low_stock_report(10);
+
+    process_sale(1, 5);
+    process_sale(4, 2);
+    process_sale(4, 10); /* should fail */
+
+    print("");
+    list_inventory();
+
+    return 0;
+}

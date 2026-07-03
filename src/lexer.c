@@ -64,6 +64,11 @@ static Token number(Lexer* lexer) {
 static Token string(Lexer* lexer) {
     while (peek(lexer) != '"' && !is_at_end(lexer)) {
         if (peek(lexer) == '\n') lexer->line++;
+        if (peek(lexer) == '\\' && peek_next(lexer) != '\0') {
+            advance(lexer); /* consume backslash */
+            advance(lexer); /* consume escaped character */
+            continue;
+        }
         advance(lexer);
     }
 
