@@ -106,10 +106,12 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'b':
             if (length == 4 && memcmp(lexer->start, "bool", 4) == 0) return TOKEN_BOOL_TYPE;
             if (length == 5 && memcmp(lexer->start, "begin", 5) == 0) return TOKEN_BEGIN;
+            if (length == 5 && memcmp(lexer->start, "break", 5) == 0) return TOKEN_BREAK;
             break;
         case 'c':
             if (length == 6 && memcmp(lexer->start, "commit", 6) == 0) return TOKEN_COMMIT;
             if (length == 6 && memcmp(lexer->start, "create", 6) == 0) return TOKEN_CREATE;
+            if (length == 8 && memcmp(lexer->start, "continue", 8) == 0) return TOKEN_CONTINUE;
             break;
         case 'd':
             if (length == 6 && memcmp(lexer->start, "delete", 6) == 0) return TOKEN_DELETE;
@@ -159,6 +161,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "values", 6) == 0) return TOKEN_VALUES;
             break;
         case 'w':
+            if (length == 5 && memcmp(lexer->start, "while", 5) == 0) return TOKEN_WHILE;
             if (length == 5 && memcmp(lexer->start, "where", 5) == 0) return TOKEN_WHERE;
             break;
     }

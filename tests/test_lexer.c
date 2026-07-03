@@ -74,6 +74,18 @@ TEST(lexer_scans_keywords) {
     ASSERT_INT_EQ(TOKEN_RETURN, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 
+    lexer_init(&lexer, "while");
+    ASSERT_INT_EQ(TOKEN_WHILE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "break");
+    ASSERT_INT_EQ(TOKEN_BREAK, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "continue");
+    ASSERT_INT_EQ(TOKEN_CONTINUE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
     lexer_init(&lexer, "in");
     ASSERT_INT_EQ(TOKEN_IN, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
