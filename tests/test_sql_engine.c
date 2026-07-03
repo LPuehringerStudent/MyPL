@@ -213,6 +213,94 @@ TEST(custom_driver_runs_create_and_insert) {
     cleanup(path);
 }
 
+TEST(sql_update_modifies_rows) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE users (id INT, age INT)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (1, 20)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (2, 30)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE users SET age = 21 WHERE id = 1", &ctx));
+
+    Result* res = sql_exec("SELECT age FROM users WHERE id = 1", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(21, row_get_field(row, "age").as.as_int);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_update_with_string) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE users (id INT, name STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (1, 'alice')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE users SET name = 'alicia' WHERE id = 1", &ctx));
+
+    Result* res = sql_exec("SELECT name FROM users WHERE id = 1", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_STRING_EQ("alicia", row_get_field(row, "name").as.as_string);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_delete_removes_rows) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE users (id INT, name STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (1, 'alice')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (2, 'bob')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("DELETE FROM users WHERE id = 1", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM users", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(2, row_get_field(row, "id").as.as_int);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_update_and_delete_persist) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE users (id INT, name STRING, age INT)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (1, 'alice', 30)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO users VALUES (2, 'bob', 25)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE users SET age = 31 WHERE id = 1", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("DELETE FROM users WHERE id = 2", &ctx));
+    catalog_close(&ctx);
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, name, age FROM users", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(1, row_get_field(row, "id").as.as_int);
+    ASSERT_STRING_EQ("alice", row_get_field(row, "name").as.as_string);
+    ASSERT_INT_EQ(31, row_get_field(row, "age").as.as_int);
+    result_free(res);
+    catalog_close(&ctx);
+
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -222,5 +310,9 @@ int main(void) {
     RUN_TEST(sql_select_unknown_table_returns_empty_result);
     RUN_TEST(sql_compiler_loop_uses_persisted_table);
     RUN_TEST(custom_driver_runs_create_and_insert);
+    RUN_TEST(sql_update_modifies_rows);
+    RUN_TEST(sql_update_with_string);
+    RUN_TEST(sql_delete_removes_rows);
+    RUN_TEST(sql_update_and_delete_persist);
     TEST_SUMMARY();
 }

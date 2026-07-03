@@ -537,6 +537,9 @@ typedef enum {
     TOK_INSERT,
     TOK_INTO,
     TOK_VALUES,
+    TOK_UPDATE,
+    TOK_SET,
+    TOK_DELETE,
     TOK_INT,
     TOK_FLOAT,
     TOK_STRING_KW,
@@ -591,6 +594,9 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 6 && strncasecmp(start, "INSERT", 6) == 0) return TOK_INSERT;
     if (length == 4 && strncasecmp(start, "INTO", 4) == 0) return TOK_INTO;
     if (length == 6 && strncasecmp(start, "VALUES", 6) == 0) return TOK_VALUES;
+    if (length == 6 && strncasecmp(start, "UPDATE", 6) == 0) return TOK_UPDATE;
+    if (length == 3 && strncasecmp(start, "SET", 3) == 0) return TOK_SET;
+    if (length == 6 && strncasecmp(start, "DELETE", 6) == 0) return TOK_DELETE;
     if (length == 3 && strncasecmp(start, "INT", 3) == 0) return TOK_INT;
     if (length == 5 && strncasecmp(start, "FLOAT", 5) == 0) return TOK_FLOAT;
     if (length == 6 && strncasecmp(start, "STRING", 6) == 0) return TOK_STRING_KW;
@@ -1074,6 +1080,31 @@ static void sql_free_ddl_stmt(DdlStmt* stmt) {
     }
 }
 
+typedef struct {
+    char table_name[MAX_NAME_LEN + 1];
+    char set_column[MAX_NAME_LEN + 1];
+    Cell set_value;
+    int has_where;
+    char where_column[MAX_NAME_LEN + 1];
+    int where_op;
+    Cell where_value;
+} UpdateStmt;
+
+typedef struct {
+    char table_name[MAX_NAME_LEN + 1];
+    int has_where;
+    char where_column[MAX_NAME_LEN + 1];
+    int where_op;
+    Cell where_value;
+} DeleteStmt;
+
+static int sql_parse_update(const char* query, UpdateStmt* stmt);
+static int sql_parse_delete(const char* query, DeleteStmt* stmt);
+static void sql_free_update_stmt(UpdateStmt* stmt);
+static void sql_free_delete_stmt(DeleteStmt* stmt);
+static int execute_update(Context* ctx, UpdateStmt* stmt);
+static int execute_delete(Context* ctx, DeleteStmt* stmt);
+
 int sql_exec_ddl(const char* query, Context* ctx) {
     DdlStmt stmt;
     if (sql_parse_create_table(query, &stmt)) {
@@ -1099,7 +1130,329 @@ int sql_exec_ddl(const char* query, Context* ctx) {
         return 1;
     }
 
+    UpdateStmt update_stmt;
+    if (sql_parse_update(query, &update_stmt)) {
+        int ok = execute_update(ctx, &update_stmt);
+        sql_free_update_stmt(&update_stmt);
+        return ok;
+    }
+
+    DeleteStmt delete_stmt;
+    if (sql_parse_delete(query, &delete_stmt)) {
+        int ok = execute_delete(ctx, &delete_stmt);
+        sql_free_delete_stmt(&delete_stmt);
+        return ok;
+    }
+
     return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* UPDATE / DELETE parsing and execution                                      */
+/* -------------------------------------------------------------------------- */
+
+static int parse_where_clause(SqlLexer* lex, int* has_where,
+                               char* where_column, size_t where_column_size,
+                               int* where_op, Cell* where_value) {
+    *has_where = 0;
+    SqlToken tok = sql_next_token(lex);
+    if (tok.type == TOK_EOF) {
+        return 1;
+    }
+    if (tok.type != TOK_WHERE) return 0;
+
+    tok = sql_next_token(lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, where_column, (int)where_column_size);
+
+    tok = sql_next_token(lex);
+    if (tok.type == TOK_EQ) *where_op = 0;
+    else if (tok.type == TOK_LT) *where_op = 1;
+    else if (tok.type == TOK_GT) *where_op = 2;
+    else if (tok.type == TOK_LE) *where_op = 3;
+    else if (tok.type == TOK_GE) *where_op = 4;
+    else if (tok.type == TOK_NE) *where_op = 5;
+    else return 0;
+
+    tok = sql_next_token(lex);
+    if (tok.type == TOK_NUMBER) {
+        char buf[64];
+        sql_token_text(&tok, buf, sizeof(buf));
+        if (strchr(buf, '.') != NULL) {
+            where_value->type = VAL_FLOAT;
+            where_value->as.as_float = strtod(buf, NULL);
+        } else {
+            where_value->type = VAL_INT;
+            where_value->as.as_int = atoi(buf);
+        }
+    } else if (tok.type == TOK_STRING) {
+        where_value->type = VAL_STRING;
+        where_value->as.as_string = malloc((size_t)tok.length + 1);
+        if (where_value->as.as_string == NULL) return 0;
+        memcpy(where_value->as.as_string, tok.text, (size_t)tok.length);
+        where_value->as.as_string[tok.length] = '\0';
+    } else {
+        return 0;
+    }
+
+    tok = sql_next_token(lex);
+    if (tok.type != TOK_EOF) return 0;
+
+    *has_where = 1;
+    return 1;
+}
+
+static void sql_free_update_stmt(UpdateStmt* stmt) {
+    if (stmt->where_value.type == VAL_STRING) {
+        free(stmt->where_value.as.as_string);
+        stmt->where_value.as.as_string = NULL;
+    }
+}
+
+static void sql_free_delete_stmt(DeleteStmt* stmt) {
+    if (stmt->where_value.type == VAL_STRING) {
+        free(stmt->where_value.as.as_string);
+        stmt->where_value.as.as_string = NULL;
+    }
+}
+
+static int sql_parse_update(const char* query, UpdateStmt* stmt) {
+    memset(stmt, 0, sizeof(*stmt));
+
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_UPDATE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_SET) return 0;
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, stmt->set_column, sizeof(stmt->set_column));
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_EQ) return 0;
+
+    tok = sql_next_token(&lex);
+    if (tok.type == TOK_NUMBER) {
+        char buf[64];
+        sql_token_text(&tok, buf, sizeof(buf));
+        if (strchr(buf, '.') != NULL) {
+            stmt->set_value.type = VAL_FLOAT;
+            stmt->set_value.as.as_float = strtod(buf, NULL);
+        } else {
+            stmt->set_value.type = VAL_INT;
+            stmt->set_value.as.as_int = atoi(buf);
+        }
+    } else if (tok.type == TOK_STRING) {
+        stmt->set_value.type = VAL_STRING;
+        stmt->set_value.as.as_string = malloc((size_t)tok.length + 1);
+        if (stmt->set_value.as.as_string == NULL) return 0;
+        memcpy(stmt->set_value.as.as_string, tok.text, (size_t)tok.length);
+        stmt->set_value.as.as_string[tok.length] = '\0';
+    } else {
+        return 0;
+    }
+
+    return parse_where_clause(&lex, &stmt->has_where,
+                              stmt->where_column, sizeof(stmt->where_column),
+                              &stmt->where_op, &stmt->where_value);
+}
+
+static int sql_parse_delete(const char* query, DeleteStmt* stmt) {
+    memset(stmt, 0, sizeof(*stmt));
+
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_DELETE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_FROM) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
+
+    return parse_where_clause(&lex, &stmt->has_where,
+                              stmt->where_column, sizeof(stmt->where_column),
+                              &stmt->where_op, &stmt->where_value);
+}
+
+static int row_matches_where(Row* row, const char* where_column, int where_op, Cell* where_value) {
+    Cell* value = NULL;
+    for (int i = 0; i < row->field_count; i++) {
+        if (strcmp(row->fields[i].name, where_column) == 0) {
+            value = &row->fields[i].value;
+            break;
+        }
+    }
+    if (value == NULL) return 0;
+
+    int cmp = cell_compare(value, where_value);
+    switch (where_op) {
+        case 0: return cmp == 0;
+        case 1: return cmp < 0;
+        case 2: return cmp > 0;
+        case 3: return cmp <= 0;
+        case 4: return cmp >= 0;
+        case 5: return cmp != 0;
+        default: return 0;
+    }
+}
+
+static void free_row_pages(Context* ctx, Table* table) {
+    Pager* pager = ctx->pager;
+    int page_num = table->first_row_page;
+    while (page_num != 0) {
+        uint8_t page[PAGE_SIZE];
+        pager_read_page(pager, page_num, page);
+        int32_t next_page_num;
+        memcpy(&next_page_num, page, sizeof(next_page_num));
+        pager_free_page(pager, page_num);
+        page_num = next_page_num;
+    }
+    table->first_row_page = 0;
+    table->last_row_page = 0;
+}
+
+static int execute_update(Context* ctx, UpdateStmt* stmt) {
+    Table* table = catalog_find_table(ctx, stmt->table_name);
+    if (table == NULL) return 0;
+
+    Row* rows = NULL;
+    int row_count = 0;
+    if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
+
+    int set_col_index = -1;
+    for (int i = 0; i < table->column_count; i++) {
+        if (strcmp(table->columns[i].name, stmt->set_column) == 0) {
+            set_col_index = i;
+            break;
+        }
+    }
+    if (set_col_index < 0) {
+        for (int i = 0; i < row_count; i++) {
+            for (int j = 0; j < rows[i].field_count; j++) {
+                free(rows[i].fields[j].name);
+                if (rows[i].fields[j].value.type == VAL_STRING) {
+                    free(rows[i].fields[j].value.as.as_string);
+                }
+            }
+            free(rows[i].fields);
+        }
+        free(rows);
+        return 0;
+    }
+
+    for (int i = 0; i < row_count; i++) {
+        if (stmt->has_where && !row_matches_where(&rows[i], stmt->where_column, stmt->where_op, &stmt->where_value)) {
+            continue;
+        }
+        Cell* cell = &rows[i].fields[set_col_index].value;
+        if (cell->type == VAL_STRING && cell->as.as_string != NULL) {
+            free(cell->as.as_string);
+        }
+        cell->type = stmt->set_value.type;
+        if (cell->type == VAL_STRING) {
+            cell->as.as_string = stmt->set_value.as.as_string != NULL
+                ? strdup(stmt->set_value.as.as_string)
+                : strdup("");
+        } else if (cell->type == VAL_FLOAT) {
+            cell->as.as_float = stmt->set_value.as.as_float;
+        } else {
+            cell->as.as_int = stmt->set_value.as.as_int;
+        }
+    }
+
+    free_row_pages(ctx, table);
+    for (int i = 0; i < row_count; i++) {
+        Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
+        if (cells == NULL) {
+            for (int k = i; k < row_count; k++) {
+                for (int j = 0; j < rows[k].field_count; j++) {
+                    free(rows[k].fields[j].name);
+                    if (rows[k].fields[j].value.type == VAL_STRING) {
+                        free(rows[k].fields[j].value.as.as_string);
+                    }
+                }
+                free(rows[k].fields);
+            }
+            free(rows);
+            return 0;
+        }
+        for (int j = 0; j < rows[i].field_count; j++) {
+            cells[j] = rows[i].fields[j].value;
+        }
+        catalog_insert(ctx, table, cells);
+        free(cells);
+    }
+
+    for (int i = 0; i < row_count; i++) {
+        for (int j = 0; j < rows[i].field_count; j++) {
+            free(rows[i].fields[j].name);
+            if (rows[i].fields[j].value.type == VAL_STRING) {
+                free(rows[i].fields[j].value.as.as_string);
+            }
+        }
+        free(rows[i].fields);
+    }
+    free(rows);
+
+    catalog_write_page(ctx);
+    return 1;
+}
+
+static int execute_delete(Context* ctx, DeleteStmt* stmt) {
+    Table* table = catalog_find_table(ctx, stmt->table_name);
+    if (table == NULL) return 0;
+
+    Row* rows = NULL;
+    int row_count = 0;
+    if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
+
+    free_row_pages(ctx, table);
+    for (int i = 0; i < row_count; i++) {
+        if (stmt->has_where && !row_matches_where(&rows[i], stmt->where_column, stmt->where_op, &stmt->where_value)) {
+            Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
+            if (cells == NULL) {
+                for (int k = i; k < row_count; k++) {
+                    for (int j = 0; j < rows[k].field_count; j++) {
+                        free(rows[k].fields[j].name);
+                        if (rows[k].fields[j].value.type == VAL_STRING) {
+                            free(rows[k].fields[j].value.as.as_string);
+                        }
+                    }
+                    free(rows[k].fields);
+                }
+                free(rows);
+                return 0;
+            }
+            for (int j = 0; j < rows[i].field_count; j++) {
+                cells[j] = rows[i].fields[j].value;
+            }
+            catalog_insert(ctx, table, cells);
+            free(cells);
+        }
+    }
+
+    for (int i = 0; i < row_count; i++) {
+        for (int j = 0; j < rows[i].field_count; j++) {
+            free(rows[i].fields[j].name);
+            if (rows[i].fields[j].value.type == VAL_STRING) {
+                free(rows[i].fields[j].value.as.as_string);
+            }
+        }
+        free(rows[i].fields);
+    }
+    free(rows);
+
+    catalog_write_page(ctx);
+    return 1;
 }
 
 /* -------------------------------------------------------------------------- */
