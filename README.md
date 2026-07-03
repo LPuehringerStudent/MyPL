@@ -2,7 +2,35 @@
 
 A lightweight, open-source alternative to PL/SQL with C-like syntax. MyPL
 compiles to bytecode for a small stack VM and uses SQLite as its embedded
-database engine.
+database engine, so you get stored-procedure-style scripting without the
+weight of an Oracle installation.
+
+```mypl
+proc add_todo(title string) -> int {
+    insert into todos (title, done) values (?title, 0);
+    return 0;
+}
+
+proc list_todos() -> int {
+    for todo in select id, title from todos {
+        print concat(int_to_string(todo.id), concat(": ", todo.title));
+    }
+    return 0;
+}
+```
+
+## Why MyPL?
+
+- **Familiar syntax**: C-like procedures, variables, loops, and expressions —
+  no PL/SQL boilerplate.
+- **Embedded SQL**: Write DDL, DML, and queries inline with `?var` parameter
+  binding.
+- **SQLite-backed**: Run against `:memory:`, a file, or no database at all
+  (custom engine fallback).
+- **Small and hackable**: A single C99 codebase with no external dependencies
+  besides `sqlite3`.
+- **Scriptable**: Run `.mypl` files from the command line or explore data
+  interactively in the REPL.
 
 ## Quick start
 
@@ -21,63 +49,6 @@ Expected output:
 0
 ```
 
-## Example
-
-```mypl
-proc add_todo(title string) -> int {
-    insert into todos (title, done) values (?title, 0);
-    return 0;
-}
-
-proc list_todos() -> int {
-    for todo in select id, title from todos {
-        print concat(int_to_string(todo.id), concat(": ", todo.title));
-    }
-    return 0;
-}
-```
-
-Run it against a SQLite database:
-
-```bash
-./bin/mypl examples/todo.mypl --db todos.db
-```
-
-## SELECT INTO
-
-MyPL can assign query results directly to local variables:
-
-```mypl
-proc lookup_user(search_id int) -> int {
-    string name = "";
-    int age = 0;
-    SELECT name, age INTO name, age FROM users WHERE id = ?search_id;
-    print concat(name, concat(" is ", int_to_string(age)));
-    return 0;
-}
-```
-
-You can also load an entire result set into an `array<row>`:
-
-```mypl
-array<row> users = [];
-SELECT * INTO users FROM users;
-print length(users);
-print users[0].name;
-```
-
-See `examples/select_into.mypl` for a runnable example.
-
-## Features
-
-- C-like syntax.
-- Embedded SQL with parameter binding (`?var`).
-- `SELECT ... INTO` assignment for single or multiple scalar variables.
-- SQLite backend (`--db <path>`).
-- Custom SQL engine fallback when no `--db` is supplied.
-- Interactive REPL with `.connect`, `.tables`, `.schema`, `.sql`, `.vars`, and
-  `.load` commands.
-
 ## Build
 
 ```bash
@@ -87,18 +58,187 @@ make clean && make && make test
 Requires:
 
 - A C99 compiler
-- `sqlite3` development library (`-lsqlite3`)
+- The `sqlite3` development library (`-lsqlite3`)
+
+On Ubuntu/Debian:
+
+```bash
+sudo apt-get install libsqlite3-dev
+```
+
+On macOS:
+
+```bash
+brew install sqlite3
+```
+
+## Language tour
+
+### Procedures
+
+```mypl
+proc greet(name string) -> int {
+    print concat("Hello, ", name);
+    return 0;
+}
+```
+
+### Variables and types
+
+```mypl
+int count = 42;
+float pi = 3.14;
+string message = "hello";
+bool active = true;
+array<int> nums = [1, 2, 3];
+```
+
+### Control flow
+
+```mypl
+int i = 0;
+while i < 10 {
+    print(int_to_string(i));
+    i = i + 1;
+}
+
+for n in range(1, 5) {
+    print(int_to_string(n));
+}
+```
+
+### Embedded SQL
+
+```mypl
+create table users (
+    id int primary key,
+    name string,
+    age int
+);
+
+insert into users values (1, "alice", 30);
+
+for user in select id, name from users where age > 25 {
+    print concat(int_to_string(user.id), concat(" ", user.name));
+}
+```
+
+### SELECT INTO
+
+```mypl
+string name = "";
+int age = 0;
+SELECT name, age INTO name, age FROM users WHERE id = 1;
+print concat(name, concat(" is ", int_to_string(age)));
+```
+
+Load an entire result set into an `array<row>`:
+
+```mypl
+array<row> users = [];
+SELECT * INTO users FROM users;
+print length(users);
+print users[0].name;
+```
+
+## Examples
+
+The `examples/` directory contains runnable programs that show what MyPL looks
+like for real tasks.
+
+### Todo list (`examples/todo.mypl`)
+
+A minimal CRUD example.
+
+```bash
+./bin/mypl examples/todo.mypl --db todos.db
+```
+
+### Data migration (`examples/migration.mypl`)
+
+Migrates messy legacy data into a clean schema, normalizing names and
+classifying ages along the way.
+
+```bash
+./bin/mypl examples/migration.mypl --db :memory:
+```
+
+Output:
+
+```
+Migrated customers: 4
+Sample rows:
+1: ALICE SMITH (adult)
+2: BOB JONES (adult)
+3: CHARLIE BROWN (minor)
+4: DIANA PRINCE (young adult)
+```
+
+### Sales report (`examples/report.mypl`)
+
+Aggregates order data into a formatted CLI report with revenue totals,
+product breakdowns, and top customers.
+
+```bash
+./bin/mypl examples/report.mypl --db :memory:
+```
+
+### Inventory service (`examples/inventory.mypl`)
+
+A small catalog-backed service that lists stock, flags low-stock items, and
+processes sales with quantity validation.
+
+```bash
+./bin/mypl examples/inventory.mypl --db :memory:
+```
 
 ## REPL
 
+Start an interactive session:
+
 ```bash
 ./bin/mypl
+```
+
+Useful commands:
+
+```
 > .connect :memory:
 > create table todos (id integer primary key, title string, done int);
 > .tables
 > .schema todos
+> .sql select * from todos;
 > .exit
 ```
+
+## Features
+
+- C-like syntax.
+- Procedures with parameters and return values.
+- `int`, `float`, `string`, `bool`, and typed `array<T>`.
+- `while`, numeric `for`, `for ... in`, `break`, `continue`.
+- Embedded SQL with `?var` parameter binding.
+- `SELECT ... INTO` for scalar and array assignment.
+- SQLite backend via `--db <path>`.
+- Custom SQL engine fallback when no `--db` is supplied.
+- Import system for splitting code across files.
+- Growing standard library: `length`, `append`, `concat`, `split`, `join`,
+  `replace`, `trim`, `to_upper`, `to_lower`, `parse_int`, `split_lines`,
+  `range`, `assert`, file I/O, and more.
+
+## Roadmap
+
+MyPL is intentionally small today, but the goal is to become a credible
+open-source alternative to PL/SQL for lightweight database scripting. Upcoming
+directions include:
+
+- More control flow and collection operations.
+- Better error messages with source locations.
+- A small package/module ecosystem.
+- More comprehensive standard library.
+- Improved custom SQL engine.
+
+Contributions and ideas are welcome.
 
 ## License
 

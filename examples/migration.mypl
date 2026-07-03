@@ -1,0 +1,80 @@
+/*
+ * Data migration example.
+ *
+ * Migrates customer records from a legacy schema into a clean schema,
+ * normalizing names and classifying ages along the way.
+ */
+
+proc setup_legacy_data() -> int {
+    create table legacy_customers (
+        id int,
+        raw_name string,
+        raw_age string
+    );
+
+    insert into legacy_customers values (1, "  alice smith  ", "30");
+    insert into legacy_customers values (2, "BOB JONES", "45");
+    insert into legacy_customers values (3, "Charlie Brown", "17");
+    insert into legacy_customers values (4, "  diana Prince  ", "25");
+
+    return 0;
+}
+
+proc run_migration() -> int {
+    create table customers (
+        id int primary key,
+        name string,
+        age int,
+        age_group string
+    );
+
+    for old in select id, raw_name, raw_age from legacy_customers {
+        int old_id = old.id;
+        string raw_name = old.raw_name;
+        string raw_age = old.raw_age;
+
+        int age = parse_int(trim(raw_age));
+        string name = to_upper(trim(raw_name));
+        string group = "";
+
+        if age < 18 {
+            group = "minor";
+        } else if age < 30 {
+            group = "young adult";
+        } else if age < 50 {
+            group = "adult";
+        } else {
+            group = "senior";
+        }
+
+        insert into customers (id, name, age, age_group)
+        values (?old_id, ?name, ?age, ?group);
+    }
+
+    return 0;
+}
+
+proc print_summary() -> int {
+    int total = 0;
+    SELECT count(*) INTO total FROM customers;
+    print concat("Migrated customers: ", int_to_string(total));
+
+    print("Sample rows:");
+    for c in select id, name, age, age_group from customers {
+        print concat(
+            concat(int_to_string(c.id), ": "),
+            concat(c.name,
+                concat(" (", concat(c.age_group, ")"))
+            )
+        );
+    }
+
+    return 0;
+}
+
+proc main() -> int {
+    setup_legacy_data();
+    run_migration();
+    print_summary();
+    return 0;
+}

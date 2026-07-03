@@ -468,15 +468,17 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (vm->frame_count == 0) {
                     return INTERPRET_OK;
                 }
+                Value* callee_frame_base = vm->frame_base;
                 Value result = *(vm->stack_top - 1);
-                for (Value* p = vm->frame_base; p < vm->stack_top - 1; p++) {
+                value_retain(result);
+                for (Value* p = callee_frame_base; p < vm->stack_top; p++) {
                     value_release(*p);
                 }
                 vm->frame_count--;
                 vm->frame_base = vm->frames[vm->frame_count];
                 vm->ip = vm->return_ips[vm->frame_count];
-                vm->stack_top = vm->frame_base;
-                if (!push(vm, result)) return INTERPRET_RUNTIME_ERROR;
+                vm->stack_top = callee_frame_base;
+                *vm->stack_top++ = result;
                 break;
             }
             case OP_NATIVE_CALL: {

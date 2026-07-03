@@ -1,0 +1,93 @@
+/*
+ * CLI reporting example.
+ *
+ * Creates a small orders table and prints a formatted sales summary,
+ * including total revenue, revenue per product, and top customers.
+ */
+
+proc setup() -> int {
+    create table orders (
+        id int,
+        product string,
+        customer string,
+        quantity int,
+        unit_price int
+    );
+
+    insert into orders values (1, "Laptop", "Acme Corp", 2, 1200);
+    insert into orders values (2, "Mouse", "Acme Corp", 10, 25);
+    insert into orders values (3, "Laptop", "Globex", 1, 1200);
+    insert into orders values (4, "Keyboard", "Globex", 5, 75);
+    insert into orders values (5, "Monitor", "Acme Corp", 3, 300);
+    insert into orders values (6, "Mouse", "Initech", 20, 25);
+
+    return 0;
+}
+
+proc print_header(title string) -> int {
+    print(title);
+    print(repeat("-", length(title)));
+    return 0;
+}
+
+proc print_summary() -> int {
+    int total_revenue = 0;
+    SELECT sum(quantity * unit_price) INTO total_revenue FROM orders;
+    print_header("Sales Summary");
+    print concat("Total revenue: $", int_to_string(total_revenue));
+    print("");
+    return 0;
+}
+
+proc print_product_revenue() -> int {
+    print_header("Revenue by Product");
+    for row in select product, sum(quantity * unit_price) as revenue
+               from orders group by product order by revenue desc {
+        print concat(
+            concat(row.product, ": $"),
+            int_to_string(row.revenue)
+        );
+    }
+    print("");
+    return 0;
+}
+
+proc print_customer_totals() -> int {
+    print_header("Top Customers");
+    for row in select customer, sum(quantity * unit_price) as spent
+               from orders group by customer order by spent desc {
+        print concat(
+            concat(row.customer, ": $"),
+            int_to_string(row.spent)
+        );
+    }
+    print("");
+    return 0;
+}
+
+proc print_large_orders() -> int {
+    print_header("Orders over $500");
+    for row in select id, product, customer, quantity * unit_price as total
+               from orders where total > 500 order by total desc {
+        print concat(
+            concat(int_to_string(row.id), ": "),
+            concat(row.product,
+                concat(" to ",
+                    concat(row.customer,
+                        concat(" - $", int_to_string(row.total))
+                    )
+                )
+            )
+        );
+    }
+    return 0;
+}
+
+proc main() -> int {
+    setup();
+    print_summary();
+    print_product_revenue();
+    print_customer_totals();
+    print_large_orders();
+    return 0;
+}
