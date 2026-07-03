@@ -263,7 +263,18 @@ TEST(parser_reports_error_for_missing_brace) {
     char error[256];
     Program* program = parse("proc main() -> int { return 1; ", error, sizeof(error));
     ASSERT_PTR_NULL(program);
-    ASSERT_PTR_NOT_NULL(strstr(error, "line"));
+    ASSERT_PTR_NOT_NULL(strstr(error, "Parse error at line 1:"));
+}
+
+TEST(parser_reports_error_location_on_correct_line) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int {\n"
+        "    return ;\n"
+        "}",
+        error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "Parse error at line 2:"));
 }
 
 TEST(parser_parses_bool_literal_true) {
@@ -438,6 +449,7 @@ int main(void) {
     RUN_TEST(parser_parses_call_expression);
     RUN_TEST(parser_parses_procedure_parameters);
     RUN_TEST(parser_reports_error_for_missing_brace);
+    RUN_TEST(parser_reports_error_location_on_correct_line);
     RUN_TEST(parser_parses_bool_literal_true);
     RUN_TEST(parser_parses_bool_literal_false);
     RUN_TEST(parser_parses_array_literal);
