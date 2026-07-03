@@ -16,6 +16,8 @@
 #define MAX_CALL_PATCHES 1024
 #define MAX_MODULES 64
 #define MAX_LOADING 64
+#define MAX_LOOP_NESTING 64
+#define MAX_BREAK_PATCHES 256
 
 typedef struct {
     const char* name;
@@ -23,6 +25,12 @@ typedef struct {
     int depth;
     Type* type;
 } Local;
+
+typedef struct {
+    int continue_target;
+    int break_patches[MAX_BREAK_PATCHES];
+    int break_count;
+} LoopContext;
 
 typedef struct {
     const char* name;
@@ -56,6 +64,8 @@ typedef struct {
     int loading_count;
     char* current_path;
     struct Context* ctx;
+    LoopContext loops[MAX_LOOP_NESTING];
+    int loop_count;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -145,6 +155,49 @@ static void patch_jump_to(Compiler* compiler, int offset, int target) {
     int jump = target - (offset + 2);
     compiler->chunk->code[offset] = (uint8_t)((jump >> 8) & 0xFF);
     compiler->chunk->code[offset + 1] = (uint8_t)(jump & 0xFF);
+}
+
+static int push_loop(Compiler* compiler, int continue_target) {
+    if (compiler->loop_count >= MAX_LOOP_NESTING) {
+        error(compiler, "too many nested loops");
+        return 0;
+    }
+    LoopContext* loop = &compiler->loops[compiler->loop_count++];
+    loop->continue_target = continue_target;
+    loop->break_count = 0;
+    return 1;
+}
+
+static void pop_loop(Compiler* compiler) {
+    LoopContext* loop = &compiler->loops[compiler->loop_count - 1];
+    int target = compiler->chunk->count;
+    for (int i = 0; i < loop->break_count; i++) {
+        patch_jump_to(compiler, loop->break_patches[i], target);
+    }
+    compiler->loop_count--;
+}
+
+static void emit_break(Compiler* compiler) {
+    if (compiler->loop_count == 0) {
+        error(compiler, "break outside loop");
+        return;
+    }
+    LoopContext* loop = &compiler->loops[compiler->loop_count - 1];
+    if (loop->break_count >= MAX_BREAK_PATCHES) {
+        error(compiler, "too many break statements in loop");
+        return;
+    }
+    loop->break_patches[loop->break_count++] = emit_jump(compiler, OP_JMP);
+}
+
+static void emit_continue(Compiler* compiler) {
+    if (compiler->loop_count == 0) {
+        error(compiler, "continue outside loop");
+        return;
+    }
+    LoopContext* loop = &compiler->loops[compiler->loop_count - 1];
+    int offset = emit_jump(compiler, OP_JMP);
+    patch_jump_to(compiler, offset, loop->continue_target);
 }
 
 static void emit_constant(Compiler* compiler, Value value) {
@@ -435,6 +488,27 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             patch_jump(compiler, end_jump);
             break;
         }
+        case STMT_WHILE: {
+            WhileStmt* w = &stmt->as.while_stmt;
+            int loop_start = compiler->chunk->count;
+            if (!push_loop(compiler, loop_start)) return;
+            compile_expr(compiler, w->condition);
+            if (compiler->had_error) return;
+            int exit_jump = emit_jump(compiler, OP_JZ);
+            compile_block(compiler, w->body);
+            if (compiler->had_error) return;
+            int back = emit_jump(compiler, OP_JMP);
+            patch_jump_to(compiler, back, loop_start);
+            patch_jump(compiler, exit_jump);
+            pop_loop(compiler);
+            break;
+        }
+        case STMT_BREAK:
+            emit_break(compiler);
+            break;
+        case STMT_CONTINUE:
+            emit_continue(compiler);
+            break;
         case STMT_FOR: {
             ForStmt* f = &stmt->as.for_stmt;
 
@@ -889,6 +963,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.loading_count = 0;
     compiler.current_path = NULL;
     compiler.ctx = ctx;
+    compiler.loop_count = 0;
 
     if (chunk->count == 0) {
         emit_byte(&compiler, OP_CALL);

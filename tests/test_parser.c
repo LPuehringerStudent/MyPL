@@ -134,6 +134,36 @@ TEST(parser_parses_if_statement) {
     free_program(program);
 }
 
+TEST(parser_parses_while_statement) {
+    Program* program = parse("proc main() -> int { while x < 10 { x = x + 1; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_WHILE, stmt->kind);
+    ASSERT_PTR_NOT_NULL(stmt->as.while_stmt.condition);
+    ASSERT_PTR_NOT_NULL(stmt->as.while_stmt.body);
+    free_program(program);
+}
+
+TEST(parser_parses_break_statement) {
+    Program* program = parse("proc main() -> int { while 1 { break; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* while_stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_WHILE, while_stmt->kind);
+    Stmt* body_stmt = while_stmt->as.while_stmt.body->stmts[0];
+    ASSERT_INT_EQ(STMT_BREAK, body_stmt->kind);
+    free_program(program);
+}
+
+TEST(parser_parses_continue_statement) {
+    Program* program = parse("proc main() -> int { while 1 { continue; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* while_stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_WHILE, while_stmt->kind);
+    Stmt* body_stmt = while_stmt->as.while_stmt.body->stmts[0];
+    ASSERT_INT_EQ(STMT_CONTINUE, body_stmt->kind);
+    free_program(program);
+}
+
 TEST(parser_parses_else_branch) {
     Program* program = parse("proc main() -> int { if 0 { return 1; } else { return 2; } }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -376,6 +406,9 @@ int main(void) {
     RUN_TEST(parser_parses_procedure_and_var_decl);
     RUN_TEST(parser_parses_assignment);
     RUN_TEST(parser_parses_if_statement);
+    RUN_TEST(parser_parses_while_statement);
+    RUN_TEST(parser_parses_break_statement);
+    RUN_TEST(parser_parses_continue_statement);
     RUN_TEST(parser_parses_else_branch);
     RUN_TEST(parser_parses_else_if_chain);
     RUN_TEST(parser_parses_return_statement);
