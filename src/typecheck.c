@@ -199,7 +199,8 @@ static int is_native(const char* name) {
            strcmp(name, "split") == 0 ||
            strcmp(name, "join") == 0 ||
            strcmp(name, "replace") == 0 ||
-           strcmp(name, "repeat") == 0;
+           strcmp(name, "repeat") == 0 ||
+           strcmp(name, "range") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -488,6 +489,21 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "repeat expects an int count");
         }
         return &type_string;
+    }
+    if (strcmp(name, "range") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "range expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "range expects int arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "range expects int arguments");
+        }
+        return transient_array_type(tc, &type_int);
     }
     return NULL;
 }
@@ -845,6 +861,36 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             }
             check_block(tc, f->body);
             tc->row_count = saved_row_count;
+            pop_scope(tc);
+            break;
+        }
+
+        case STMT_FOREACH: {
+            if (!push_scope(tc)) {
+                type_error(tc, stmt->loc, "Too many nested scopes");
+                return;
+            }
+            ForeachStmt* f = &stmt->as.foreach_stmt;
+            Type* iterable = infer_expr(tc, f->iterable, NULL);
+            if (tc->had_error) {
+                pop_scope(tc);
+                return;
+            }
+            if (iterable != NULL && iterable != &type_unknown &&
+                !type_is_array(iterable)) {
+                type_error(tc, stmt->loc, "For-in requires an array");
+                pop_scope(tc);
+                return;
+            }
+            Type* element_type = (iterable != NULL && type_is_array(iterable))
+                                     ? iterable->element_type
+                                     : &type_unknown;
+            if (!add_local(tc, f->var_name, element_type)) {
+                type_error(tc, stmt->loc, "Too many local variables");
+                pop_scope(tc);
+                return;
+            }
+            check_block(tc, f->body);
             pop_scope(tc);
             break;
         }
