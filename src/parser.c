@@ -50,6 +50,14 @@ static void error_at_current(Parser* parser, const char* message) {
     parser->had_error = 1;
 }
 
+static void error_at_previous(Parser* parser, const char* message) {
+    snprintf(parser->error_message, sizeof(parser->error_message),
+             "Parse error at line %d:%d: %s (got token %d)",
+             parser->previous.line, parser->previous.column, message,
+             parser->previous.type);
+    parser->had_error = 1;
+}
+
 static void advance(Parser* parser) {
     parser->previous = parser->current;
     parser->current = lexer_next_token(&parser->lexer);
@@ -458,7 +466,7 @@ static Expr* parse_precedence(Parser* parser, Precedence precedence) {
     advance(parser);
     PrefixFn prefix_rule = get_rule(parser->previous.type)->prefix;
     if (prefix_rule == NULL) {
-        error_at_current(parser, "expected expression");
+        error_at_previous(parser, "expected expression");
         return NULL;
     }
 
@@ -928,7 +936,7 @@ static void parse_proc(Parser* parser, Program* program) {
                 }
                 free(params);
                 free(name);
-                parser->had_error = 1;
+                error_at_current(parser, "out of memory");
                 return;
             }
             params = new_params;
@@ -949,7 +957,7 @@ static void parse_proc(Parser* parser, Program* program) {
             type_free(params[i].type);
         }
         free(params);
-        parser->had_error = 1;
+        error_at_current(parser, "out of memory");
         return;
     }
     proc->params = params;
