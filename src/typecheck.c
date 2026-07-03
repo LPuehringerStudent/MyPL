@@ -201,6 +201,10 @@ static int is_native(const char* name) {
            strcmp(name, "replace") == 0 ||
            strcmp(name, "repeat") == 0 ||
            strcmp(name, "range") == 0 ||
+           strcmp(name, "format") == 0 ||
+           strcmp(name, "sort") == 0 ||
+           strcmp(name, "reverse") == 0 ||
+           strcmp(name, "clamp") == 0 ||
            strcmp(name, "assert") == 0 ||
            strcmp(name, "parse_int") == 0 ||
            strcmp(name, "split_lines") == 0 ||
@@ -561,6 +565,78 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "join_paths expects string arguments");
         }
         return &type_string;
+    }
+    if (strcmp(name, "format") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "format expects 2 arguments");
+            return NULL;
+        }
+        Type* fmt = infer_expr(tc, args[0], NULL);
+        Type* vals = infer_expr(tc, args[1], transient_array_type(tc, &type_string));
+        if (fmt != &type_unknown && fmt != NULL && fmt->kind != TYPE_STRING) {
+            type_error(tc, loc, "format expects a string format");
+        }
+        if (vals != &type_unknown && vals != NULL && !type_is_array(vals)) {
+            type_error(tc, loc, "format expects an array<string>");
+        }
+        if (vals != NULL && type_is_array(vals) &&
+            vals->element_type != NULL &&
+            vals->element_type->kind != TYPE_UNKNOWN &&
+            vals->element_type->kind != TYPE_STRING) {
+            type_error(tc, loc, "format expects an array<string>");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "sort") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "sort expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "sort expects an array");
+        }
+        if (a != NULL && type_is_array(a) &&
+            a->element_type != NULL &&
+            a->element_type->kind != TYPE_UNKNOWN &&
+            a->element_type->kind != TYPE_INT &&
+            a->element_type->kind != TYPE_FLOAT &&
+            a->element_type->kind != TYPE_STRING) {
+            type_error(tc, loc, "sort expects array<int>, array<float>, or array<string>");
+        }
+        return a;
+    }
+    if (strcmp(name, "reverse") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "reverse expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "reverse expects an array");
+        }
+        return a;
+    }
+    if (strcmp(name, "clamp") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "clamp expects 3 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        Type* c = infer_expr(tc, args[2], NULL);
+        int has_float = 0;
+        Type* types[3] = {a, b, c};
+        for (int i = 0; i < 3; i++) {
+            Type* t = types[i];
+            if (t == &type_unknown || t == NULL) continue;
+            if (t->kind == TYPE_FLOAT) has_float = 1;
+            if (t->kind != TYPE_INT && t->kind != TYPE_FLOAT) {
+                type_error(tc, loc, "clamp expects numeric arguments");
+                break;
+            }
+        }
+        return has_float ? &type_float : &type_int;
     }
     return NULL;
 }

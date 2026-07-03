@@ -341,6 +341,145 @@ TEST(natives_join_paths_respects_absolute_second) {
     vm_free(vm);
 }
 
+TEST(natives_format_replaces_placeholders) {
+    VM* vm = vm_init();
+    ArrayObj* parts = array_new();
+    array_append(parts, value_string(strdup("world")));
+    array_append(parts, value_string(strdup("42")));
+    Value argv[2];
+    argv[0] = value_string(strdup("Hello %s, count %s"));
+    argv[1] = value_array(parts);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("format"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("Hello world, count 42", result.as.as_string);
+    value_release(argv[0]);
+    value_release(argv[1]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_format_rejects_mismatch) {
+    VM* vm = vm_init();
+    ArrayObj* parts = array_new();
+    Value argv[2];
+    argv[0] = value_string(strdup("Hello %s"));
+    argv[1] = value_array(parts);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("format"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    value_release(argv[0]);
+    value_release(argv[1]);
+    vm_free(vm);
+}
+
+TEST(natives_sort_ints_ascending) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(3));
+    array_append(arr, value_int(1));
+    array_append(arr, value_int(2));
+    Value argv[1];
+    argv[0] = value_array(arr);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("sort"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(1, array_get(result.as.as_array, 0).as.as_int);
+    ASSERT_INT_EQ(2, array_get(result.as.as_array, 1).as.as_int);
+    ASSERT_INT_EQ(3, array_get(result.as.as_array, 2).as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_sort_strings_ascending) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_string(strdup("banana")));
+    array_append(arr, value_string(strdup("apple")));
+    Value argv[1];
+    argv[0] = value_array(arr);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("sort"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_STRING_EQ("apple", array_get(result.as.as_array, 0).as.as_string);
+    ASSERT_STRING_EQ("banana", array_get(result.as.as_array, 1).as.as_string);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_reverse_array) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    array_append(arr, value_int(2));
+    array_append(arr, value_int(3));
+    Value argv[1];
+    argv[0] = value_array(arr);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("reverse"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(3, array_get(result.as.as_array, 0).as.as_int);
+    ASSERT_INT_EQ(2, array_get(result.as.as_array, 1).as.as_int);
+    ASSERT_INT_EQ(1, array_get(result.as.as_array, 2).as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_clamp_int_within_range) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_int(5);
+    argv[1] = value_int(0);
+    argv[2] = value_int(10);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("clamp"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(5, result.as.as_int);
+    vm_free(vm);
+}
+
+TEST(natives_clamp_int_below_range) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_int(-5);
+    argv[1] = value_int(0);
+    argv[2] = value_int(10);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("clamp"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(0, result.as.as_int);
+    vm_free(vm);
+}
+
+TEST(natives_clamp_float_coerces_ints) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_float(2.5);
+    argv[1] = value_int(0);
+    argv[2] = value_int(1);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("clamp"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_FLOAT_EQ(1.0, result.as.as_float);
+    vm_free(vm);
+}
+
+TEST(natives_clamp_rejects_string) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_string(strdup("x"));
+    argv[1] = value_int(0);
+    argv[2] = value_int(1);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("clamp"), 3, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
 int main(void) {
     RUN_TEST(natives_finds_registered_functions);
     RUN_TEST(natives_length_returns_array_length);
@@ -368,5 +507,14 @@ int main(void) {
     RUN_TEST(natives_join_paths_joins_two_strings);
     RUN_TEST(natives_join_paths_avoids_double_slash);
     RUN_TEST(natives_join_paths_respects_absolute_second);
+    RUN_TEST(natives_format_replaces_placeholders);
+    RUN_TEST(natives_format_rejects_mismatch);
+    RUN_TEST(natives_sort_ints_ascending);
+    RUN_TEST(natives_sort_strings_ascending);
+    RUN_TEST(natives_reverse_array);
+    RUN_TEST(natives_clamp_int_within_range);
+    RUN_TEST(natives_clamp_int_below_range);
+    RUN_TEST(natives_clamp_float_coerces_ints);
+    RUN_TEST(natives_clamp_rejects_string);
     TEST_SUMMARY();
 }

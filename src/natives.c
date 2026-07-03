@@ -649,6 +649,163 @@ static int native_repeat(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_format(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_ARRAY) {
+        vm_set_error(vm, "format expects (string, array<string>)");
+        return 0;
+    }
+    const char* fmt = argv[0].as.as_string ? argv[0].as.as_string : "";
+    ArrayObj* arr = argv[1].as.as_array;
+    int arg_count = array_length(arr);
+    int placeholders = 0;
+    for (const char* p = fmt; *p != '\0'; p++) {
+        if (*p == '%' && *(p + 1) == 's') placeholders++;
+    }
+    if (placeholders != arg_count) {
+        vm_set_error(vm, "format placeholder count does not match argument count");
+        return 0;
+    }
+    size_t result_size = strlen(fmt) + 1;
+    for (int i = 0; i < arg_count; i++) {
+        Value v = array_get(arr, i);
+        if (v.type != VAL_STRING) {
+            vm_set_error(vm, "format arguments must be strings");
+            return 0;
+        }
+        result_size += strlen(v.as.as_string ? v.as.as_string : "");
+    }
+    char* buf = malloc(result_size);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    char* dest = buf;
+    const char* p = fmt;
+    int idx = 0;
+    while (*p != '\0') {
+        if (*p == '%' && *(p + 1) == 's') {
+            Value v = array_get(arr, idx++);
+            const char* s = v.as.as_string ? v.as.as_string : "";
+            size_t slen = strlen(s);
+            memcpy(dest, s, slen);
+            dest += slen;
+            p += 2;
+        } else {
+            *dest++ = *p++;
+        }
+    }
+    *dest = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
+static int compare_values(Value a, Value b) {
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        return a.as.as_int - b.as.as_int;
+    }
+    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+        double av = a.type == VAL_FLOAT ? a.as.as_float : (double)a.as.as_int;
+        double bv = b.type == VAL_FLOAT ? b.as.as_float : (double)b.as.as_int;
+        return av < bv ? -1 : (av > bv ? 1 : 0);
+    }
+    if (a.type == VAL_STRING && b.type == VAL_STRING) {
+        const char* as = a.as.as_string ? a.as.as_string : "";
+        const char* bs = b.as.as_string ? b.as.as_string : "";
+        return strcmp(as, bs);
+    }
+    return 0;
+}
+
+static int native_sort(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY) {
+        vm_set_error(vm, "sort expects an array");
+        return 0;
+    }
+    ArrayObj* arr = argv[0].as.as_array;
+    int len = array_length(arr);
+    if (len > 0) {
+        Value first = array_get(arr, 0);
+        if (first.type != VAL_INT && first.type != VAL_FLOAT && first.type != VAL_STRING) {
+            vm_set_error(vm, "sort expects array of int, float, or string");
+            return 0;
+        }
+        for (int i = 1; i < len; i++) {
+            if (array_get(arr, i).type != first.type) {
+                vm_set_error(vm, "sort array elements must be the same type");
+                return 0;
+            }
+        }
+    }
+    for (int i = 0; i < len - 1; i++) {
+        for (int j = 0; j < len - 1 - i; j++) {
+            Value a = array_get(arr, j);
+            Value b = array_get(arr, j + 1);
+            if (compare_values(a, b) > 0) {
+                array_set(arr, j, b);
+                array_set(arr, j + 1, a);
+            }
+        }
+    }
+    value_retain(argv[0]);
+    *out = argv[0];
+    return 1;
+}
+
+static int native_reverse(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY) {
+        vm_set_error(vm, "reverse expects an array");
+        return 0;
+    }
+    ArrayObj* arr = argv[0].as.as_array;
+    int len = array_length(arr);
+    for (int i = 0; i < len / 2; i++) {
+        Value a = array_get(arr, i);
+        Value b = array_get(arr, len - 1 - i);
+        array_set(arr, i, b);
+        array_set(arr, len - 1 - i, a);
+    }
+    value_retain(argv[0]);
+    *out = argv[0];
+    return 1;
+}
+
+static int native_clamp(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argc != 3) {
+        vm_set_error(vm, "clamp expects 3 arguments");
+        return 0;
+    }
+    int all_int = argv[0].type == VAL_INT && argv[1].type == VAL_INT && argv[2].type == VAL_INT;
+    int all_numeric = (argv[0].type == VAL_INT || argv[0].type == VAL_FLOAT) &&
+                      (argv[1].type == VAL_INT || argv[1].type == VAL_FLOAT) &&
+                      (argv[2].type == VAL_INT || argv[2].type == VAL_FLOAT);
+    if (!all_numeric) {
+        vm_set_error(vm, "clamp expects numeric arguments");
+        return 0;
+    }
+    if (all_int) {
+        int v = argv[0].as.as_int;
+        int lo = argv[1].as.as_int;
+        int hi = argv[2].as.as_int;
+        if (lo > hi) { int tmp = lo; lo = hi; hi = tmp; }
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+        *out = value_int(v);
+        return 1;
+    }
+    double v = argv[0].type == VAL_FLOAT ? argv[0].as.as_float : (double)argv[0].as.as_int;
+    double lo = argv[1].type == VAL_FLOAT ? argv[1].as.as_float : (double)argv[1].as.as_int;
+    double hi = argv[2].type == VAL_FLOAT ? argv[2].as.as_float : (double)argv[2].as.as_int;
+    if (lo > hi) { double tmp = lo; lo = hi; hi = tmp; }
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    *out = value_float(v);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -677,6 +834,10 @@ static NativeDef natives[] = {
     {"replace", 3, native_replace},
     {"repeat", 2, native_repeat},
     {"range", 2, native_range},
+    {"format", 2, native_format},
+    {"sort", 1, native_sort},
+    {"reverse", 1, native_reverse},
+    {"clamp", 3, native_clamp},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

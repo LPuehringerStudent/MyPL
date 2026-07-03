@@ -997,6 +997,68 @@ TEST(compiler_reports_source_line_on_native_error) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_format_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile(
+        "proc main() -> string { return format(\"%s %s\", [\"hello\", \"world\"]); }",
+        &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    Value result = vm_pop(vm);
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("hello world", result.as.as_string);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_sort_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile(
+        "proc main() -> int { array<int> a = [3, 1, 2]; sort(a); return a[0]; }",
+        &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_reverse_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile(
+        "proc main() -> int { array<int> a = [1, 2, 3]; reverse(a); return a[0]; }",
+        &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(3, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_clamp_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile(
+        "proc main() -> int { return clamp(15, 0, 10); }",
+        &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(10, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -1061,5 +1123,9 @@ int main(void) {
     RUN_TEST(compiler_compiles_nested_index_assignment);
     RUN_TEST(compiler_emits_sql_exec);
     RUN_TEST(compiler_reports_source_line_on_native_error);
+    RUN_TEST(compiler_compiles_format_native);
+    RUN_TEST(compiler_compiles_sort_native);
+    RUN_TEST(compiler_compiles_reverse_native);
+    RUN_TEST(compiler_compiles_clamp_native);
     TEST_SUMMARY();
 }

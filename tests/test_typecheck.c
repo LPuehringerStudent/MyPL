@@ -627,6 +627,86 @@ TEST(typecheck_rejects_for_loop_with_undefined_sql_param) {
     free_program(program);
 }
 
+TEST(typecheck_accepts_format_with_string_array) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { string s = format(\"%s %s\", [\"hello\", \"world\"]); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_format_with_int_array) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { string s = format(\"%s\", [1]); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_sort_int_array) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { array<int> a = [3, 1, 2]; array<int> b = sort(a); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_sort_string_array_assigned_to_int_array) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { array<int> a = sort([\"x\"]); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_reverse_any_array) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { array<bool> a = [true, false]; array<bool> b = reverse(a); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_clamp_int) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { int x = clamp(5, 0, 10); return x; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_accepts_clamp_float_coercion) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { float x = clamp(1.5, 0, 1); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_clamp_string) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { int x = clamp(\"a\", 0, 1); return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
@@ -694,5 +774,13 @@ int main(void) {
     RUN_TEST(typecheck_accepts_sql_param);
     RUN_TEST(typecheck_accepts_for_loop_with_sql_param);
     RUN_TEST(typecheck_rejects_for_loop_with_undefined_sql_param);
+    RUN_TEST(typecheck_accepts_format_with_string_array);
+    RUN_TEST(typecheck_rejects_format_with_int_array);
+    RUN_TEST(typecheck_accepts_sort_int_array);
+    RUN_TEST(typecheck_rejects_sort_string_array_assigned_to_int_array);
+    RUN_TEST(typecheck_accepts_reverse_any_array);
+    RUN_TEST(typecheck_accepts_clamp_int);
+    RUN_TEST(typecheck_accepts_clamp_float_coercion);
+    RUN_TEST(typecheck_rejects_clamp_string);
     TEST_SUMMARY();
 }
