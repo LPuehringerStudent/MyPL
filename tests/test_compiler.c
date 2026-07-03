@@ -818,6 +818,43 @@ TEST(compiler_compiles_select_into_multi_value) {
     unlink(path);
 }
 
+TEST(compiler_compiles_select_into_array_row) {
+    char path[] = "/tmp/mydb_test_compiler_5_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id", "name"};
+    int types[] = {VAL_INT, VAL_STRING};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 2);
+    ASSERT_PTR_NOT_NULL(t);
+
+    Cell cells[2];
+    cells[0].type = VAL_INT;
+    cells[0].as.as_int = 1;
+    cells[1].type = VAL_STRING;
+    cells[1].as.as_string = "alice";
+    catalog_insert(&ctx, t, cells);
+    cells[0].as.as_int = 2;
+    cells[1].as.as_string = "bob";
+    catalog_insert(&ctx, t, cells);
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { array<row> rows = []; SELECT * INTO rows FROM users; return length(rows) + rows[0].id; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    vm_set_context(vm, &ctx);
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(3, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+    catalog_close(&ctx);
+    unlink(path);
+}
+
 TEST(compiler_emits_sql_exec) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -852,6 +889,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_for_sql_loop_sum);
     RUN_TEST(compiler_compiles_select_into_single_value);
     RUN_TEST(compiler_compiles_select_into_multi_value);
+    RUN_TEST(compiler_compiles_select_into_array_row);
     RUN_TEST(compiler_block_scope_does_not_leak_locals);
     RUN_TEST(compiler_reports_undefined_variable);
     RUN_TEST(compiler_returns_error_message_for_undefined_variable);

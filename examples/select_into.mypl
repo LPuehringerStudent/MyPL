@@ -13,5 +13,10 @@ proc main() -> int {
     print user_id;
     print user_age;
 
+    array<row> rows = [];
+    SELECT * INTO rows FROM users;
+    print length(rows);
+    print rows[0].name;
+
     return 0;
 }

@@ -7,7 +7,8 @@
 
 typedef enum {
     OBJ_STRING,
-    OBJ_ARRAY
+    OBJ_ARRAY,
+    OBJ_ROW
 } ObjType;
 
 typedef struct {
@@ -28,7 +29,16 @@ struct ArrayObj {
     ArrayObj* next;
 };
 
+struct RowObj {
+    Obj obj;
+    int column_count;
+    char** column_names;
+    Value* column_values;
+};
+
 static ArrayObj* array_pool = NULL;
+
+void row_obj_free(RowObj* row);
 
 static StringObj* string_obj_from_chars(const char* chars) {
     if (chars == NULL) return NULL;
@@ -85,10 +95,10 @@ Value value_array(ArrayObj* array) {
     return value;
 }
 
-Value value_row(void* row_handle) {
+Value value_row(RowObj* row) {
     Value value;
     value.type = VAL_ROW;
-    value.as.as_row_handle = row_handle;
+    value.as.as_row_handle = row;
     return value;
 }
 
@@ -97,6 +107,8 @@ void value_retain(Value v) {
         string_obj_from_chars(v.as.as_string)->obj.ref_count++;
     } else if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
         v.as.as_array->obj.ref_count++;
+    } else if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
+        ((RowObj*)v.as.as_row_handle)->obj.ref_count++;
     }
 }
 
@@ -111,6 +123,11 @@ void value_release(Value v) {
         if (--array->obj.ref_count <= 0) {
             array_free(array);
         }
+    } else if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
+        RowObj* row = (RowObj*)v.as.as_row_handle;
+        if (--row->obj.ref_count <= 0) {
+            row_obj_free(row);
+        }
     }
 }
 
@@ -120,6 +137,9 @@ int value_ref_count(Value v) {
     }
     if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
         return v.as.as_array->obj.ref_count;
+    }
+    if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
+        return ((RowObj*)v.as.as_row_handle)->obj.ref_count;
     }
     return 0;
 }
@@ -340,6 +360,58 @@ void array_pool_free_all(void) {
         array_free(array_pool);
         array_pool = next;
     }
+}
+
+RowObj* row_obj_new(int column_count) {
+    RowObj* row = malloc(sizeof(RowObj));
+    if (row == NULL) return NULL;
+    row->obj.type = OBJ_ROW;
+    row->obj.ref_count = 1;
+    row->column_count = column_count;
+    row->column_names = calloc((size_t)column_count, sizeof(char*));
+    if (row->column_names == NULL && column_count > 0) {
+        free(row);
+        return NULL;
+    }
+    row->column_values = calloc((size_t)column_count, sizeof(Value));
+    if (row->column_values == NULL && column_count > 0) {
+        free(row->column_names);
+        free(row);
+        return NULL;
+    }
+    return row;
+}
+
+void row_obj_free(RowObj* row) {
+    if (row == NULL) return;
+    for (int i = 0; i < row->column_count; i++) {
+        free(row->column_names[i]);
+        value_release(row->column_values[i]);
+    }
+    free(row->column_names);
+    free(row->column_values);
+    free(row);
+}
+
+void row_obj_set_column(RowObj* row, int index, const char* name, Value value) {
+    if (row == NULL || index < 0 || index >= row->column_count) return;
+    free(row->column_names[index]);
+    row->column_names[index] = name != NULL ? strdup(name) : NULL;
+    value_release(row->column_values[index]);
+    row->column_values[index] = value;
+    value_retain(value);
+}
+
+Value row_obj_get_field(RowObj* row, const char* name) {
+    if (row == NULL || name == NULL) return value_int(0);
+    for (int i = 0; i < row->column_count; i++) {
+        if (row->column_names[i] != NULL && strcmp(row->column_names[i], name) == 0) {
+            Value v = row->column_values[i];
+            value_retain(v);
+            return v;
+        }
+    }
+    return value_int(0);
 }
 
 int array_append(ArrayObj* array, Value value) {

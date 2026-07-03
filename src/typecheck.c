@@ -889,12 +889,20 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 type_error(tc, stmt->loc, "SELECT statement requires INTO");
                 return;
             }
+            int into_array = 0;
+            if (s->into_count == 1) {
+                Type* t = resolve_local(tc, s->into_vars[0]);
+                if (t != NULL && t->kind == TYPE_ARRAY && t->element_type != NULL && t->element_type->kind == TYPE_ROW) {
+                    into_array = 1;
+                }
+            }
             for (int i = 0; i < s->into_count; i++) {
                 Type* t = resolve_local(tc, s->into_vars[i]);
                 if (t == NULL) {
                     type_error(tc, stmt->loc, "Undefined variable '%s'", s->into_vars[i]);
                     return;
                 }
+                if (into_array) continue;
                 if (t->kind != TYPE_INT && t->kind != TYPE_FLOAT && t->kind != TYPE_STRING && t->kind != TYPE_BOOL) {
                     type_error(tc, stmt->loc, "SELECT INTO target must be a scalar variable");
                     return;

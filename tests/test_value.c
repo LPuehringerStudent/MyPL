@@ -140,10 +140,11 @@ TEST(is_truthy_non_null_string_is_true) {
 }
 
 TEST(row_value_holds_handle_and_type) {
-    int dummy_row = 42;
-    Value v = value_row(&dummy_row);
+    RowObj* row = row_obj_new(0);
+    ASSERT_PTR_NOT_NULL(row);
+    Value v = value_row(row);
     ASSERT_INT_EQ(VAL_ROW, v.type);
-    ASSERT_PTR_EQ(&dummy_row, v.as.as_row_handle);
+    ASSERT_PTR_EQ(row, v.as.as_row_handle);
     value_release(v);
 }
 
