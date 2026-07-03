@@ -204,6 +204,20 @@ static void skip_whitespace(Lexer* lexer) {
                     while (peek(lexer) != '\n' && !is_at_end(lexer)) {
                         advance(lexer);
                     }
+                } else if (peek_next(lexer) == '*') {
+                    advance(lexer); /* consume '/' */
+                    advance(lexer); /* consume '*' */
+                    while (!(peek(lexer) == '*' && peek_next(lexer) == '/') && !is_at_end(lexer)) {
+                        if (peek(lexer) == '\n') {
+                            lexer->line++;
+                            lexer->line_start = lexer->current + 1;
+                        }
+                        advance(lexer);
+                    }
+                    if (!is_at_end(lexer)) {
+                        advance(lexer); /* consume '*' */
+                        advance(lexer); /* consume '/' */
+                    }
                 } else {
                     return;
                 }

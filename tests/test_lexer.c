@@ -253,6 +253,37 @@ TEST(lexer_scans_bool_keywords_and_literals) {
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 }
 
+TEST(lexer_skips_comments) {
+    Lexer lexer;
+
+    lexer_init(&lexer, "// whole line comment\nint x;");
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_IDENT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_SEMICOLON, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "/* block comment */ int y;");
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_IDENT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_SEMICOLON, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "/* multi\nline */ int z;");
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_IDENT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_SEMICOLON, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
+    lexer_init(&lexer, "int a; // trailing comment\nint b;");
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_IDENT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_SEMICOLON, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_INT_TYPE, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_IDENT, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_SEMICOLON, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+}
+
 TEST(lexer_scans_import_keyword) {
     Lexer lexer;
     lexer_init(&lexer, "import");
@@ -279,6 +310,7 @@ int main(void) {
     RUN_TEST(lexer_reports_unexpected_character);
     RUN_TEST(lexer_scans_brackets);
     RUN_TEST(lexer_scans_bool_keywords_and_literals);
+    RUN_TEST(lexer_skips_comments);
     RUN_TEST(lexer_scans_import_keyword);
     TEST_SUMMARY();
 }

@@ -855,6 +855,32 @@ TEST(compiler_compiles_select_into_array_row) {
     unlink(path);
 }
 
+TEST(compiler_rejects_select_into_no_row) {
+    char path[] = "/tmp/mydb_test_compiler_6_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int my_id = 0; SELECT id INTO my_id FROM users WHERE id = 999; return my_id; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    vm_set_context(vm, &ctx);
+    ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
+    vm_free(vm);
+    free_chunk(&chunk);
+    catalog_close(&ctx);
+    unlink(path);
+}
+
 TEST(compiler_emits_sql_exec) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -890,6 +916,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_select_into_single_value);
     RUN_TEST(compiler_compiles_select_into_multi_value);
     RUN_TEST(compiler_compiles_select_into_array_row);
+    RUN_TEST(compiler_rejects_select_into_no_row);
     RUN_TEST(compiler_block_scope_does_not_leak_locals);
     RUN_TEST(compiler_reports_undefined_variable);
     RUN_TEST(compiler_returns_error_message_for_undefined_variable);

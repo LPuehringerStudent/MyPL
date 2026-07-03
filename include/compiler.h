@@ -42,7 +42,8 @@ typedef enum {
     OP_SQL_ROLLBACK,
     OP_ROW_GET,
     OP_SQL_GET_COLUMN,
-    OP_SQL_TO_ARRAY
+    OP_SQL_TO_ARRAY,
+    OP_RUNTIME_ERROR
 } OpCode;
 
 typedef enum {
