@@ -71,6 +71,10 @@ typedef struct {
     int      count;
     int      capacity;
 
+    int* lines;
+    int  lines_count;
+    int  lines_capacity;
+
     Value* constants;
     int    constants_count;
     int    constants_capacity;
@@ -79,9 +83,11 @@ typedef struct {
 void init_chunk(Chunk* chunk);
 void free_chunk(Chunk* chunk);
 void write_chunk(Chunk* chunk, uint8_t byte);
+void write_chunk_line(Chunk* chunk, uint8_t byte, int line);
 int  add_constant(Chunk* chunk, Value value);
 
 void   write_chunk_u16(Chunk* chunk, uint16_t value);
+void   write_chunk_u16_line(Chunk* chunk, uint16_t value, int line);
 uint16_t read_u16(const uint8_t* bytes);
 
 Value value_int(int v);

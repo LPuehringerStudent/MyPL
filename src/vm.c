@@ -48,8 +48,20 @@ VM* vm_init(void) {
     return vm;
 }
 
+static int current_line(VM* vm) {
+    if (vm->chunk == NULL || vm->chunk->lines == NULL || vm->ip == NULL) return 0;
+    int offset = (int)(vm->ip - vm->chunk->code) - 1;
+    if (offset < 0 || offset >= vm->chunk->lines_count) return 0;
+    return vm->chunk->lines[offset];
+}
+
 static void set_runtime_error(VM* vm, const char* message) {
-    snprintf(vm->error_message, sizeof(vm->error_message), "%s", message);
+    int line = current_line(vm);
+    if (line > 0) {
+        snprintf(vm->error_message, sizeof(vm->error_message), "[line %d] %s", line, message);
+    } else {
+        snprintf(vm->error_message, sizeof(vm->error_message), "%s", message);
+    }
 }
 
 static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
