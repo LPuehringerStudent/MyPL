@@ -799,6 +799,22 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             break;
         }
 
+        case STMT_WHILE: {
+            Type* cond = infer_expr(tc, stmt->as.while_stmt.condition, NULL);
+            if (tc->had_error) return;
+            if (!is_condition_type(cond)) {
+                type_error(tc, stmt->loc,
+                           "While condition must be bool or numeric");
+                return;
+            }
+            check_block(tc, stmt->as.while_stmt.body);
+            break;
+        }
+
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+            break;
+
         case STMT_FOR: {
             if (!push_scope(tc)) {
                 type_error(tc, stmt->loc, "Too many nested scopes");

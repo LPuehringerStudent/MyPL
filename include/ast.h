@@ -53,6 +53,9 @@ typedef enum {
     STMT_ASSIGN,
     STMT_IF,
     STMT_FOR,
+    STMT_WHILE,
+    STMT_BREAK,
+    STMT_CONTINUE,
     STMT_RETURN,
     STMT_PRINT,
     STMT_INDEX_ASSIGN,
@@ -129,6 +132,11 @@ typedef struct {
 } ForStmt;
 
 typedef struct {
+    Expr* condition;
+    Block* body;
+} WhileStmt;
+
+typedef struct {
     Expr* value;
 } ReturnStmt;
 
@@ -166,6 +174,7 @@ struct Stmt {
         AssignStmt assign;
         IfStmt if_stmt;
         ForStmt for_stmt;
+        WhileStmt while_stmt;
         ReturnStmt return_stmt;
         PrintStmt print_stmt;
         IndexAssignStmt index_assign;
@@ -258,6 +267,9 @@ Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init);
 Stmt* create_assign_stmt(const char* name, Expr* value);
 Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Expr** params, int param_count, Block* body);
+Stmt* create_while_stmt(Expr* condition, Block* body);
+Stmt* create_break_stmt(void);
+Stmt* create_continue_stmt(void);
 Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
 Stmt* create_expr_stmt(Expr* value);

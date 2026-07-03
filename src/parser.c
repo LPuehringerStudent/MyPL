@@ -620,6 +620,38 @@ static Stmt* if_statement(Parser* parser) {
     return stmt;
 }
 
+static Stmt* while_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'while' was just consumed */
+    Expr* cond = expression(parser);
+    Block* body = block(parser);
+    if (body == NULL) {
+        free_expr(cond);
+        return NULL;
+    }
+    Stmt* stmt = create_while_stmt(cond, body);
+    stmt->loc.line = kw.line;
+    stmt->loc.column = kw.column;
+    return stmt;
+}
+
+static Stmt* break_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'break' was just consumed */
+    advance(parser); /* ; */
+    Stmt* stmt = create_break_stmt();
+    stmt->loc.line = kw.line;
+    stmt->loc.column = kw.column;
+    return stmt;
+}
+
+static Stmt* continue_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'continue' was just consumed */
+    advance(parser); /* ; */
+    Stmt* stmt = create_continue_stmt();
+    stmt->loc.line = kw.line;
+    stmt->loc.column = kw.column;
+    return stmt;
+}
+
 static Stmt* for_statement(Parser* parser) {
     Token kw = parser->previous;  /* 'for' was just consumed */
     advance(parser); /* iterator name */
@@ -791,7 +823,10 @@ static Stmt* statement(Parser* parser) {
         return var_decl(parser);
     }
     if (match(parser, TOKEN_IF)) return if_statement(parser);
+    if (match(parser, TOKEN_WHILE)) return while_statement(parser);
     if (match(parser, TOKEN_FOR)) return for_statement(parser);
+    if (match(parser, TOKEN_BREAK)) return break_statement(parser);
+    if (match(parser, TOKEN_CONTINUE)) return continue_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
     if (match(parser, TOKEN_PRINT)) return print_statement(parser);
     if (match(parser, TOKEN_CREATE) || match(parser, TOKEN_DROP)) {

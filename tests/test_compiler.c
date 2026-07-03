@@ -112,6 +112,42 @@ TEST(compiler_compiles_else_if_chain) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_while_loop) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int i = 0; int s = 0; while i < 5 { s = s + i; i = i + 1; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(10, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_while_break) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int i = 0; while i < 10 { i = i + 1; if i == 3 { break; } } return i; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(3, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_while_continue) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int i = 0; int s = 0; while i < 5 { i = i + 1; if i == 3 { continue; } s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(12, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_unary_minus) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -899,6 +935,9 @@ int main(void) {
     RUN_TEST(compiler_compiles_if_true_branch);
     RUN_TEST(compiler_compiles_else_branch);
     RUN_TEST(compiler_compiles_else_if_chain);
+    RUN_TEST(compiler_compiles_while_loop);
+    RUN_TEST(compiler_compiles_while_break);
+    RUN_TEST(compiler_compiles_while_continue);
     RUN_TEST(compiler_compiles_unary_minus);
     RUN_TEST(compiler_compiles_unary_not);
     RUN_TEST(compiler_compiles_unary_not_true);

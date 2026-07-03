@@ -221,6 +221,13 @@ void free_stmt(Stmt* stmt) {
             free(stmt->as.for_stmt.params);
             free_block(stmt->as.for_stmt.body);
             break;
+        case STMT_WHILE:
+            free_expr(stmt->as.while_stmt.condition);
+            free_block(stmt->as.while_stmt.body);
+            break;
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+            break;
         case STMT_RETURN:
             free_expr(stmt->as.return_stmt.value);
             break;
@@ -338,6 +345,36 @@ Stmt* create_for_stmt(const char* var_name, const char* sql_query, Expr** params
     stmt->as.for_stmt.params = params;
     stmt->as.for_stmt.param_count = param_count;
     stmt->as.for_stmt.body = body;
+    return stmt;
+}
+
+Stmt* create_while_stmt(Expr* condition, Block* body) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(condition);
+        free_block(body);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_WHILE;
+    stmt->as.while_stmt.condition = condition;
+    stmt->as.while_stmt.body = body;
+    return stmt;
+}
+
+Stmt* create_break_stmt(void) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_BREAK;
+    return stmt;
+}
+
+Stmt* create_continue_stmt(void) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_CONTINUE;
     return stmt;
 }
 
