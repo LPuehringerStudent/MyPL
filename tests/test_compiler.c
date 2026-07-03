@@ -172,6 +172,30 @@ TEST(compiler_compiles_foreach_array) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_parse_int_native) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { return parse_int(\"123\"); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(123, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_split_lines_and_join_paths) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { array<string> lines = split_lines(\"1\\n2\\n3\"); return length(lines) + parse_int(lines[0]); }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(4, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_unary_minus) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -964,6 +988,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_while_continue);
     RUN_TEST(compiler_compiles_foreach_range);
     RUN_TEST(compiler_compiles_foreach_array);
+    RUN_TEST(compiler_compiles_parse_int_native);
+    RUN_TEST(compiler_compiles_split_lines_and_join_paths);
     RUN_TEST(compiler_compiles_unary_minus);
     RUN_TEST(compiler_compiles_unary_not);
     RUN_TEST(compiler_compiles_unary_not_true);

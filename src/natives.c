@@ -504,6 +504,128 @@ static int native_range(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_assert(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    int cond = 0;
+    if (argv[0].type == VAL_BOOL || argv[0].type == VAL_INT) {
+        cond = argv[0].as.as_int;
+    }
+    if (argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "assert expects (bool/int, string)");
+        return 0;
+    }
+    if (!cond) {
+        const char* msg = argv[1].as.as_string ? argv[1].as.as_string : "assertion failed";
+        vm_set_error(vm, msg);
+        return 0;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_parse_int(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "parse_int expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    char* endptr = NULL;
+    long n = strtol(s, &endptr, 10);
+    if (endptr == s || *endptr != '\0') {
+        vm_set_error(vm, "parse_int: invalid integer");
+        return 0;
+    }
+    *out = value_int((int)n);
+    return 1;
+}
+
+static int native_split_lines(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "split_lines expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    ArrayObj* arr = array_new();
+    if (arr == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    const char* line_start = s;
+    for (const char* p = s; *p != '\0'; p++) {
+        if (*p == '\n') {
+            size_t len = (size_t)(p - line_start);
+            char* part = malloc(len + 1);
+            if (part == NULL) {
+                array_free(arr);
+                vm_set_error(vm, "Out of memory");
+                return 0;
+            }
+            memcpy(part, line_start, len);
+            part[len] = '\0';
+            if (!array_append(arr, value_string(part))) {
+                free(part);
+                array_free(arr);
+                vm_set_error(vm, "Out of memory");
+                return 0;
+            }
+            line_start = p + 1;
+        }
+    }
+    /* Append the final segment (even if it is empty). */
+    size_t len = strlen(line_start);
+    char* part = malloc(len + 1);
+    if (part == NULL) {
+        array_free(arr);
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    memcpy(part, line_start, len);
+    part[len] = '\0';
+    if (!array_append(arr, value_string(part))) {
+        free(part);
+        array_free(arr);
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    *out = value_array(arr);
+    return 1;
+}
+
+static int native_join_paths(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "join_paths expects two strings");
+        return 0;
+    }
+    const char* a = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* b = argv[1].as.as_string ? argv[1].as.as_string : "";
+    if (b[0] == '/') {
+        *out = value_string(strdup(b));
+        return out->as.as_string ? 1 : 0;
+    }
+    size_t a_len = strlen(a);
+    size_t b_len = strlen(b);
+    size_t total = a_len + b_len + 2;
+    char* result = malloc(total);
+    if (result == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    if (a_len == 0) {
+        strcpy(result, b);
+    } else if (a[a_len - 1] == '/') {
+        snprintf(result, total, "%s%s", a, b);
+    } else {
+        snprintf(result, total, "%s/%s", a, b);
+    }
+    *out = value_string(result);
+    return 1;
+}
+
 static int native_repeat(VM* vm, int argc, Value* argv, Value* out) {
     (void)argc;
     if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT) {
@@ -555,6 +677,10 @@ static NativeDef natives[] = {
     {"replace", 3, native_replace},
     {"repeat", 2, native_repeat},
     {"range", 2, native_range},
+    {"assert", 2, native_assert},
+    {"parse_int", 1, native_parse_int},
+    {"split_lines", 1, native_split_lines},
+    {"join_paths", 2, native_join_paths},
     {NULL,      0, NULL}
 };
 
