@@ -27,8 +27,8 @@ proc list_todos() -> int {
   binding.
 - **SQLite-backed**: Run against `:memory:`, a file, or no database at all
   (custom engine fallback).
-- **Small and hackable**: A single C99 codebase with no external dependencies
-  besides `sqlite3`.
+- **Small and hackable**: A single C99 codebase. SQLite is optional — build
+  with `USE_SQLITE=0` for a standalone custom-engine-only binary.
 - **Scriptable**: Run `.mypl` files from the command line or explore data
   interactively in the REPL.
 
@@ -55,7 +55,7 @@ Expected output:
 make clean && make && make test
 ```
 
-Requires:
+Default build requires:
 
 - A C99 compiler
 - The `sqlite3` development library (`-lsqlite3`)
@@ -70,6 +70,15 @@ On macOS:
 
 ```bash
 brew install sqlite3
+```
+
+### Standalone build (no SQLite)
+
+MyPL can be built without SQLite. In that mode the custom SQL engine is the only
+backend and `--db`/`.connect` are disabled:
+
+```bash
+make clean && make USE_SQLITE=0 && make USE_SQLITE=0 test
 ```
 
 ## Language tour

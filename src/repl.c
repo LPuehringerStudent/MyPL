@@ -7,7 +7,9 @@
 #include "compiler.h"
 #include "os.h"
 #include "sql_engine.h"
+#ifdef USE_SQLITE
 #include "sqlite_driver.h"
+#endif
 #include "vm.h"
 
 #define LINE_SIZE 1024
@@ -74,6 +76,7 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
     session->ctx.pager = NULL;
 
     if (db_path != NULL) {
+#ifdef USE_SQLITE
         sqlite_driver_init(&session->driver);
         if (session->driver.open(&session->driver, db_path)) {
             session->driver_open = 1;
@@ -83,6 +86,9 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
         } else {
             fprintf(stderr, "Could not open database: %s\n", db_path);
         }
+#else
+        fprintf(stderr, "SQLite support is disabled in this build\n");
+#endif
     } else {
         catalog_open(&session->ctx);
         if (session->vm != NULL) {
@@ -393,6 +399,7 @@ static void cmd_sql(ReplSession* session, const char* query) {
 }
 
 static void cmd_tables(ReplSession* session) {
+#ifdef USE_SQLITE
     if (session->driver_open) {
         void* result = NULL;
         if (!session->driver.query(&session->driver,
@@ -416,6 +423,7 @@ static void cmd_tables(ReplSession* session) {
         if (first) printf("(no tables)\n");
         return;
     }
+#endif
 
     int count = catalog_table_count(&session->ctx);
     if (count == 0) {
@@ -437,6 +445,7 @@ static const char* type_name(int type) {
     }
 }
 
+#ifdef USE_SQLITE
 static void print_driver_table_schema(ReplSession* session, const char* table_name) {
     char query[512];
     snprintf(query, sizeof(query), "PRAGMA table_info(%s)", table_name);
@@ -466,6 +475,7 @@ static void print_driver_table_schema(ReplSession* session, const char* table_na
     printf(")\n");
     session->driver.result_free(&session->driver, result);
 }
+#endif
 
 static int cmd_connect(ReplSession* session, const char* path) {
     if (path == NULL || *path == '\0') {
@@ -474,6 +484,7 @@ static int cmd_connect(ReplSession* session, const char* path) {
     }
     while (*path != '\0' && isspace((unsigned char)*path)) path++;
 
+#ifdef USE_SQLITE
     if (session->driver_open) {
         session->driver.close(&session->driver);
         session->driver_open = 0;
@@ -494,9 +505,15 @@ static int cmd_connect(ReplSession* session, const char* path) {
     }
     printf("Connected to %s\n", path);
     return 0;
+#else
+    (void)session;
+    fprintf(stderr, "SQLite support is disabled in this build\n");
+    return 1;
+#endif
 }
 
 static void cmd_schema(ReplSession* session, const char* table_name) {
+#ifdef USE_SQLITE
     if (session->driver_open) {
         if (table_name != NULL) {
             print_driver_table_schema(session, table_name);
@@ -525,6 +542,7 @@ static void cmd_schema(ReplSession* session, const char* table_name) {
         if (first) printf("(no tables)\n");
         return;
     }
+#endif
 
     int count = catalog_table_count(&session->ctx);
     if (count == 0) {

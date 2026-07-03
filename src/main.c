@@ -8,7 +8,9 @@
 #include "compiler.h"
 #include "os.h"
 #include "sql_engine.h"
+#ifdef USE_SQLITE
 #include "sqlite_driver.h"
+#endif
 
 static void print_usage(const char* program) {
     fprintf(stderr, "Usage: %s [file] [--db <path>]\n", program);
@@ -16,7 +18,11 @@ static void print_usage(const char* program) {
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  --help     Show this help message\n");
     fprintf(stderr, "  --version  Show version information\n");
+#ifdef USE_SQLITE
     fprintf(stderr, "  --db       Open a SQLite database\n");
+#else
+    fprintf(stderr, "  --db       (disabled in this build)\n");
+#endif
 }
 
 static void print_version(void) {
@@ -102,12 +108,17 @@ int main(int argc, char** argv) {
     DBDriver driver;
     int driver_open = 0;
     if (db_path != NULL) {
+#ifdef USE_SQLITE
         sqlite_driver_init(&driver);
         if (!driver.open(&driver, db_path)) {
             fprintf(stderr, "Could not open database: %s\n", db_path);
             return 1;
         }
         driver_open = 1;
+#else
+        fprintf(stderr, "SQLite support is disabled in this build\n");
+        return 1;
+#endif
     } else if (file != NULL) {
         custom_driver_init(&driver);
         if (!driver.open(&driver, "mypl.db")) {
