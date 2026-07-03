@@ -57,6 +57,15 @@ proc lookup_user(search_id int) -> int {
 }
 ```
 
+You can also load an entire result set into an `array<row>`:
+
+```mypl
+array<row> users = [];
+SELECT * INTO users FROM users;
+print length(users);
+print users[0].name;
+```
+
 See `examples/select_into.mypl` for a runnable example.
 
 ## Features

@@ -681,18 +681,13 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 }
                 Value row_value;
                 if (!pop(vm, &row_value)) return INTERPRET_RUNTIME_ERROR;
-                if (row_value.type != VAL_ROW || vm->driver == NULL) {
+                if (row_value.type != VAL_ROW || row_value.as.as_row_handle == NULL) {
                     value_release(row_value);
                     set_runtime_error(vm, "Cannot access field on non-row value");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                Value field_value;
-                if (!vm->driver->row_get_field(vm->driver, row_value.as.as_row_handle,
-                                               name_value.as.as_string, &field_value)) {
-                    value_release(row_value);
-                    set_runtime_error_from_driver(vm, "Field access failed");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
+                Value field_value = row_obj_get_field((RowObj*)row_value.as.as_row_handle,
+                                                      name_value.as.as_string);
                 if (!push(vm, field_value)) {
                     value_release(field_value);
                     value_release(row_value);
@@ -726,6 +721,93 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                     }
                 }
                 if (!push(vm, value)) return INTERPRET_RUNTIME_ERROR;
+                break;
+            }
+            case OP_SQL_TO_ARRAY: {
+                ArrayObj* array = array_new();
+                if (array == NULL) {
+                    set_runtime_error(vm, "out of memory");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (vm->driver != NULL) {
+                    int column_count = vm->driver->result_column_count(vm->driver, vm->result_handle);
+                    while (1) {
+                        void* row_handle = NULL;
+                        int has_row = vm->driver->result_next(vm->driver, vm->result_handle, &row_handle);
+                        if (!has_row) break;
+                        RowObj* row_obj = row_obj_new(column_count);
+                        if (row_obj == NULL) {
+                            set_runtime_error(vm, "out of memory");
+                            value_release(value_array(array));
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        for (int i = 0; i < column_count; i++) {
+                            const char* name = vm->driver->result_column_name(vm->driver, vm->result_handle, i);
+                            Value col_value;
+                            if (!vm->driver->row_get_column(vm->driver, row_handle, i, &col_value)) {
+                                set_runtime_error_from_driver(vm, "Column access failed");
+                                row_obj_free(row_obj);
+                                value_release(value_array(array));
+                                return INTERPRET_RUNTIME_ERROR;
+                            }
+                            row_obj_set_column(row_obj, i, name, col_value);
+                            value_release(col_value);
+                        }
+                        Value row_value = value_row(row_obj);
+                        if (!array_append(array, row_value)) {
+                            value_release(row_value);
+                            value_release(value_array(array));
+                            set_runtime_error(vm, "out of memory");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        value_release(row_value);
+                    }
+                    vm->driver->result_free(vm->driver, vm->result_handle);
+                } else {
+                    Context* ctx = vm->context;
+                    if (ctx == NULL || ctx->pager == NULL) {
+                        value_release(value_array(array));
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    Result* res = (Result*)vm->result_handle;
+                    while (1) {
+                        Row* row = result_next(res);
+                        if (row == NULL) break;
+                        RowObj* row_obj = row_obj_new(row->field_count);
+                        if (row_obj == NULL) {
+                            set_runtime_error(vm, "out of memory");
+                            value_release(value_array(array));
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        for (int i = 0; i < row->field_count; i++) {
+                            Cell cell = row->fields[i].value;
+                            Value col_value;
+                            switch (cell.type) {
+                                case VAL_INT:    col_value = value_int(cell.as.as_int);       break;
+                                case VAL_FLOAT:  col_value = value_float(cell.as.as_float);   break;
+                                case VAL_STRING: col_value = value_string(strdup(cell.as.as_string)); break;
+                                default:         col_value = value_int(0);                    break;
+                            }
+                            row_obj_set_column(row_obj, i, row->fields[i].name, col_value);
+                            value_release(col_value);
+                        }
+                        Value row_value = value_row(row_obj);
+                        if (!array_append(array, row_value)) {
+                            value_release(row_value);
+                            value_release(value_array(array));
+                            set_runtime_error(vm, "out of memory");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        value_release(row_value);
+                    }
+                    result_free(res);
+                }
+                vm->result_handle = NULL;
+                vm->row_handle = NULL;
+                if (!push(vm, value_array(array))) {
+                    value_release(value_array(array));
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 break;
             }
             default:

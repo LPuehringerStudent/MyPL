@@ -327,6 +327,17 @@ TEST(parser_parses_select_into_multi_value) {
     free_program(program);
 }
 
+TEST(parser_parses_select_into_array_row) {
+    Program* program = parse("proc main() -> int { array<row> rows; SELECT * INTO rows FROM users; return 0; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[1];
+    ASSERT_INT_EQ(STMT_SQL_QUERY, stmt->kind);
+    ASSERT_STRING_EQ("SELECT * FROM users", stmt->as.sql_stmt.sql);
+    ASSERT_INT_EQ(1, stmt->as.sql_stmt.into_count);
+    ASSERT_STRING_EQ("rows", stmt->as.sql_stmt.into_vars[0]);
+    free_program(program);
+}
+
 TEST(parser_parses_import_statement) {
     Program* program = parse("import \"foo.mypl\"; proc main() -> int { return 0; }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -384,6 +395,7 @@ int main(void) {
     RUN_TEST(parser_parses_insert_with_param);
     RUN_TEST(parser_parses_select_into_single_value);
     RUN_TEST(parser_parses_select_into_multi_value);
+    RUN_TEST(parser_parses_select_into_array_row);
     RUN_TEST(parser_parses_import_statement);
     RUN_TEST(parser_parses_typed_array_variable);
     RUN_TEST(parser_parses_nested_typed_array);

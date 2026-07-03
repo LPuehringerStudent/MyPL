@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 typedef struct ArrayObj ArrayObj;
+typedef struct RowObj RowObj;
 
 typedef enum {
     OP_CONST,
@@ -40,7 +41,8 @@ typedef enum {
     OP_SQL_COMMIT,
     OP_SQL_ROLLBACK,
     OP_ROW_GET,
-    OP_SQL_GET_COLUMN
+    OP_SQL_GET_COLUMN,
+    OP_SQL_TO_ARRAY
 } OpCode;
 
 typedef enum {
@@ -86,7 +88,7 @@ Value value_float(double v);
 Value value_string(char* s);
 Value value_bool(int v);
 Value value_array(ArrayObj* array);
-Value value_row(void* row_handle);
+Value value_row(RowObj* row);
 void value_print(Value value);
 
 void value_retain(Value v);
@@ -100,6 +102,11 @@ Value     array_get(ArrayObj* array, int index);
 void      array_set(ArrayObj* array, int index, Value value);
 int       array_length(ArrayObj* array);
 void      array_pool_free_all(void);
+
+RowObj* row_obj_new(int column_count);
+void    row_obj_free(RowObj* row);
+void    row_obj_set_column(RowObj* row, int index, const char* name, Value value);
+Value   row_obj_get_field(RowObj* row, const char* name);
 
 Value value_add(Value a, Value b);
 Value value_sub(Value a, Value b);

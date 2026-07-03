@@ -576,6 +576,13 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     return;
                 }
             }
+            int into_array = 0;
+            if (s->into_count == 1) {
+                Type* t = resolve_local_type(compiler, s->into_vars[0], (int)strlen(s->into_vars[0]));
+                if (t != NULL && t->kind == TYPE_ARRAY && t->element_type != NULL && t->element_type->kind == TYPE_ROW) {
+                    into_array = 1;
+                }
+            }
             for (int i = 0; i < s->param_count; i++) {
                 compile_expr(compiler, s->params[i]);
                 if (compiler->had_error) return;
@@ -604,18 +611,26 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_byte(compiler, OP_SQL);
             emit_u16(compiler, (uint16_t)sql_idx);
 
-            int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
-
-            for (int i = 0; i < s->into_count; i++) {
-                int slot = resolve_local(compiler, s->into_vars[i], (int)strlen(s->into_vars[i]));
-                emit_byte(compiler, OP_SQL_GET_COLUMN);
-                emit_u16(compiler, (uint16_t)i);
+            if (into_array) {
+                int slot = resolve_local(compiler, s->into_vars[0], (int)strlen(s->into_vars[0]));
+                emit_byte(compiler, OP_SQL_TO_ARRAY);
                 emit_byte(compiler, OP_SET_LOCAL);
                 emit_byte(compiler, (uint8_t)slot);
                 emit_byte(compiler, OP_POP);
-            }
+            } else {
+                int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
 
-            patch_jump(compiler, exit_jump);
+                for (int i = 0; i < s->into_count; i++) {
+                    int slot = resolve_local(compiler, s->into_vars[i], (int)strlen(s->into_vars[i]));
+                    emit_byte(compiler, OP_SQL_GET_COLUMN);
+                    emit_u16(compiler, (uint16_t)i);
+                    emit_byte(compiler, OP_SET_LOCAL);
+                    emit_byte(compiler, (uint8_t)slot);
+                    emit_byte(compiler, OP_POP);
+                }
+
+                patch_jump(compiler, exit_jump);
+            }
             break;
         }
         default:
