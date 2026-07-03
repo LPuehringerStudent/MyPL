@@ -28,6 +28,8 @@ typedef struct {
 
 typedef struct {
     int continue_target;
+    int local_count_at_start;
+    int continue_local_count;
     int break_patches[MAX_BREAK_PATCHES];
     int break_count;
 } LoopContext;
@@ -157,13 +159,16 @@ static void patch_jump_to(Compiler* compiler, int offset, int target) {
     compiler->chunk->code[offset + 1] = (uint8_t)(jump & 0xFF);
 }
 
-static int push_loop(Compiler* compiler, int continue_target) {
+static int push_loop(Compiler* compiler, int continue_target,
+                     int local_count_at_start, int continue_local_count) {
     if (compiler->loop_count >= MAX_LOOP_NESTING) {
         error(compiler, "too many nested loops");
         return 0;
     }
     LoopContext* loop = &compiler->loops[compiler->loop_count++];
     loop->continue_target = continue_target;
+    loop->local_count_at_start = local_count_at_start;
+    loop->continue_local_count = continue_local_count;
     loop->break_count = 0;
     return 1;
 }
@@ -187,6 +192,10 @@ static void emit_break(Compiler* compiler) {
         error(compiler, "too many break statements in loop");
         return;
     }
+    int pops = compiler->local_count - loop->local_count_at_start;
+    for (int i = 0; i < pops; i++) {
+        emit_byte(compiler, OP_POP);
+    }
     loop->break_patches[loop->break_count++] = emit_jump(compiler, OP_JMP);
 }
 
@@ -196,6 +205,10 @@ static void emit_continue(Compiler* compiler) {
         return;
     }
     LoopContext* loop = &compiler->loops[compiler->loop_count - 1];
+    int pops = compiler->local_count - loop->continue_local_count;
+    for (int i = 0; i < pops; i++) {
+        emit_byte(compiler, OP_POP);
+    }
     int offset = emit_jump(compiler, OP_JMP);
     patch_jump_to(compiler, offset, loop->continue_target);
 }
@@ -491,7 +504,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_WHILE: {
             WhileStmt* w = &stmt->as.while_stmt;
             int loop_start = compiler->chunk->count;
-            if (!push_loop(compiler, loop_start)) return;
+            int start_count = compiler->local_count;
+            if (!push_loop(compiler, loop_start, start_count, start_count)) return;
             compile_expr(compiler, w->condition);
             if (compiler->had_error) return;
             int exit_jump = emit_jump(compiler, OP_JZ);
@@ -501,6 +515,60 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             patch_jump_to(compiler, back, loop_start);
             patch_jump(compiler, exit_jump);
             pop_loop(compiler);
+            break;
+        }
+        case STMT_FOREACH: {
+            ForeachStmt* f = &stmt->as.foreach_stmt;
+            int start_count = compiler->local_count;
+            compile_expr(compiler, f->iterable);
+            if (compiler->had_error) return;
+            int array_slot = add_local(compiler, "__fe_array", 12, &type_unknown);
+            if (array_slot < 0) { error(compiler, "too many locals"); return; }
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)array_slot);
+            emit_constant(compiler, value_int(0));
+            int idx_slot = add_local(compiler, "__fe_idx", 9, &type_int);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_constant(compiler, value_int(0));
+            int var_slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)var_slot);
+            int loop_start = compiler->chunk->count;
+            if (!push_loop(compiler, loop_start, start_count, start_count + 3)) return;
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)array_slot);
+            int len_native = native_find("length");
+            emit_byte(compiler, OP_NATIVE_CALL);
+            emit_u16(compiler, (uint16_t)len_native);
+            emit_byte(compiler, 1);
+            emit_byte(compiler, OP_LT);
+            int exit_jump = emit_jump(compiler, OP_JZ);
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)array_slot);
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_byte(compiler, OP_INDEX_GET);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)var_slot);
+            emit_byte(compiler, OP_POP);
+            compile_block(compiler, f->body);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_constant(compiler, value_int(1));
+            emit_byte(compiler, OP_ADD);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_byte(compiler, OP_POP);
+            int back = emit_jump(compiler, OP_JMP);
+            patch_jump_to(compiler, back, loop_start);
+            patch_jump(compiler, exit_jump);
+            pop_loop(compiler);
+            for (int i = 0; i < 3; i++) emit_byte(compiler, OP_POP);
+            compiler->local_count = start_count;
             break;
         }
         case STMT_BREAK:

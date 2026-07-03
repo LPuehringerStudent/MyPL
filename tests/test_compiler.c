@@ -148,6 +148,30 @@ TEST(compiler_compiles_while_continue) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_foreach_range) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int s = 0; for i in range(0, 5) { s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(10, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_foreach_array) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int s = 0; array<int> a = [2, 3, 4]; for i in a { s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(9, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_unary_minus) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -938,6 +962,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_while_loop);
     RUN_TEST(compiler_compiles_while_break);
     RUN_TEST(compiler_compiles_while_continue);
+    RUN_TEST(compiler_compiles_foreach_range);
+    RUN_TEST(compiler_compiles_foreach_array);
     RUN_TEST(compiler_compiles_unary_minus);
     RUN_TEST(compiler_compiles_unary_not);
     RUN_TEST(compiler_compiles_unary_not_true);

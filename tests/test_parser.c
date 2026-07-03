@@ -218,6 +218,25 @@ TEST(parser_parses_for_sql_loop_with_param) {
     free_program(program);
 }
 
+TEST(parser_parses_foreach_loop) {
+    Program* program = parse("proc main() -> int { for i in range(0, 3) { return 0; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_FOREACH, stmt->kind);
+    ASSERT_STRING_EQ("i", stmt->as.foreach_stmt.var_name);
+    ASSERT_INT_EQ(EXPR_CALL, stmt->as.foreach_stmt.iterable->kind);
+    free_program(program);
+}
+
+TEST(parser_parses_foreach_over_array_variable) {
+    Program* program = parse("proc main() -> int { array<int> a = [1, 2]; for i in a { return 0; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[1];
+    ASSERT_INT_EQ(STMT_FOREACH, stmt->kind);
+    ASSERT_INT_EQ(EXPR_VARIABLE, stmt->as.foreach_stmt.iterable->kind);
+    free_program(program);
+}
+
 TEST(parser_parses_call_expression) {
     Expr* expr = parse_expression("foo()");
     ASSERT_PTR_NOT_NULL(expr);
@@ -414,6 +433,8 @@ int main(void) {
     RUN_TEST(parser_parses_return_statement);
     RUN_TEST(parser_parses_for_sql_loop);
     RUN_TEST(parser_parses_for_sql_loop_with_param);
+    RUN_TEST(parser_parses_foreach_loop);
+    RUN_TEST(parser_parses_foreach_over_array_variable);
     RUN_TEST(parser_parses_call_expression);
     RUN_TEST(parser_parses_procedure_parameters);
     RUN_TEST(parser_reports_error_for_missing_brace);

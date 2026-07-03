@@ -478,6 +478,32 @@ static int native_replace(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_range(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "range expects two ints");
+        return 0;
+    }
+    int start = argv[0].as.as_int;
+    int end = argv[1].as.as_int;
+    if (end < start) end = start;
+    ArrayObj* arr = array_new();
+    if (arr == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = start; i < end; i++) {
+        if (!array_append(arr, value_int(i))) {
+            array_free(arr);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    *out = value_array(arr);
+    return 1;
+}
+
 static int native_repeat(VM* vm, int argc, Value* argv, Value* out) {
     (void)argc;
     if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT) {
@@ -528,6 +554,7 @@ static NativeDef natives[] = {
     {"join", 2, native_join},
     {"replace", 3, native_replace},
     {"repeat", 2, native_repeat},
+    {"range", 2, native_range},
     {NULL,      0, NULL}
 };
 

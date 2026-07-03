@@ -652,13 +652,9 @@ static Stmt* continue_statement(Parser* parser) {
     return stmt;
 }
 
-static Stmt* for_statement(Parser* parser) {
-    Token kw = parser->previous;  /* 'for' was just consumed */
-    advance(parser); /* iterator name */
-    char* var_name = copy_token_lexeme(&parser->previous);
-    advance(parser); /* in */
+static Stmt* sql_for_statement(Parser* parser, Token kw, char* var_name) {
+    Token sql_token = parser->current;
     advance(parser); /* SQL query */
-    Token sql_token = parser->previous;
 
     int sql_len = sql_token.length;
     while (sql_len > 0) {
@@ -733,6 +729,36 @@ static Stmt* for_statement(Parser* parser) {
     stmt->loc.column = kw.column;
     free(var_name);
     free(sql);
+    return stmt;
+}
+
+static Stmt* for_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'for' was just consumed */
+    advance(parser); /* iterator name */
+    char* var_name = copy_token_lexeme(&parser->previous);
+    if (!match(parser, TOKEN_IN)) {
+        free(var_name);
+        error_at_current(parser, "expected 'in' after iterator variable");
+        return NULL;
+    }
+    if (check(parser, TOKEN_SQL_QUERY)) {
+        return sql_for_statement(parser, kw, var_name);
+    }
+    Expr* iterable = expression(parser);
+    if (iterable == NULL) {
+        free(var_name);
+        return NULL;
+    }
+    Block* body = block(parser);
+    if (body == NULL) {
+        free_expr(iterable);
+        free(var_name);
+        return NULL;
+    }
+    Stmt* stmt = create_foreach_stmt(var_name, iterable, body);
+    stmt->loc.line = kw.line;
+    stmt->loc.column = kw.column;
+    free(var_name);
     return stmt;
 }
 
