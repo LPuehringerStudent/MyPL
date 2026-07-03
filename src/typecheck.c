@@ -200,7 +200,11 @@ static int is_native(const char* name) {
            strcmp(name, "join") == 0 ||
            strcmp(name, "replace") == 0 ||
            strcmp(name, "repeat") == 0 ||
-           strcmp(name, "range") == 0;
+           strcmp(name, "range") == 0 ||
+           strcmp(name, "assert") == 0 ||
+           strcmp(name, "parse_int") == 0 ||
+           strcmp(name, "split_lines") == 0 ||
+           strcmp(name, "join_paths") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -504,6 +508,59 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "range expects int arguments");
         }
         return transient_array_type(tc, &type_int);
+    }
+    if (strcmp(name, "assert") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "assert expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL &&
+            a->kind != TYPE_BOOL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "assert expects bool or int condition");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "assert expects string message");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "parse_int") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "parse_int expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "parse_int expects a string");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "split_lines") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "split_lines expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "split_lines expects a string");
+        }
+        return transient_array_type(tc, &type_string);
+    }
+    if (strcmp(name, "join_paths") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "join_paths expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "join_paths expects string arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "join_paths expects string arguments");
+        }
+        return &type_string;
     }
     return NULL;
 }

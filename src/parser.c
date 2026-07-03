@@ -297,6 +297,30 @@ static Expr* unary(Parser* parser) {
     return expr;
 }
 
+/* Convert a raw string literal body (without quotes) into an unescaped
+   C string. The returned pointer must be freed by the caller. */
+static char* unescape_string(const char* raw, int len) {
+    char* out = malloc((size_t)len + 1);
+    if (out == NULL) return NULL;
+    int j = 0;
+    for (int i = 0; i < len; i++) {
+        if (raw[i] == '\\' && i + 1 < len) {
+            switch (raw[i + 1]) {
+                case 'n': out[j++] = '\n'; i++; break;
+                case 't': out[j++] = '\t'; i++; break;
+                case 'r': out[j++] = '\r'; i++; break;
+                case '\\': out[j++] = '\\'; i++; break;
+                case '"': out[j++] = '"'; i++; break;
+                default: out[j++] = raw[i]; break;
+            }
+        } else {
+            out[j++] = raw[i];
+        }
+    }
+    out[j] = '\0';
+    return out;
+}
+
 static Expr* literal_bool(Parser* parser) {
     int v = parser->previous.type == TOKEN_TRUE ? 1 : 0;
     Expr* expr = create_literal_expr(value_bool(v));
@@ -317,10 +341,8 @@ static Expr* number(Parser* parser) {
     } else if (parser->previous.type == TOKEN_STRING) {
         int len = parser->previous.length - 2; /* without quotes */
         if (len < 0) len = 0;
-        char* str = malloc((size_t)len + 1);
+        char* str = unescape_string(parser->previous.start + 1, len);
         if (str == NULL) return create_literal_expr(value_int(0));
-        memcpy(str, parser->previous.start + 1, (size_t)len);
-        str[len] = '\0';
         expr = create_literal_expr(value_string(str));
     } else {
         int value = 0;
