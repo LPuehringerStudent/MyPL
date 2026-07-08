@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 
+#include "diagnostics.h"
 #include "sql_engine.h"
 #include "typecheck.h"
 
@@ -10,11 +11,19 @@
 #define MAX_SCOPES 64
 #define MAX_TRANSIENTS 256
 #define MAX_ROWS 16
+#define MAX_STRUCTS 64
 
 typedef struct {
     const char* name;
     Type* type;
 } Local;
+
+typedef struct {
+    char* name;
+    char** field_names;
+    Type** field_types;
+    int field_count;
+} StructInfo;
 
 typedef struct {
     const char* var_name;
@@ -33,6 +42,7 @@ typedef struct {
     int scope_count;
     Type* return_type;
     struct Context* ctx;
+    const char* source_path;
     char* error;
     size_t error_size;
     int had_error;
@@ -40,6 +50,8 @@ typedef struct {
     int transient_count;
     RowBinding rows[MAX_ROWS];
     int row_count;
+    StructInfo structs[MAX_STRUCTS];
+    int struct_count;
 } TypeChecker;
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
@@ -48,13 +60,13 @@ static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
         tc->had_error = 1;
         return;
     }
+    char msg[512];
     va_list args;
     va_start(args, fmt);
-    snprintf(tc->error, tc->error_size,
-             "Type error at line %d:%d: ", loc.line, loc.column);
-    size_t prefix_len = strlen(tc->error);
-    vsnprintf(tc->error + prefix_len, tc->error_size - prefix_len, fmt, args);
+    vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
+    format_error(tc->error, tc->error_size, tc->source_path,
+                 loc.line, loc.column, msg);
     tc->had_error = 1;
 }
 
@@ -109,6 +121,40 @@ static RowBinding* find_row(TypeChecker* tc, const char* var_name) {
         if (strcmp(tc->rows[i].var_name, var_name) == 0) return &tc->rows[i];
     }
     return NULL;
+}
+
+static StructInfo* find_struct(TypeChecker* tc, const char* name) {
+    for (int i = 0; i < tc->struct_count; i++) {
+        if (strcmp(tc->structs[i].name, name) == 0) return &tc->structs[i];
+    }
+    return NULL;
+}
+
+static Type* struct_field_type(TypeChecker* tc, const char* struct_name, const char* field_name);
+static Type* transient_array_type(TypeChecker* tc, Type* element_type);
+
+static Type* struct_field_type(TypeChecker* tc, const char* struct_name, const char* field_name) {
+    StructInfo* info = find_struct(tc, struct_name);
+    if (info == NULL) return NULL;
+    for (int i = 0; i < info->field_count; i++) {
+        if (strcmp(info->field_names[i], field_name) == 0) {
+            return info->field_types[i];
+        }
+    }
+    return NULL;
+}
+
+static Type* make_struct_type(TypeChecker* tc, const char* name) {
+    Type* t = transient_array_type(tc, NULL);
+    if (t == NULL) return NULL;
+    /* transient_array_type returns TYPE_ARRAY; repurpose the allocation. */
+    t->kind = TYPE_STRUCT;
+    t->element_type = NULL;
+    t->struct_name = strdup(name);
+    t->field_names = NULL;
+    t->field_types = NULL;
+    t->field_count = 0;
+    return t;
 }
 
 static Type* sql_type_to_type(int sql_type) {
@@ -177,14 +223,26 @@ static int is_native(const char* name) {
     return strcmp(name, "length") == 0 ||
            strcmp(name, "append") == 0 ||
            strcmp(name, "println") == 0 ||
+           strcmp(name, "print") == 0 ||
+           strcmp(name, "read_line") == 0 ||
            strcmp(name, "clock") == 0 ||
            strcmp(name, "concat") == 0 ||
            strcmp(name, "substring") == 0 ||
            strcmp(name, "contains") == 0 ||
            strcmp(name, "index_of") == 0 ||
+           strcmp(name, "find") == 0 ||
+           strcmp(name, "slice") == 0 ||
+           strcmp(name, "remove_at") == 0 ||
+           strcmp(name, "insert") == 0 ||
            strcmp(name, "to_upper") == 0 ||
            strcmp(name, "to_lower") == 0 ||
            strcmp(name, "trim") == 0 ||
+           strcmp(name, "trim_start") == 0 ||
+           strcmp(name, "trim_end") == 0 ||
+           strcmp(name, "starts_with") == 0 ||
+           strcmp(name, "ends_with") == 0 ||
+           strcmp(name, "char_at") == 0 ||
+           strcmp(name, "reverse_string") == 0 ||
            strcmp(name, "int_to_string") == 0 ||
            strcmp(name, "float_to_string") == 0 ||
            strcmp(name, "abs_int") == 0 ||
@@ -193,6 +251,12 @@ static int is_native(const char* name) {
            strcmp(name, "max_int") == 0 ||
            strcmp(name, "min_float") == 0 ||
            strcmp(name, "max_float") == 0 ||
+           strcmp(name, "pow") == 0 ||
+           strcmp(name, "sqrt") == 0 ||
+           strcmp(name, "round") == 0 ||
+           strcmp(name, "floor") == 0 ||
+           strcmp(name, "ceil") == 0 ||
+           strcmp(name, "mod") == 0 ||
            strcmp(name, "read_file") == 0 ||
            strcmp(name, "write_file") == 0 ||
            strcmp(name, "file_exists") == 0 ||
@@ -205,6 +269,12 @@ static int is_native(const char* name) {
            strcmp(name, "sort") == 0 ||
            strcmp(name, "reverse") == 0 ||
            strcmp(name, "clamp") == 0 ||
+           strcmp(name, "env_get") == 0 ||
+           strcmp(name, "sleep") == 0 ||
+           strcmp(name, "random_int") == 0 ||
+           strcmp(name, "array_fill") == 0 ||
+           strcmp(name, "pad_start") == 0 ||
+           strcmp(name, "pad_end") == 0 ||
            strcmp(name, "assert") == 0 ||
            strcmp(name, "parse_int") == 0 ||
            strcmp(name, "split_lines") == 0 ||
@@ -240,13 +310,20 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return a;
     }
-    if (strcmp(name, "println") == 0) {
+    if (strcmp(name, "println") == 0 || strcmp(name, "print") == 0) {
         if (arg_count != 1) {
-            type_error(tc, loc, "println expects 1 argument");
+            type_error(tc, loc, "%s expects 1 argument", name);
             return NULL;
         }
         (void)infer_expr(tc, args[0], NULL);
         return &type_int;
+    }
+    if (strcmp(name, "read_line") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "read_line expects 0 arguments");
+            return NULL;
+        }
+        return &type_string;
     }
     if (strcmp(name, "clock") == 0) {
         if (arg_count != 0) {
@@ -296,17 +373,86 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         Type* a = infer_expr(tc, args[0], NULL);
         Type* b = infer_expr(tc, args[1], NULL);
-        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
-            type_error(tc, loc, "%s expects string arguments", name);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING && !type_is_array(a)) {
+            type_error(tc, loc, "%s expects a string or array as first argument", name);
         }
-        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+        if (a != NULL && a->kind == TYPE_STRING && b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
             type_error(tc, loc, "%s expects string arguments", name);
         }
         return strcmp(name, "contains") == 0 ? &type_bool : &type_int;
     }
+    if (strcmp(name, "slice") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "slice expects 3 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        Type* c = infer_expr(tc, args[2], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "slice expects an array");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "slice expects int start");
+        }
+        if (c != &type_unknown && c != NULL && c->kind != TYPE_INT) {
+            type_error(tc, loc, "slice expects int end");
+        }
+        return a;
+    }
+    if (strcmp(name, "remove_at") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "remove_at expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "remove_at expects an array");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "remove_at expects an int index");
+        }
+        return a;
+    }
+    if (strcmp(name, "find") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "find expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        (void)infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "find expects an array");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "insert") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "insert expects 3 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "insert expects an array");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "insert expects an int index");
+        }
+        if (a != NULL && type_is_array(a)) {
+            (void)infer_expr(tc, args[2], a->element_type);
+        } else {
+            (void)infer_expr(tc, args[2], NULL);
+        }
+        return a;
+    }
     if (strcmp(name, "to_upper") == 0 ||
         strcmp(name, "to_lower") == 0 ||
-        strcmp(name, "trim") == 0) {
+        strcmp(name, "trim") == 0 ||
+        strcmp(name, "trim_start") == 0 ||
+        strcmp(name, "trim_end") == 0 ||
+        strcmp(name, "reverse_string") == 0) {
         if (arg_count != 1) {
             type_error(tc, loc, "%s expects 1 argument", name);
             return NULL;
@@ -314,6 +460,36 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* a = infer_expr(tc, args[0], NULL);
         if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
             type_error(tc, loc, "%s expects a string", name);
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "starts_with") == 0 || strcmp(name, "ends_with") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "%s expects 2 arguments", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects string arguments", name);
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects string arguments", name);
+        }
+        return &type_bool;
+    }
+    if (strcmp(name, "char_at") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "char_at expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "char_at expects a string");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "char_at expects an int index");
         }
         return &type_string;
     }
@@ -390,6 +566,51 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "%s expects float arguments", name);
         }
         return &type_float;
+    }
+    if (strcmp(name, "pow") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "pow expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT && a->kind != TYPE_FLOAT) {
+            type_error(tc, loc, "pow expects numeric arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT && b->kind != TYPE_FLOAT) {
+            type_error(tc, loc, "pow expects numeric arguments");
+        }
+        return &type_float;
+    }
+    if (strcmp(name, "sqrt") == 0 || strcmp(name, "round") == 0 ||
+        strcmp(name, "floor") == 0 || strcmp(name, "ceil") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "%s expects 1 argument", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT && a->kind != TYPE_FLOAT) {
+            type_error(tc, loc, "%s expects a number", name);
+        }
+        if (strcmp(name, "sqrt") == 0) {
+            return &type_float;
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "mod") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "mod expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "mod expects int arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "mod expects int arguments");
+        }
+        return &type_int;
     }
     if (strcmp(name, "read_file") == 0) {
         if (arg_count != 1) {
@@ -638,6 +859,74 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return has_float ? &type_float : &type_int;
     }
+    if (strcmp(name, "env_get") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "env_get expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "env_get expects a string");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "sleep") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "sleep expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "sleep expects an int");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "random_int") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "random_int expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "random_int expects int arguments");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "random_int expects int arguments");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "array_fill") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "array_fill expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "array_fill expects an int count");
+        }
+        return transient_array_type(tc, b != NULL ? b : &type_unknown);
+    }
+    if (strcmp(name, "pad_start") == 0 || strcmp(name, "pad_end") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "%s expects 3 arguments", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        Type* c = infer_expr(tc, args[2], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects a string", name);
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "%s expects an int length", name);
+        }
+        if (c != &type_unknown && c != NULL && c->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects a string pad", name);
+        }
+        return &type_string;
+    }
     return NULL;
 }
 
@@ -861,11 +1150,47 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
         case EXPR_ROW_FIELD: {
             Type* base = infer_expr(tc, expr->as.row_field.row, NULL);
             if (tc->had_error) return NULL;
+            if (base != NULL && base->kind == TYPE_STRUCT) {
+                Type* ft = struct_field_type(tc, base->struct_name, expr->as.row_field.field);
+                if (ft == NULL) {
+                    type_error(tc, expr->loc, "Unknown field '%s' on struct '%s'",
+                               expr->as.row_field.field,
+                               base->struct_name != NULL ? base->struct_name : "?");
+                    return &type_unknown;
+                }
+                return ft;
+            }
             if (base == NULL || base->kind != TYPE_ROW) {
                 type_error(tc, expr->loc, "Cannot access field on non-row expression");
                 return &type_unknown;
             }
             return &type_unknown;
+        }
+
+        case EXPR_STRUCT_LITERAL: {
+            StructLiteralExpr* sl = &expr->as.struct_literal;
+            StructInfo* info = find_struct(tc, sl->struct_name);
+            if (info == NULL) {
+                type_error(tc, expr->loc, "Unknown struct '%s'", sl->struct_name);
+                return &type_unknown;
+            }
+            for (int i = 0; i < sl->field_count; i++) {
+                Type* expected = struct_field_type(tc, sl->struct_name, sl->field_names[i]);
+                if (expected == NULL) {
+                    type_error(tc, expr->loc, "Unknown field '%s' on struct '%s'",
+                               sl->field_names[i], sl->struct_name);
+                    return &type_unknown;
+                }
+                Type* actual = infer_expr(tc, sl->values[i], expected);
+                if (tc->had_error) return &type_unknown;
+                if (!types_assignable(expected, actual)) {
+                    type_error(tc, sl->values[i]->loc,
+                               "Field '%s' expects %s but got %s",
+                               sl->field_names[i], type_name(expected), type_name(actual));
+                    return &type_unknown;
+                }
+            }
+            return make_struct_type(tc, sl->struct_name);
         }
     }
 
@@ -963,6 +1288,29 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         case STMT_BREAK:
         case STMT_CONTINUE:
             break;
+
+        case STMT_FOR_C: {
+            CForStmt* cf = &stmt->as.cfor_stmt;
+            if (cf->init != NULL) {
+                check_stmt(tc, cf->init);
+                if (tc->had_error) return;
+            }
+            if (cf->condition != NULL) {
+                Type* cond = infer_expr(tc, cf->condition, NULL);
+                if (tc->had_error) return;
+                if (!is_condition_type(cond)) {
+                    type_error(tc, stmt->loc,
+                               "For condition must be bool or numeric");
+                    return;
+                }
+            }
+            if (cf->step != NULL) {
+                check_stmt(tc, cf->step);
+                if (tc->had_error) return;
+            }
+            check_block(tc, cf->body);
+            break;
+        }
 
         case STMT_FOR: {
             if (!push_scope(tc)) {
@@ -1117,6 +1465,7 @@ int typecheck_program(Program* program,
                       ProcSignature* procs,
                       int proc_count,
                       struct Context* ctx,
+                      const char* source_path,
                       char* error,
                       size_t error_size) {
     if (error != NULL && error_size > 0) {
@@ -1125,15 +1474,26 @@ int typecheck_program(Program* program,
 
     if (program == NULL) {
         if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Type error: program is NULL");
+            format_error(error, error_size, source_path, 0, 0,
+                         "Type error: program is NULL");
         }
         return 0;
     }
 
     TypeChecker tc = {0};
     tc.ctx = ctx;
+    tc.source_path = source_path;
     tc.error = error;
     tc.error_size = error_size;
+
+    for (int i = 0; i < program->struct_count && tc.struct_count < MAX_STRUCTS; i++) {
+        StructDecl* decl = &program->structs[i];
+        StructInfo* info = &tc.structs[tc.struct_count++];
+        info->name = decl->name;
+        info->field_names = decl->field_names;
+        info->field_types = decl->field_types;
+        info->field_count = decl->field_count;
+    }
 
     if (procs == NULL && proc_count > 0) {
         proc_count = 0;
@@ -1145,7 +1505,8 @@ int typecheck_program(Program* program,
         combined_procs = malloc(sizeof(ProcSignature) * combined_count);
         if (combined_procs == NULL) {
             if (error != NULL && error_size > 0) {
-                snprintf(error, error_size, "Type error: out of memory");
+                format_error(error, error_size, source_path, 0, 0,
+                             "Type error: out of memory");
             }
             return 0;
         }
@@ -1158,7 +1519,8 @@ int typecheck_program(Program* program,
                 }
                 free(combined_procs);
                 if (error != NULL && error_size > 0) {
-                    snprintf(error, error_size, "Type error: out of memory");
+                    format_error(error, error_size, source_path, 0, 0,
+                                 "Type error: out of memory");
                 }
                 return 0;
             }

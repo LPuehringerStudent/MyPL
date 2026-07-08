@@ -119,6 +119,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 8 && memcmp(lexer->start, "continue", 8) == 0) return TOKEN_CONTINUE;
             break;
         case 'd':
+            if (length == 2 && memcmp(lexer->start, "do", 2) == 0) return TOKEN_DO;
             if (length == 6 && memcmp(lexer->start, "delete", 6) == 0) return TOKEN_DELETE;
             if (length == 4 && memcmp(lexer->start, "drop", 4) == 0) return TOKEN_DROP;
             break;
@@ -151,6 +152,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "SELECT", 6) == 0) return TOKEN_SQL_QUERY;
             break;
         case 's':
+            if (length == 6 && memcmp(lexer->start, "struct", 6) == 0) return TOKEN_STRUCT;
             if (length == 6 && memcmp(lexer->start, "select", 6) == 0) return TOKEN_SQL_QUERY;
             if (length == 3 && memcmp(lexer->start, "set", 3) == 0) return TOKEN_SET;
             if (length == 6 && memcmp(lexer->start, "string", 6) == 0) return TOKEN_STRING_TYPE;

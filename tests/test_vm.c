@@ -708,16 +708,17 @@ TEST(vm_reports_source_line_on_runtime_error) {
 
     int idx = add_constant(&chunk, value_string(strdup("x")));
     int line = 7;
-    write_chunk_line(&chunk, OP_CONST, line);
-    write_chunk_u16_line(&chunk, (uint16_t)idx, line);
-    write_chunk_line(&chunk, OP_NEGATE, line);
-    write_chunk_line(&chunk, OP_RETURN, line);
+    int col = 3;
+    write_chunk_line(&chunk, OP_CONST, line, col);
+    write_chunk_u16_line(&chunk, (uint16_t)idx, line, col);
+    write_chunk_line(&chunk, OP_NEGATE, line, col);
+    write_chunk_line(&chunk, OP_RETURN, line, col);
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
     const char* msg = vm_get_error(vm);
     ASSERT_PTR_NOT_NULL(msg);
-    ASSERT_INT_EQ(1, strstr(msg, "[line 7]") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, "7:3: error:") != NULL);
     vm_free(vm);
     free_chunk(&chunk);
 }

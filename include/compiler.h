@@ -43,6 +43,7 @@ typedef enum {
     OP_ROW_GET,
     OP_SQL_GET_COLUMN,
     OP_SQL_TO_ARRAY,
+    OP_STRUCT_BUILD,
     OP_RUNTIME_ERROR
 } OpCode;
 
@@ -75,19 +76,25 @@ typedef struct {
     int  lines_count;
     int  lines_capacity;
 
+    int* columns;
+    int  columns_count;
+    int  columns_capacity;
+
     Value* constants;
     int    constants_count;
     int    constants_capacity;
+
+    const char* source_path;
 } Chunk;
 
 void init_chunk(Chunk* chunk);
 void free_chunk(Chunk* chunk);
 void write_chunk(Chunk* chunk, uint8_t byte);
-void write_chunk_line(Chunk* chunk, uint8_t byte, int line);
+void write_chunk_line(Chunk* chunk, uint8_t byte, int line, int column);
 int  add_constant(Chunk* chunk, Value value);
 
 void   write_chunk_u16(Chunk* chunk, uint16_t value);
-void   write_chunk_u16_line(Chunk* chunk, uint16_t value, int line);
+void   write_chunk_u16_line(Chunk* chunk, uint16_t value, int line, int column);
 uint16_t read_u16(const uint8_t* bytes);
 
 Value value_int(int v);

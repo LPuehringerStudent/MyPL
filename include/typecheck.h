@@ -17,6 +17,7 @@ int typecheck_program(Program* program,
                       ProcSignature* procs,
                       int proc_count,
                       struct Context* ctx,
+                      const char* source_path,
                       char* error,
                       size_t error_size);
 

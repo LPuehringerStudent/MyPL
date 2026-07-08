@@ -1,11 +1,13 @@
 #include <libgen.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "compiler.h"
+#include "diagnostics.h"
 #include "natives.h"
 #include "os.h"
 #include "parser.h"
@@ -32,6 +34,8 @@ typedef struct {
     int continue_local_count;
     int break_patches[MAX_BREAK_PATCHES];
     int break_count;
+    int continue_patches[MAX_BREAK_PATCHES];
+    int continue_count;
 } LoopContext;
 
 typedef struct {
@@ -65,10 +69,12 @@ typedef struct {
     const char* loading_stack[MAX_LOADING];
     int loading_count;
     char* current_path;
+    const char* source_path;
     struct Context* ctx;
     LoopContext loops[MAX_LOOP_NESTING];
     int loop_count;
     int current_line;
+    int current_column;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -130,16 +136,29 @@ static int add_call_patch(Compiler* compiler, const char* name, int offset) {
 static void error(Compiler* compiler, const char* message) {
     if (compiler->had_error) return;
     compiler->had_error = 1;
-    strncpy(compiler->error_message, message, sizeof(compiler->error_message) - 1);
-    compiler->error_message[sizeof(compiler->error_message) - 1] = '\0';
+    format_error(compiler->error_message, sizeof(compiler->error_message),
+                 compiler->source_path, compiler->current_line,
+                 compiler->current_column, message);
+}
+
+static void compiler_format_error(Compiler* compiler, char* error, size_t error_size,
+                                  const char* fmt, ...) {
+    if (error == NULL || error_size == 0) return;
+    char msg[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    format_error(error, error_size, compiler->source_path,
+                 compiler->current_line, compiler->current_column, msg);
 }
 
 static void emit_byte(Compiler* compiler, uint8_t byte) {
-    write_chunk_line(compiler->chunk, byte, compiler->current_line);
+    write_chunk_line(compiler->chunk, byte, compiler->current_line, compiler->current_column);
 }
 
 static void emit_u16(Compiler* compiler, uint16_t value) {
-    write_chunk_u16_line(compiler->chunk, value, compiler->current_line);
+    write_chunk_u16_line(compiler->chunk, value, compiler->current_line, compiler->current_column);
 }
 
 static int emit_jump(Compiler* compiler, uint8_t op) {
@@ -171,6 +190,7 @@ static int push_loop(Compiler* compiler, int continue_target,
     loop->local_count_at_start = local_count_at_start;
     loop->continue_local_count = continue_local_count;
     loop->break_count = 0;
+    loop->continue_count = 0;
     return 1;
 }
 
@@ -179,6 +199,9 @@ static void pop_loop(Compiler* compiler) {
     int target = compiler->chunk->count;
     for (int i = 0; i < loop->break_count; i++) {
         patch_jump_to(compiler, loop->break_patches[i], target);
+    }
+    for (int i = 0; i < loop->continue_count; i++) {
+        patch_jump_to(compiler, loop->continue_patches[i], loop->continue_target);
     }
     compiler->loop_count--;
 }
@@ -206,12 +229,15 @@ static void emit_continue(Compiler* compiler) {
         return;
     }
     LoopContext* loop = &compiler->loops[compiler->loop_count - 1];
+    if (loop->continue_count >= MAX_BREAK_PATCHES) {
+        error(compiler, "too many continue statements in loop");
+        return;
+    }
     int pops = compiler->local_count - loop->continue_local_count;
     for (int i = 0; i < pops; i++) {
         emit_byte(compiler, OP_POP);
     }
-    int offset = emit_jump(compiler, OP_JMP);
-    patch_jump_to(compiler, offset, loop->continue_target);
+    loop->continue_patches[loop->continue_count++] = emit_jump(compiler, OP_JMP);
 }
 
 static void emit_constant(Compiler* compiler, Value value) {
@@ -301,6 +327,7 @@ static void compile_block(Compiler* compiler, Block* block) {
 static void compile_expr(Compiler* compiler, Expr* expr) {
     if (expr != NULL && expr->loc.line > 0) {
         compiler->current_line = expr->loc.line;
+        compiler->current_column = expr->loc.column;
     }
     switch (expr->kind) {
         case EXPR_LITERAL: {
@@ -448,6 +475,37 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             emit_u16(compiler, (uint16_t)field_idx);
             break;
         }
+        case EXPR_STRUCT_LITERAL: {
+            StructLiteralExpr* sl = &expr->as.struct_literal;
+            for (int i = 0; i < sl->field_count; i++) {
+                compile_expr(compiler, sl->values[i]);
+                if (compiler->had_error) return;
+            }
+            size_t schema_len = 0;
+            for (int i = 0; i < sl->field_count; i++) {
+                if (i > 0) schema_len++;
+                schema_len += strlen(sl->field_names[i]);
+            }
+            char* schema = malloc(schema_len + 1);
+            if (schema == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            schema[0] = '\0';
+            for (int i = 0; i < sl->field_count; i++) {
+                if (i > 0) strcat(schema, ",");
+                strcat(schema, sl->field_names[i]);
+            }
+            int schema_idx = add_constant(compiler->chunk, value_string(schema));
+            if (schema_idx < 0) {
+                free(schema);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_STRUCT_BUILD);
+            emit_u16(compiler, (uint16_t)schema_idx);
+            break;
+        }
         default:
             error(compiler, "unsupported expression");
             break;
@@ -457,6 +515,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
 static void compile_stmt(Compiler* compiler, Stmt* stmt) {
     if (stmt != NULL && stmt->loc.line > 0) {
         compiler->current_line = stmt->loc.line;
+        compiler->current_column = stmt->loc.column;
     }
     switch (stmt->kind) {
         case STMT_VAR_DECL: {
@@ -510,18 +569,32 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         }
         case STMT_WHILE: {
             WhileStmt* w = &stmt->as.while_stmt;
-            int loop_start = compiler->chunk->count;
             int start_count = compiler->local_count;
-            if (!push_loop(compiler, loop_start, start_count, start_count)) return;
-            compile_expr(compiler, w->condition);
-            if (compiler->had_error) return;
-            int exit_jump = emit_jump(compiler, OP_JZ);
-            compile_block(compiler, w->body);
-            if (compiler->had_error) return;
-            int back = emit_jump(compiler, OP_JMP);
-            patch_jump_to(compiler, back, loop_start);
-            patch_jump(compiler, exit_jump);
-            pop_loop(compiler);
+            if (w->is_do_while) {
+                int body_start = compiler->chunk->count;
+                if (!push_loop(compiler, body_start, start_count, start_count)) return;
+                compile_block(compiler, w->body);
+                if (compiler->had_error) return;
+                compile_expr(compiler, w->condition);
+                if (compiler->had_error) return;
+                int exit_jump = emit_jump(compiler, OP_JZ);
+                int back = emit_jump(compiler, OP_JMP);
+                patch_jump_to(compiler, back, body_start);
+                patch_jump(compiler, exit_jump);
+                pop_loop(compiler);
+            } else {
+                int loop_start = compiler->chunk->count;
+                if (!push_loop(compiler, loop_start, start_count, start_count)) return;
+                compile_expr(compiler, w->condition);
+                if (compiler->had_error) return;
+                int exit_jump = emit_jump(compiler, OP_JZ);
+                compile_block(compiler, w->body);
+                if (compiler->had_error) return;
+                int back = emit_jump(compiler, OP_JMP);
+                patch_jump_to(compiler, back, loop_start);
+                patch_jump(compiler, exit_jump);
+                pop_loop(compiler);
+            }
             break;
         }
         case STMT_FOREACH: {
@@ -584,8 +657,50 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_CONTINUE:
             emit_continue(compiler);
             break;
+        case STMT_FOR_C: {
+            CForStmt* cf = &stmt->as.cfor_stmt;
+            int start_count = compiler->local_count;
+
+            if (cf->init != NULL) {
+                compile_stmt(compiler, cf->init);
+                if (compiler->had_error) return;
+            }
+
+            int loop_start = compiler->chunk->count;
+
+            if (cf->condition != NULL) {
+                compile_expr(compiler, cf->condition);
+                if (compiler->had_error) return;
+            } else {
+                emit_constant(compiler, value_bool(1));
+            }
+            int exit_jump = emit_jump(compiler, OP_JZ);
+
+            /* Push loop before body so break/continue are captured; continue
+               target will be set to the step clause once the body is emitted. */
+            if (!push_loop(compiler, loop_start, start_count, start_count)) return;
+
+            compile_block(compiler, cf->body);
+            if (compiler->had_error) return;
+
+            compiler->loops[compiler->loop_count - 1].continue_target = compiler->chunk->count;
+
+            if (cf->step != NULL) {
+                compile_stmt(compiler, cf->step);
+                if (compiler->had_error) return;
+            }
+
+            int back = emit_jump(compiler, OP_JMP);
+            patch_jump_to(compiler, back, loop_start);
+            patch_jump(compiler, exit_jump);
+            pop_loop(compiler);
+
+            compiler->local_count = start_count;
+            break;
+        }
         case STMT_FOR: {
             ForStmt* f = &stmt->as.for_stmt;
+            int start_count = compiler->local_count;
 
             for (int i = 0; i < f->param_count; i++) {
                 compile_expr(compiler, f->params[i]);
@@ -618,6 +733,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_u16(compiler, (uint16_t)stmt->loc.line);
 
             int loop_start = compiler->chunk->count;
+            if (!push_loop(compiler, loop_start, start_count, start_count + 1)) return;
             int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
 
             /* Bind iterator variable to a local slot. The value is unused
@@ -643,6 +759,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             /* Pop the iterator local at loop exit so it does not leak. */
             emit_byte(compiler, OP_POP);
             compiler->local_count--;
+            pop_loop(compiler);
             break;
         }
         case STMT_PRINT: {
@@ -852,17 +969,15 @@ static char* resolve_import_path(const char* base_dir, const char* import_path) 
 static int compiler_load_module(Compiler* compiler, const char* import_path, char* error, size_t error_size) {
     char* resolved = resolve_import_path(compiler->current_path, import_path);
     if (resolved == NULL) {
-        if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Module not found: %s", import_path);
-        }
+        compiler_format_error(compiler, error, error_size,
+                              "Module not found: %s", import_path);
         return 0;
     }
 
     if (is_module_loading(compiler, resolved)) {
         free(resolved);
-        if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Circular import of '%s'", import_path);
-        }
+        compiler_format_error(compiler, error, error_size,
+                              "Circular import of '%s'", import_path);
         return 0;
     }
     if (is_module_loaded(compiler, resolved)) {
@@ -871,34 +986,30 @@ static int compiler_load_module(Compiler* compiler, const char* import_path, cha
     }
     if (compiler->loaded_count >= MAX_MODULES) {
         free(resolved);
-        if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Too many imported modules");
-        }
+        compiler_format_error(compiler, error, error_size,
+                              "Too many imported modules");
         return 0;
     }
     if (!os_file_exists(resolved)) {
         free(resolved);
-        if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Module not found: %s", import_path);
-        }
+        compiler_format_error(compiler, error, error_size,
+                              "Module not found: %s", import_path);
         return 0;
     }
 
     char* source = os_read_file(resolved);
     if (source == NULL) {
         free(resolved);
-        if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Could not read module: %s", import_path);
-        }
+        compiler_format_error(compiler, error, error_size,
+                              "Could not read module: %s", import_path);
         return 0;
     }
 
     if (compiler->loading_count >= MAX_LOADING) {
         free(resolved);
         free(source);
-        if (error != NULL && error_size > 0) {
-            snprintf(error, error_size, "Too many nested imports");
-        }
+        compiler_format_error(compiler, error, error_size,
+                              "Too many nested imports");
         return 0;
     }
     compiler->loading_stack[compiler->loading_count++] = resolved;
@@ -917,7 +1028,7 @@ static int compiler_load_module(Compiler* compiler, const char* import_path, cha
 
 static int do_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
     char parse_error[256] = {0};
-    Program* program = parse(source, parse_error, sizeof(parse_error));
+    Program* program = parse_with_path(source, compiler->source_path, parse_error, sizeof(parse_error));
     if (program == NULL) {
         if (error != NULL && error_size > 0) {
             strncpy(error, parse_error, error_size - 1);
@@ -927,7 +1038,10 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
 
     for (int i = 0; i < program->import_count; i++) {
-        const char* path = program->imports[i]->as.import_stmt.path;
+        Stmt* import_stmt = program->imports[i];
+        const char* path = import_stmt->as.import_stmt.path;
+        compiler->current_line = import_stmt->loc.line;
+        compiler->current_column = import_stmt->loc.column;
         if (!compiler_load_module(compiler, path, error, error_size)) {
             free_program(program);
             return 0;
@@ -946,11 +1060,14 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         if (idx < 0) {
             if (error != NULL && error_size > 0) {
                 if (idx == -1) {
-                    snprintf(error, error_size, "Out of memory registering procedure '%s'", proc->name);
+                    compiler_format_error(compiler, error, error_size,
+                                          "Out of memory registering procedure '%s'", proc->name);
                 } else if (idx == -2) {
-                    snprintf(error, error_size, "Duplicate procedure '%s'", proc->name);
+                    compiler_format_error(compiler, error, error_size,
+                                          "Duplicate procedure '%s'", proc->name);
                 } else {
-                    snprintf(error, error_size, "Too many procedures");
+                    compiler_format_error(compiler, error, error_size,
+                                          "Too many procedures");
                 }
             }
             free_program(program);
@@ -963,10 +1080,7 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
 
     ProcSignature* sigs = malloc(sizeof(ProcSignature) * (size_t)compiler->proc_count);
     if (sigs == NULL) {
-        if (error != NULL && error_size > 0) {
-            strncpy(error, "out of memory", error_size - 1);
-            error[error_size - 1] = '\0';
-        }
+        compiler_format_error(compiler, error, error_size, "out of memory");
         free_program(program);
         return 0;
     }
@@ -977,7 +1091,8 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         sigs[i].param_count = compiler->procs[i].param_count;
     }
 
-    if (!typecheck_program(program, sigs, compiler->proc_count, compiler->ctx, error, error_size)) {
+    if (!typecheck_program(program, sigs, compiler->proc_count, compiler->ctx,
+                           compiler->source_path, error, error_size)) {
         free(sigs);
         free_program(program);
         return 0;
@@ -1011,14 +1126,17 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
 
 static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, const char* path, char* error, size_t error_size) {
     char* saved = compiler->current_path;
+    const char* saved_source = compiler->source_path;
     char* dir = NULL;
     if (path != NULL) {
         dir = path_directory(path);
         compiler->current_path = dir;
+        compiler->source_path = path;
     }
     int ok = do_compile_source(compiler, source, is_main, error, error_size);
     if (dir != NULL) free(dir);
     compiler->current_path = saved;
+    compiler->source_path = saved_source;
     return ok;
 }
 
@@ -1035,8 +1153,12 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.loaded_count = 0;
     compiler.loading_count = 0;
     compiler.current_path = NULL;
+    compiler.source_path = path;
     compiler.ctx = ctx;
     compiler.loop_count = 0;
+    compiler.current_line = 0;
+    compiler.current_column = 0;
+    chunk->source_path = path;
 
     if (chunk->count == 0) {
         emit_byte(&compiler, OP_CALL);
@@ -1057,8 +1179,8 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
 
     if (compiler.entry_index < 0) {
         if (error != NULL && error_size > 0) {
-            strncpy(error, "No main procedure", error_size - 1);
-            error[error_size - 1] = '\0';
+            format_error(error, error_size, compiler.source_path, 0, 0,
+                         "No main procedure");
         }
         free_proc_entries(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -1072,7 +1194,9 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
         int idx = find_proc(&compiler, compiler.patches[i].name);
         if (idx < 0) {
             if (error != NULL && error_size > 0) {
-                snprintf(error, error_size, "Undefined procedure '%s'", compiler.patches[i].name);
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined procedure '%s'", compiler.patches[i].name);
+                format_error(error, error_size, compiler.source_path, 0, 0, msg);
             }
             free_proc_entries(&compiler);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);

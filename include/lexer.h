@@ -4,8 +4,10 @@
 typedef enum {
     /* keywords */
     TOKEN_PROC,
+    TOKEN_STRUCT,
     TOKEN_FOR,
     TOKEN_WHILE,
+    TOKEN_DO,
     TOKEN_IF,
     TOKEN_ELSE,
     TOKEN_RETURN,

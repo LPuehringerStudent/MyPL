@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "vm.h"
+#include "diagnostics.h"
 #include "natives.h"
 #include "sql_engine.h"
 
@@ -55,13 +56,17 @@ static int current_line(VM* vm) {
     return vm->chunk->lines[offset];
 }
 
+static int current_column(VM* vm) {
+    if (vm->chunk == NULL || vm->chunk->columns == NULL || vm->ip == NULL) return 0;
+    int offset = (int)(vm->ip - vm->chunk->code) - 1;
+    if (offset < 0 || offset >= vm->chunk->columns_count) return 0;
+    return vm->chunk->columns[offset];
+}
+
 static void set_runtime_error(VM* vm, const char* message) {
-    int line = current_line(vm);
-    if (line > 0) {
-        snprintf(vm->error_message, sizeof(vm->error_message), "[line %d] %s", line, message);
-    } else {
-        snprintf(vm->error_message, sizeof(vm->error_message), "%s", message);
-    }
+    format_error(vm->error_message, sizeof(vm->error_message),
+                 vm->chunk != NULL ? vm->chunk->source_path : NULL,
+                 current_line(vm), current_column(vm), message);
 }
 
 static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
@@ -74,14 +79,15 @@ static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
     }
 }
 
+/* Note: this helper is used by natives and other callers that want to set an
+ * error from C code. It uses the current bytecode location when available. */
+
 static void set_runtime_error_sql(VM* vm, const char* message) {
-    if (vm->sql_line > 0) {
-        char msg[512];
-        snprintf(msg, sizeof(msg), "SQL error at line %d: %s", vm->sql_line, message);
-        set_runtime_error(vm, msg);
-    } else {
-        set_runtime_error(vm, message);
-    }
+    char msg[512];
+    snprintf(msg, sizeof(msg), "SQL error: %s", message);
+    format_error(vm->error_message, sizeof(vm->error_message),
+                 vm->chunk != NULL ? vm->chunk->source_path : NULL,
+                 vm->sql_line, 0, msg);
 }
 
 static void set_runtime_error_from_driver_sql(VM* vm, const char* prefix) {
@@ -855,6 +861,75 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 vm->row_handle = NULL;
                 if (!push(vm, value_array(array))) {
                     value_release(value_array(array));
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_STRUCT_BUILD: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value schema_value = vm->chunk->constants[idx];
+                if (schema_value.type != VAL_STRING || schema_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid struct schema");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                const char* schema = schema_value.as.as_string;
+                int field_count = 0;
+                for (const char* p = schema; *p != '\0'; p++) {
+                    if (*p == ',') field_count++;
+                }
+                if (field_count > 0) field_count++;
+                else if (schema[0] != '\0') field_count = 1;
+
+                RowObj* row = row_obj_new(field_count);
+                if (row == NULL) {
+                    set_runtime_error(vm, "out of memory");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                Value* fields = malloc(sizeof(Value) * (size_t)(field_count > 0 ? field_count : 1));
+                if (fields == NULL && field_count > 0) {
+                    row_obj_free(row);
+                    set_runtime_error(vm, "out of memory");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                for (int i = field_count - 1; i >= 0; i--) {
+                    if (!pop(vm, &fields[i])) {
+                        for (int j = i + 1; j < field_count; j++) value_release(fields[j]);
+                        free(fields);
+                        row_obj_free(row);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                }
+
+                const char* p = schema;
+                int i = 0;
+                while (*p != '\0') {
+                    const char* start = p;
+                    while (*p != '\0' && *p != ',') p++;
+                    size_t len = (size_t)(p - start);
+                    char* name = malloc(len + 1);
+                    if (name == NULL) {
+                        for (int j = 0; j < field_count; j++) value_release(fields[j]);
+                        free(fields);
+                        row_obj_free(row);
+                        set_runtime_error(vm, "out of memory");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    memcpy(name, start, len);
+                    name[len] = '\0';
+                    row_obj_set_column(row, i, name, fields[i]);
+                    free(name);
+                    i++;
+                    if (*p == ',') p++;
+                }
+
+                free(fields);
+                Value result = value_row(row);
+                if (!push(vm, result)) {
+                    value_release(result);
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 break;
