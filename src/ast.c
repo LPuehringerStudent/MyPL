@@ -3,15 +3,17 @@
 
 #include "ast.h"
 
-Type type_int      = { TYPE_INT,    NULL };
-Type type_float    = { TYPE_FLOAT,  NULL };
-Type type_string   = { TYPE_STRING, NULL };
-Type type_bool     = { TYPE_BOOL,   NULL };
-Type type_row      = { TYPE_ROW,    NULL };
-Type type_unknown  = { TYPE_UNKNOWN, NULL };
+static char* copy_string(const char* source);
+
+Type type_int      = { .kind = TYPE_INT    };
+Type type_float    = { .kind = TYPE_FLOAT  };
+Type type_string   = { .kind = TYPE_STRING };
+Type type_bool     = { .kind = TYPE_BOOL   };
+Type type_row      = { .kind = TYPE_ROW    };
+Type type_unknown  = { .kind = TYPE_UNKNOWN};
 
 Type* type_new(TypeKind kind, Type* element_type) {
-    Type* t = malloc(sizeof(Type));
+    Type* t = calloc(1, sizeof(Type));
     if (t == NULL) return NULL;
     t->kind = kind;
     t->element_type = element_type;
@@ -24,6 +26,25 @@ Type* type_copy(Type* t) {
         t == &type_bool || t == &type_row || t == &type_unknown) {
         return t;
     }
+    if (t->kind == TYPE_STRUCT) {
+        Type* copy = type_new(TYPE_STRUCT, NULL);
+        if (copy == NULL) return NULL;
+        copy->struct_name = copy_string(t->struct_name);
+        copy->field_count = t->field_count;
+        if (t->field_count > 0) {
+            copy->field_names = malloc(sizeof(char*) * (size_t)t->field_count);
+            copy->field_types = malloc(sizeof(Type*) * (size_t)t->field_count);
+            if (copy->field_names == NULL || copy->field_types == NULL) {
+                type_free(copy);
+                return NULL;
+            }
+            for (int i = 0; i < t->field_count; i++) {
+                copy->field_names[i] = copy_string(t->field_names[i]);
+                copy->field_types[i] = type_copy(t->field_types[i]);
+            }
+        }
+        return copy;
+    }
     return type_new(t->kind, type_copy(t->element_type));
 }
 
@@ -31,6 +52,17 @@ void type_free(Type* t) {
     if (t == NULL) return;
     if (t == &type_int || t == &type_float || t == &type_string ||
         t == &type_bool || t == &type_row || t == &type_unknown) {
+        return;
+    }
+    if (t->kind == TYPE_STRUCT) {
+        free(t->struct_name);
+        for (int i = 0; i < t->field_count; i++) {
+            free(t->field_names[i]);
+            type_free(t->field_types[i]);
+        }
+        free(t->field_names);
+        free(t->field_types);
+        free(t);
         return;
     }
     type_free(t->element_type);
@@ -42,6 +74,10 @@ int type_equals(Type* a, Type* b) {
     if (a == NULL || b == NULL) return 0;
     if (a->kind != b->kind) return 0;
     if (a->kind == TYPE_ARRAY) return type_equals(a->element_type, b->element_type);
+    if (a->kind == TYPE_STRUCT) {
+        if (a->struct_name == NULL || b->struct_name == NULL) return 0;
+        return strcmp(a->struct_name, b->struct_name) == 0;
+    }
     return 1;
 }
 
@@ -63,6 +99,7 @@ const char* type_name(Type* t) {
         case TYPE_BOOL:   return "bool";
         case TYPE_ARRAY:  return "array";
         case TYPE_ROW:    return "row";
+        case TYPE_STRUCT: return t->struct_name != NULL ? t->struct_name : "struct";
         case TYPE_UNKNOWN: return "unknown";
     }
     return "unknown";
@@ -82,6 +119,9 @@ Program* create_program(void) {
     program->imports = NULL;
     program->import_count = 0;
     program->import_capacity = 0;
+    program->structs = NULL;
+    program->struct_count = 0;
+    program->struct_capacity = 0;
     program->procs = NULL;
     program->proc_count = 0;
     return program;
@@ -131,6 +171,15 @@ void free_expr(Expr* expr) {
             free_expr(expr->as.row_field.row);
             free(expr->as.row_field.field);
             break;
+        case EXPR_STRUCT_LITERAL:
+            free(expr->as.struct_literal.struct_name);
+            for (int i = 0; i < expr->as.struct_literal.field_count; i++) {
+                free(expr->as.struct_literal.field_names[i]);
+                free_expr(expr->as.struct_literal.values[i]);
+            }
+            free(expr->as.struct_literal.field_names);
+            free(expr->as.struct_literal.values);
+            break;
         default:
             break;
     }
@@ -173,6 +222,17 @@ void free_program(Program* program) {
         free_stmt(program->imports[i]);
     }
     free(program->imports);
+    for (int i = 0; i < program->struct_count; i++) {
+        StructDecl* s = &program->structs[i];
+        free(s->name);
+        for (int j = 0; j < s->field_count; j++) {
+            free(s->field_names[j]);
+            type_free(s->field_types[j]);
+        }
+        free(s->field_names);
+        free(s->field_types);
+    }
+    free(program->structs);
     for (int i = 0; i < program->proc_count; i++) {
         free(program->procs[i].name);
         free_block(program->procs[i].body);
@@ -246,6 +306,12 @@ void free_stmt(Stmt* stmt) {
             break;
         case STMT_EXPR:
             free_expr(stmt->as.expr_stmt.value);
+            break;
+        case STMT_FOR_C:
+            if (stmt->as.cfor_stmt.init != NULL) free_stmt(stmt->as.cfor_stmt.init);
+            free_expr(stmt->as.cfor_stmt.condition);
+            if (stmt->as.cfor_stmt.step != NULL) free_stmt(stmt->as.cfor_stmt.step);
+            free_block(stmt->as.cfor_stmt.body);
             break;
         case STMT_IMPORT:
             free(stmt->as.import_stmt.path);
@@ -385,6 +451,14 @@ Stmt* create_while_stmt(Expr* condition, Block* body) {
     stmt->kind = STMT_WHILE;
     stmt->as.while_stmt.condition = condition;
     stmt->as.while_stmt.body = body;
+    stmt->as.while_stmt.is_do_while = 0;
+    return stmt;
+}
+
+Stmt* create_do_while_stmt(Expr* condition, Block* body) {
+    Stmt* stmt = create_while_stmt(condition, body);
+    if (stmt == NULL) return NULL;
+    stmt->as.while_stmt.is_do_while = 1;
     return stmt;
 }
 
@@ -437,6 +511,24 @@ Stmt* create_expr_stmt(Expr* value) {
     stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_EXPR;
     stmt->as.expr_stmt.value = value;
+    return stmt;
+}
+
+Stmt* create_cfor_stmt(Stmt* init, Expr* condition, Stmt* step, Block* body) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        if (init != NULL) free_stmt(init);
+        free_expr(condition);
+        if (step != NULL) free_stmt(step);
+        free_block(body);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_FOR_C;
+    stmt->as.cfor_stmt.init = init;
+    stmt->as.cfor_stmt.condition = condition;
+    stmt->as.cfor_stmt.step = step;
+    stmt->as.cfor_stmt.body = body;
     return stmt;
 }
 
@@ -654,5 +746,26 @@ Expr* create_row_field_expr(Expr* row, const char* field) {
         free(expr);
         return NULL;
     }
+    return expr;
+}
+
+Expr* create_struct_literal_expr(const char* struct_name, char** field_names, Expr** values, int field_count) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        free((char*)struct_name);
+        for (int i = 0; i < field_count; i++) {
+            free(field_names[i]);
+            free_expr(values[i]);
+        }
+        free(field_names);
+        free(values);
+        return NULL;
+    }
+    expr->loc = (SourceLoc){0, 0};
+    expr->kind = EXPR_STRUCT_LITERAL;
+    expr->as.struct_literal.struct_name = copy_string(struct_name);
+    expr->as.struct_literal.field_names = field_names;
+    expr->as.struct_literal.values = values;
+    expr->as.struct_literal.field_count = field_count;
     return expr;
 }

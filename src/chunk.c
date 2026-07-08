@@ -13,9 +13,13 @@ void init_chunk(Chunk* chunk) {
     chunk->lines = NULL;
     chunk->lines_count = 0;
     chunk->lines_capacity = 0;
+    chunk->columns = NULL;
+    chunk->columns_count = 0;
+    chunk->columns_capacity = 0;
     chunk->constants = NULL;
     chunk->constants_count = 0;
     chunk->constants_capacity = 0;
+    chunk->source_path = NULL;
 }
 
 void free_chunk(Chunk* chunk) {
@@ -26,11 +30,12 @@ void free_chunk(Chunk* chunk) {
     }
     free(chunk->code);
     free(chunk->lines);
+    free(chunk->columns);
     free(chunk->constants);
     init_chunk(chunk);
 }
 
-void write_chunk_line(Chunk* chunk, uint8_t byte, int line) {
+void write_chunk_line(Chunk* chunk, uint8_t byte, int line, int column) {
     if (chunk->count >= chunk->capacity) {
         chunk->capacity = grow_capacity(chunk->capacity);
         uint8_t* new_code = realloc(chunk->code, (size_t)chunk->capacity);
@@ -47,10 +52,18 @@ void write_chunk_line(Chunk* chunk, uint8_t byte, int line) {
         chunk->lines = new_lines;
     }
     chunk->lines[chunk->lines_count++] = line;
+
+    if (chunk->columns_count >= chunk->columns_capacity) {
+        chunk->columns_capacity = grow_capacity(chunk->columns_capacity);
+        int* new_columns = realloc(chunk->columns, sizeof(int) * (size_t)chunk->columns_capacity);
+        if (new_columns == NULL) return;
+        chunk->columns = new_columns;
+    }
+    chunk->columns[chunk->columns_count++] = column;
 }
 
 void write_chunk(Chunk* chunk, uint8_t byte) {
-    write_chunk_line(chunk, byte, 0);
+    write_chunk_line(chunk, byte, 0, 0);
 }
 
 int add_constant(Chunk* chunk, Value value) {
@@ -67,13 +80,13 @@ int add_constant(Chunk* chunk, Value value) {
     return chunk->constants_count - 1;
 }
 
-void write_chunk_u16_line(Chunk* chunk, uint16_t value, int line) {
-    write_chunk_line(chunk, (uint8_t)((value >> 8) & 0xFF), line);
-    write_chunk_line(chunk, (uint8_t)(value & 0xFF), line);
+void write_chunk_u16_line(Chunk* chunk, uint16_t value, int line, int column) {
+    write_chunk_line(chunk, (uint8_t)((value >> 8) & 0xFF), line, column);
+    write_chunk_line(chunk, (uint8_t)(value & 0xFF), line, column);
 }
 
 void write_chunk_u16(Chunk* chunk, uint16_t value) {
-    write_chunk_u16_line(chunk, value, 0);
+    write_chunk_u16_line(chunk, value, 0, 0);
 }
 
 uint16_t read_u16(const uint8_t* bytes) {

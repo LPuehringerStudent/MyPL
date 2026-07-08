@@ -164,6 +164,29 @@ TEST(parser_parses_continue_statement) {
     free_program(program);
 }
 
+TEST(parser_parses_do_while_statement) {
+    Program* program = parse("proc main() -> int { do { x = x + 1; } while x < 10; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_WHILE, stmt->kind);
+    ASSERT_INT_EQ(1, stmt->as.while_stmt.is_do_while);
+    ASSERT_PTR_NOT_NULL(stmt->as.while_stmt.condition);
+    ASSERT_PTR_NOT_NULL(stmt->as.while_stmt.body);
+    free_program(program);
+}
+
+TEST(parser_parses_cfor_statement) {
+    Program* program = parse("proc main() -> int { for (int i = 0; i < 10; i = i + 1) { return 0; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_FOR_C, stmt->kind);
+    ASSERT_PTR_NOT_NULL(stmt->as.cfor_stmt.init);
+    ASSERT_PTR_NOT_NULL(stmt->as.cfor_stmt.condition);
+    ASSERT_PTR_NOT_NULL(stmt->as.cfor_stmt.step);
+    ASSERT_PTR_NOT_NULL(stmt->as.cfor_stmt.body);
+    free_program(program);
+}
+
 TEST(parser_parses_else_branch) {
     Program* program = parse("proc main() -> int { if 0 { return 1; } else { return 2; } }", NULL, 0);
     ASSERT_PTR_NOT_NULL(program);
@@ -263,7 +286,8 @@ TEST(parser_reports_error_for_missing_brace) {
     char error[256];
     Program* program = parse("proc main() -> int { return 1; ", error, sizeof(error));
     ASSERT_PTR_NULL(program);
-    ASSERT_PTR_NOT_NULL(strstr(error, "Parse error at line 1:"));
+    ASSERT_PTR_NOT_NULL(strstr(error, "1:"));
+    ASSERT_PTR_NOT_NULL(strstr(error, ": error:"));
 }
 
 TEST(parser_reports_error_location_on_correct_line) {
@@ -274,7 +298,8 @@ TEST(parser_reports_error_location_on_correct_line) {
         "}",
         error, sizeof(error));
     ASSERT_PTR_NULL(program);
-    ASSERT_PTR_NOT_NULL(strstr(error, "Parse error at line 2:"));
+    ASSERT_PTR_NOT_NULL(strstr(error, "2:"));
+    ASSERT_PTR_NOT_NULL(strstr(error, ": error:"));
 }
 
 TEST(parser_parses_bool_literal_true) {
@@ -439,6 +464,8 @@ int main(void) {
     RUN_TEST(parser_parses_while_statement);
     RUN_TEST(parser_parses_break_statement);
     RUN_TEST(parser_parses_continue_statement);
+    RUN_TEST(parser_parses_do_while_statement);
+    RUN_TEST(parser_parses_cfor_statement);
     RUN_TEST(parser_parses_else_branch);
     RUN_TEST(parser_parses_else_if_chain);
     RUN_TEST(parser_parses_return_statement);

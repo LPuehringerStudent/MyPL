@@ -356,6 +356,80 @@ TEST(natives_repeat_rejects_non_int_count) {
     ASSERT_INT_EQ(0, run_native_string("repeat", 2, argv, &out));
 }
 
+TEST(natives_starts_with_returns_true_for_prefix) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello world"));
+    argv[1] = value_string(strdup("hello"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("starts_with", 2, argv, &out));
+    ASSERT_INT_EQ(VAL_BOOL, out.type);
+    ASSERT_INT_EQ(1, out.as.as_int);
+}
+
+TEST(natives_starts_with_returns_false_for_non_prefix) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello world"));
+    argv[1] = value_string(strdup("world"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("starts_with", 2, argv, &out));
+    ASSERT_INT_EQ(VAL_BOOL, out.type);
+    ASSERT_INT_EQ(0, out.as.as_int);
+}
+
+TEST(natives_ends_with_returns_true_for_suffix) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello world"));
+    argv[1] = value_string(strdup("world"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("ends_with", 2, argv, &out));
+    ASSERT_INT_EQ(VAL_BOOL, out.type);
+    ASSERT_INT_EQ(1, out.as.as_int);
+}
+
+TEST(natives_ends_with_returns_false_for_non_suffix) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello world"));
+    argv[1] = value_string(strdup("hello"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("ends_with", 2, argv, &out));
+    ASSERT_INT_EQ(VAL_BOOL, out.type);
+    ASSERT_INT_EQ(0, out.as.as_int);
+}
+
+TEST(natives_char_at_returns_character) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello"));
+    argv[1] = value_int(1);
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("char_at", 2, argv, &out));
+    ASSERT_INT_EQ(VAL_STRING, out.type);
+    ASSERT_STRING_EQ("e", out.as.as_string);
+}
+
+TEST(natives_char_at_rejects_out_of_bounds) {
+    Value argv[2];
+    argv[0] = value_string(strdup("hello"));
+    argv[1] = value_int(10);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("char_at", 2, argv, &out));
+}
+
+TEST(natives_reverse_string_reverses) {
+    Value argv[1];
+    argv[0] = value_string(strdup("hello"));
+    Value out;
+    ASSERT_INT_EQ(1, run_native_string("reverse_string", 1, argv, &out));
+    ASSERT_INT_EQ(VAL_STRING, out.type);
+    ASSERT_STRING_EQ("olleh", out.as.as_string);
+}
+
+TEST(natives_reverse_string_rejects_non_string) {
+    Value argv[1];
+    argv[0] = value_int(1);
+    Value out;
+    ASSERT_INT_EQ(0, run_native_string("reverse_string", 1, argv, &out));
+}
+
 int main(void) {
     RUN_TEST(strings_value_add_concatenates);
     RUN_TEST(strings_value_lt_compares_lexicographically);
@@ -394,5 +468,13 @@ int main(void) {
     RUN_TEST(natives_repeat_returns_empty_for_zero_count);
     RUN_TEST(natives_repeat_rejects_non_string);
     RUN_TEST(natives_repeat_rejects_non_int_count);
+    RUN_TEST(natives_starts_with_returns_true_for_prefix);
+    RUN_TEST(natives_starts_with_returns_false_for_non_prefix);
+    RUN_TEST(natives_ends_with_returns_true_for_suffix);
+    RUN_TEST(natives_ends_with_returns_false_for_non_suffix);
+    RUN_TEST(natives_char_at_returns_character);
+    RUN_TEST(natives_char_at_rejects_out_of_bounds);
+    RUN_TEST(natives_reverse_string_reverses);
+    RUN_TEST(natives_reverse_string_rejects_non_string);
     TEST_SUMMARY();
 }

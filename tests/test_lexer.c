@@ -86,6 +86,10 @@ TEST(lexer_scans_keywords) {
     ASSERT_INT_EQ(TOKEN_CONTINUE, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 
+    lexer_init(&lexer, "do");
+    ASSERT_INT_EQ(TOKEN_DO, lexer_next_token(&lexer).type);
+    ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
+
     lexer_init(&lexer, "in");
     ASSERT_INT_EQ(TOKEN_IN, lexer_next_token(&lexer).type);
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);

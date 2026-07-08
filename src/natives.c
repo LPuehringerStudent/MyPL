@@ -2,10 +2,12 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "compiler.h"
 #include "os.h"
@@ -53,6 +55,38 @@ static int native_println(VM* vm, int argc, Value* argv, Value* out) {
     value_print(argv[0]);
     printf("\n");
     *out = value_int(0);
+    return 1;
+}
+
+static int native_print(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    value_print(argv[0]);
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_read_line(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    (void)argv;
+    char buf[1024];
+    if (fgets(buf, sizeof(buf), stdin) == NULL) {
+        *out = value_string(strdup(""));
+        return 1;
+    }
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len - 1] == '\n') {
+        buf[len - 1] = '\0';
+        len--;
+    }
+    char* line = malloc(len + 1);
+    if (line == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    memcpy(line, buf, len + 1);
+    *out = value_string(line);
     return 1;
 }
 
@@ -110,30 +144,89 @@ static int native_substring(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int value_equal_values(Value a, Value b) {
+    if (a.type != b.type) return 0;
+    switch (a.type) {
+        case VAL_INT:    return a.as.as_int == b.as.as_int;
+        case VAL_FLOAT:  return a.as.as_float == b.as.as_float;
+        case VAL_BOOL:   return a.as.as_int == b.as.as_int;
+        case VAL_STRING: {
+            const char* as = a.as.as_string ? a.as.as_string : "";
+            const char* bs = b.as.as_string ? b.as.as_string : "";
+            return strcmp(as, bs) == 0;
+        }
+        case VAL_ARRAY:  return a.as.as_array == b.as.as_array;
+    }
+    return 0;
+}
+
 static int native_contains(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
-    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
-        vm_set_error(vm, "contains expects two strings");
-        return 0;
+    if (argv[0].type == VAL_STRING && argv[1].type == VAL_STRING) {
+        const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
+        const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
+        *out = value_bool(strstr(hay, needle) != NULL);
+        return 1;
     }
-    const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
-    const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
-    *out = value_bool(strstr(hay, needle) != NULL);
-    return 1;
+    if (argv[0].type == VAL_ARRAY) {
+        ArrayObj* arr = argv[0].as.as_array;
+        int len = array_length(arr);
+        for (int i = 0; i < len; i++) {
+            if (value_equal_values(array_get(arr, i), argv[1])) {
+                *out = value_bool(1);
+                return 1;
+            }
+        }
+        *out = value_bool(0);
+        return 1;
+    }
+    vm_set_error(vm, "contains expects (string, string) or (array, any)");
+    return 0;
 }
 
 static int native_index_of(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
-    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
-        vm_set_error(vm, "index_of expects two strings");
+    if (argv[0].type == VAL_STRING && argv[1].type == VAL_STRING) {
+        const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
+        const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
+        const char* found = strstr(hay, needle);
+        *out = value_int(found != NULL ? (int)(found - hay) : -1);
+        return 1;
+    }
+    if (argv[0].type == VAL_ARRAY) {
+        ArrayObj* arr = argv[0].as.as_array;
+        int len = array_length(arr);
+        for (int i = 0; i < len; i++) {
+            if (value_equal_values(array_get(arr, i), argv[1])) {
+                *out = value_int(i);
+                return 1;
+            }
+        }
+        *out = value_int(-1);
+        return 1;
+    }
+    vm_set_error(vm, "index_of expects (string, string) or (array, any)");
+    return 0;
+}
+
+static int native_array_find(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY) {
+        vm_set_error(vm, "find expects an array");
         return 0;
     }
-    const char* hay = argv[0].as.as_string ? argv[0].as.as_string : "";
-    const char* needle = argv[1].as.as_string ? argv[1].as.as_string : "";
-    const char* found = strstr(hay, needle);
-    *out = value_int(found != NULL ? (int)(found - hay) : -1);
+    ArrayObj* arr = argv[0].as.as_array;
+    int len = array_length(arr);
+    for (int i = 0; i < len; i++) {
+        if (value_equal_values(array_get(arr, i), argv[1])) {
+            *out = value_int(i);
+            return 1;
+        }
+    }
+    *out = value_int(-1);
     return 1;
 }
 
@@ -177,6 +270,46 @@ static int native_to_lower(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_trim_start(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "trim_start expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    while (isspace((unsigned char)*s)) s++;
+    char* buf = strdup(s);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_trim_end(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "trim_end expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* end = s + strlen(s);
+    while (end > s && isspace((unsigned char)*(end - 1))) end--;
+    size_t len = (size_t)(end - s);
+    char* buf = malloc(len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    memcpy(buf, s, len);
+    buf[len] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
 static int native_trim(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
@@ -195,6 +328,77 @@ static int native_trim(VM* vm, int argc, Value* argv, Value* out) {
         return 0;
     }
     memcpy(buf, s, len);
+    buf[len] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_starts_with(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "starts_with expects two strings");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* prefix = argv[1].as.as_string ? argv[1].as.as_string : "";
+    size_t len_s = strlen(s);
+    size_t len_p = strlen(prefix);
+    *out = value_bool(len_p <= len_s && strncmp(s, prefix, len_p) == 0);
+    return 1;
+}
+
+static int native_ends_with(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "ends_with expects two strings");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* suffix = argv[1].as.as_string ? argv[1].as.as_string : "";
+    size_t len_s = strlen(s);
+    size_t len_x = strlen(suffix);
+    *out = value_bool(len_x <= len_s && strcmp(s + len_s - len_x, suffix) == 0);
+    return 1;
+}
+
+static int native_char_at(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "char_at expects (string, int)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int idx = argv[1].as.as_int;
+    int len = (int)strlen(s);
+    if (idx < 0 || idx >= len) {
+        vm_set_error(vm, "char_at: index out of bounds");
+        return 0;
+    }
+    char buf[2] = {s[idx], '\0'};
+    *out = value_string(strdup(buf));
+    return 1;
+}
+
+static int native_reverse_string(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "reverse_string expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    size_t len = strlen(s);
+    char* buf = malloc(len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = s[len - 1 - i];
+    }
     buf[len] = '\0';
     *out = value_string(buf);
     return 1;
@@ -312,6 +516,79 @@ static int native_max_float(VM* vm, int argc, Value* argv, Value* out) {
     double a = argv[0].as.as_float;
     double b = argv[1].as.as_float;
     *out = value_float(a > b ? a : b);
+    return 1;
+}
+
+static int native_pow(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    double base = argv[0].type == VAL_FLOAT ? argv[0].as.as_float : (double)argv[0].as.as_int;
+    double exp = argv[1].type == VAL_FLOAT ? argv[1].as.as_float : (double)argv[1].as.as_int;
+    *out = value_float(pow(base, exp));
+    return 1;
+}
+
+static int native_sqrt(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    double n = argv[0].type == VAL_FLOAT ? argv[0].as.as_float : (double)argv[0].as.as_int;
+    if (n < 0.0) {
+        vm_set_error(vm, "sqrt expects a non-negative number");
+        return 0;
+    }
+    *out = value_float(sqrt(n));
+    return 1;
+}
+
+static int native_round(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_FLOAT && argv[0].type != VAL_INT) {
+        vm_set_error(vm, "round expects a number");
+        return 0;
+    }
+    double n = argv[0].type == VAL_FLOAT ? argv[0].as.as_float : (double)argv[0].as.as_int;
+    *out = value_int((int)round(n));
+    return 1;
+}
+
+static int native_floor(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_FLOAT && argv[0].type != VAL_INT) {
+        vm_set_error(vm, "floor expects a number");
+        return 0;
+    }
+    double n = argv[0].type == VAL_FLOAT ? argv[0].as.as_float : (double)argv[0].as.as_int;
+    *out = value_int((int)floor(n));
+    return 1;
+}
+
+static int native_ceil(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_FLOAT && argv[0].type != VAL_INT) {
+        vm_set_error(vm, "ceil expects a number");
+        return 0;
+    }
+    double n = argv[0].type == VAL_FLOAT ? argv[0].as.as_float : (double)argv[0].as.as_int;
+    *out = value_int((int)ceil(n));
+    return 1;
+}
+
+static int native_mod(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "mod expects two ints");
+        return 0;
+    }
+    int b = argv[1].as.as_int;
+    if (b == 0) {
+        vm_set_error(vm, "mod: division by zero");
+        return 0;
+    }
+    *out = value_int(argv[0].as.as_int % b);
     return 1;
 }
 
@@ -772,6 +1049,124 @@ static int native_reverse(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_slice(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY || argv[1].type != VAL_INT || argv[2].type != VAL_INT) {
+        vm_set_error(vm, "slice expects (array, int, int)");
+        return 0;
+    }
+    ArrayObj* arr = argv[0].as.as_array;
+    int len = array_length(arr);
+    int start = argv[1].as.as_int;
+    int end = argv[2].as.as_int;
+    if (start < 0) start = 0;
+    if (end > len) end = len;
+    if (end < start) end = start;
+    ArrayObj* result = array_new();
+    if (result == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = start; i < end; i++) {
+        Value v = array_get(arr, i);
+        value_retain(v);
+        if (!array_append(result, v)) {
+            value_release(v);
+            array_free(result);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    *out = value_array(result);
+    return 1;
+}
+
+static int native_remove_at(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "remove_at expects (array, int)");
+        return 0;
+    }
+    ArrayObj* arr = argv[0].as.as_array;
+    int len = array_length(arr);
+    int idx = argv[1].as.as_int;
+    if (idx < 0 || idx >= len) {
+        vm_set_error(vm, "remove_at: index out of bounds");
+        return 0;
+    }
+    ArrayObj* result = array_new();
+    if (result == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = 0; i < len; i++) {
+        if (i == idx) continue;
+        Value v = array_get(arr, i);
+        value_retain(v);
+        if (!array_append(result, v)) {
+            value_release(v);
+            array_free(result);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    *out = value_array(result);
+    return 1;
+}
+
+static int native_insert(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "insert expects (array, int, any)");
+        return 0;
+    }
+    ArrayObj* arr = argv[0].as.as_array;
+    int len = array_length(arr);
+    int idx = argv[1].as.as_int;
+    if (idx < 0 || idx > len) {
+        vm_set_error(vm, "insert: index out of bounds");
+        return 0;
+    }
+    ArrayObj* result = array_new();
+    if (result == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = 0; i < len; i++) {
+        if (i == idx) {
+            value_retain(argv[2]);
+            if (!array_append(result, argv[2])) {
+                value_release(argv[2]);
+                array_free(result);
+                vm_set_error(vm, "Out of memory");
+                return 0;
+            }
+        }
+        Value v = array_get(arr, i);
+        value_retain(v);
+        if (!array_append(result, v)) {
+            value_release(v);
+            array_free(result);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    if (idx == len) {
+        value_retain(argv[2]);
+        if (!array_append(result, argv[2])) {
+            value_release(argv[2]);
+            array_free(result);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    *out = value_array(result);
+    return 1;
+}
+
 static int native_clamp(VM* vm, int argc, Value* argv, Value* out) {
     (void)argc;
     if (argc != 3) {
@@ -806,18 +1201,217 @@ static int native_clamp(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_env_get(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "env_get expects a string");
+        return 0;
+    }
+    const char* name = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* value = getenv(name);
+    char* buf = strdup(value != NULL ? value : "");
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_sleep(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT) {
+        vm_set_error(vm, "sleep expects an int");
+        return 0;
+    }
+    int ms = argv[0].as.as_int;
+    if (ms < 0) {
+        vm_set_error(vm, "sleep expects a non-negative duration");
+        return 0;
+    }
+    usleep((useconds_t)(ms * 1000));
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_random_int(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "random_int expects two ints");
+        return 0;
+    }
+    int lo = argv[0].as.as_int;
+    int hi = argv[1].as.as_int;
+    if (lo > hi) {
+        vm_set_error(vm, "random_int: min must be <= max");
+        return 0;
+    }
+    static int seeded = 0;
+    if (!seeded) {
+        srand((unsigned int)time(NULL));
+        seeded = 1;
+    }
+    int range = hi - lo + 1;
+    *out = value_int(lo + (rand() % range));
+    return 1;
+}
+
+static int native_array_fill(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_INT) {
+        vm_set_error(vm, "array_fill expects (int, any)");
+        return 0;
+    }
+    int count = argv[0].as.as_int;
+    if (count < 0) {
+        vm_set_error(vm, "array_fill: count must be non-negative");
+        return 0;
+    }
+    ArrayObj* result = array_new();
+    if (result == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        value_retain(argv[1]);
+        if (!array_append(result, argv[1])) {
+            value_release(argv[1]);
+            array_free(result);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    *out = value_array(result);
+    return 1;
+}
+
+static int native_pad_start(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT || argv[2].type != VAL_STRING) {
+        vm_set_error(vm, "pad_start expects (string, int, string)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int target = argv[1].as.as_int;
+    const char* pad = argv[2].as.as_string ? argv[2].as.as_string : "";
+    if (target < 0) {
+        vm_set_error(vm, "pad_start: target length must be non-negative");
+        return 0;
+    }
+    size_t s_len = strlen(s);
+    if ((int)s_len >= target) {
+        char* buf = strdup(s);
+        if (buf == NULL) {
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        *out = value_string(buf);
+        return 1;
+    }
+    size_t pad_len = strlen(pad);
+    if (pad_len == 0) {
+        char* buf = strdup(s);
+        if (buf == NULL) {
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        *out = value_string(buf);
+        return 1;
+    }
+    size_t needed = (size_t)target - s_len;
+    size_t buf_len = (size_t)target;
+    char* buf = malloc(buf_len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    size_t p = 0;
+    for (size_t i = 0; i < needed; i++) {
+        buf[p++] = pad[i % pad_len];
+    }
+    memcpy(buf + p, s, s_len);
+    buf[buf_len] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
+static int native_pad_end(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_INT || argv[2].type != VAL_STRING) {
+        vm_set_error(vm, "pad_end expects (string, int, string)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int target = argv[1].as.as_int;
+    const char* pad = argv[2].as.as_string ? argv[2].as.as_string : "";
+    if (target < 0) {
+        vm_set_error(vm, "pad_end: target length must be non-negative");
+        return 0;
+    }
+    size_t s_len = strlen(s);
+    if ((int)s_len >= target) {
+        char* buf = strdup(s);
+        if (buf == NULL) {
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        *out = value_string(buf);
+        return 1;
+    }
+    size_t pad_len = strlen(pad);
+    if (pad_len == 0) {
+        char* buf = strdup(s);
+        if (buf == NULL) {
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        *out = value_string(buf);
+        return 1;
+    }
+    size_t needed = (size_t)target - s_len;
+    size_t buf_len = (size_t)target;
+    char* buf = malloc(buf_len + 1);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    memcpy(buf, s, s_len);
+    size_t p = s_len;
+    for (size_t i = 0; i < needed; i++) {
+        buf[p++] = pad[i % pad_len];
+    }
+    buf[buf_len] = '\0';
+    *out = value_string(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
     {"println", 1, native_println},
+    {"print",   1, native_print},
+    {"read_line", 0, native_read_line},
     {"clock",   0, native_clock},
     {"concat",  2, native_concat},
     {"substring", 3, native_substring},
     {"contains", 2, native_contains},
     {"index_of", 2, native_index_of},
+    {"find", 2, native_array_find},
     {"to_upper", 1, native_to_upper},
     {"to_lower", 1, native_to_lower},
     {"trim",    1, native_trim},
+    {"trim_start", 1, native_trim_start},
+    {"trim_end", 1, native_trim_end},
+    {"starts_with", 2, native_starts_with},
+    {"ends_with", 2, native_ends_with},
+    {"char_at", 2, native_char_at},
+    {"reverse_string", 1, native_reverse_string},
     {"int_to_string", 1, native_int_to_string},
     {"float_to_string", 1, native_float_to_string},
     {"abs_int",   1, native_abs_int},
@@ -826,6 +1420,12 @@ static NativeDef natives[] = {
     {"max_int",   2, native_max_int},
     {"min_float", 2, native_min_float},
     {"max_float", 2, native_max_float},
+    {"pow",       2, native_pow},
+    {"sqrt",      1, native_sqrt},
+    {"round",     1, native_round},
+    {"floor",     1, native_floor},
+    {"ceil",      1, native_ceil},
+    {"mod",       2, native_mod},
     {"read_file", 1, native_read_file},
     {"write_file", 2, native_write_file},
     {"file_exists", 1, native_file_exists},
@@ -837,7 +1437,16 @@ static NativeDef natives[] = {
     {"format", 2, native_format},
     {"sort", 1, native_sort},
     {"reverse", 1, native_reverse},
+    {"slice", 3, native_slice},
+    {"remove_at", 2, native_remove_at},
+    {"insert", 3, native_insert},
+    {"array_fill", 2, native_array_fill},
     {"clamp", 3, native_clamp},
+    {"env_get", 1, native_env_get},
+    {"sleep", 1, native_sleep},
+    {"random_int", 2, native_random_int},
+    {"pad_start", 3, native_pad_start},
+    {"pad_end", 3, native_pad_end},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

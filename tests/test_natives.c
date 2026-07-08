@@ -428,6 +428,128 @@ TEST(natives_reverse_array) {
     vm_free(vm);
 }
 
+TEST(natives_contains_finds_array_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    array_append(arr, value_int(2));
+    array_append(arr, value_int(3));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(2);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("contains"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_contains_returns_false_for_missing_array_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    array_append(arr, value_int(2));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(3);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("contains"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(0, result.as.as_int);
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_index_of_returns_array_index) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(10));
+    array_append(arr, value_int(20));
+    array_append(arr, value_int(30));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(20);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("index_of"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_index_of_returns_minus_one_for_missing_array_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(10));
+    array_append(arr, value_int(20));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(30);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("index_of"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(-1, result.as.as_int);
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_slice_returns_subarray) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    array_append(arr, value_int(2));
+    array_append(arr, value_int(3));
+    array_append(arr, value_int(4));
+    Value argv[3];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(1);
+    argv[2] = value_int(3);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("slice"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(2, array_length(result.as.as_array));
+    ASSERT_INT_EQ(2, array_get(result.as.as_array, 0).as.as_int);
+    ASSERT_INT_EQ(3, array_get(result.as.as_array, 1).as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_remove_at_returns_array_without_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    array_append(arr, value_int(2));
+    array_append(arr, value_int(3));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(1);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("remove_at"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(2, array_length(result.as.as_array));
+    ASSERT_INT_EQ(1, array_get(result.as.as_array, 0).as.as_int);
+    ASSERT_INT_EQ(3, array_get(result.as.as_array, 1).as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_remove_at_rejects_out_of_bounds) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(1));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(5);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("remove_at"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
 TEST(natives_clamp_int_within_range) {
     VM* vm = vm_init();
     Value argv[3];
@@ -480,6 +602,351 @@ TEST(natives_clamp_rejects_string) {
     vm_free(vm);
 }
 
+TEST(natives_pow_returns_float) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(2);
+    argv[1] = value_int(3);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("pow"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_float == 8.0);
+    vm_free(vm);
+}
+
+TEST(natives_sqrt_returns_float) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(16);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("sqrt"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_FLOAT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_float == 4.0);
+    vm_free(vm);
+}
+
+TEST(natives_sqrt_rejects_negative) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(-1);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("sqrt"), 1, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_round_returns_int) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_float(3.7);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("round"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(4, result.as.as_int);
+    vm_free(vm);
+}
+
+TEST(natives_floor_returns_int) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_float(3.9);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("floor"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(3, result.as.as_int);
+    vm_free(vm);
+}
+
+TEST(natives_ceil_returns_int) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_float(3.1);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("ceil"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(4, result.as.as_int);
+    vm_free(vm);
+}
+
+TEST(natives_mod_returns_int) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(10);
+    argv[1] = value_int(3);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("mod"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    vm_free(vm);
+}
+
+TEST(natives_mod_rejects_division_by_zero) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(10);
+    argv[1] = value_int(0);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("mod"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_find_returns_index_of_existing_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(10));
+    array_append(arr, value_int(20));
+    array_append(arr, value_int(30));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(20);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("find"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_find_returns_minus_one_for_missing_element) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(10));
+    array_append(arr, value_int(20));
+    Value argv[2];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(30);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("find"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(-1, result.as.as_int);
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_insert_adds_element_at_index) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(10));
+    array_append(arr, value_int(30));
+    Value argv[3];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(1);
+    argv[2] = value_int(20);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("insert"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(3, array_length(result.as.as_array));
+    ASSERT_INT_EQ(10, array_get(result.as.as_array, 0).as.as_int);
+    ASSERT_INT_EQ(20, array_get(result.as.as_array, 1).as.as_int);
+    ASSERT_INT_EQ(30, array_get(result.as.as_array, 2).as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_insert_rejects_out_of_bounds) {
+    VM* vm = vm_init();
+    ArrayObj* arr = array_new();
+    array_append(arr, value_int(10));
+    Value argv[3];
+    argv[0] = value_array(arr);
+    argv[1] = value_int(5);
+    argv[2] = value_int(20);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("insert"), 3, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    value_release(argv[0]);
+    vm_free(vm);
+}
+
+TEST(natives_trim_start_removes_leading_whitespace) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_string(strdup("  hello  "));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("trim_start"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("hello  ", result.as.as_string);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_trim_end_removes_trailing_whitespace) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_string(strdup("  hello  "));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("trim_end"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("  hello", result.as.as_string);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_trim_start_rejects_non_string) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(123);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("trim_start"), 1, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_env_get_returns_variable_value) {
+    setenv("MYPL_TEST_VAR", "hello", 1);
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_string(strdup("MYPL_TEST_VAR"));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("env_get"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("hello", result.as.as_string);
+    value_release(argv[0]);
+    value_release(result);
+    vm_free(vm);
+    unsetenv("MYPL_TEST_VAR");
+}
+
+TEST(natives_env_get_rejects_non_string) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(123);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("env_get"), 1, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_sleep_returns_success) {
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_int(10);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("sleep"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    vm_free(vm);
+}
+
+TEST(natives_random_int_returns_value_in_range) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(1);
+    argv[1] = value_int(10);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("random_int"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_INT, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int >= 1);
+    ASSERT_INT_EQ(1, result.as.as_int <= 10);
+    vm_free(vm);
+}
+
+TEST(natives_random_int_rejects_inverted_range) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(10);
+    argv[1] = value_int(1);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("random_int"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_array_fill_creates_repeated_array) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(3);
+    argv[1] = value_int(7);
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("array_fill"), 2, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(3, array_length(result.as.as_array));
+    for (int i = 0; i < 3; i++) {
+        ASSERT_INT_EQ(7, array_get(result.as.as_array, i).as.as_int);
+    }
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_array_fill_rejects_negative_count) {
+    VM* vm = vm_init();
+    Value argv[2];
+    argv[0] = value_int(-1);
+    argv[1] = value_int(7);
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("array_fill"), 2, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    vm_free(vm);
+}
+
+TEST(natives_pad_start_pads_on_left) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_string(strdup("42"));
+    argv[1] = value_int(5);
+    argv[2] = value_string(strdup("0"));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("pad_start"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("00042", result.as.as_string);
+    value_release(argv[0]);
+    value_release(argv[2]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_pad_end_pads_on_right) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_string(strdup("42"));
+    argv[1] = value_int(5);
+    argv[2] = value_string(strdup("0"));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("pad_end"), 3, argv, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("42000", result.as.as_string);
+    value_release(argv[0]);
+    value_release(argv[2]);
+    value_release(result);
+    vm_free(vm);
+}
+
+TEST(natives_pad_start_rejects_non_string) {
+    VM* vm = vm_init();
+    Value argv[3];
+    argv[0] = value_int(42);
+    argv[1] = value_int(5);
+    argv[2] = value_string(strdup("0"));
+    Value result;
+    ASSERT_INT_EQ(0, native_call(vm, native_find("pad_start"), 3, argv, &result));
+    ASSERT_PTR_NOT_NULL(vm_get_error(vm));
+    value_release(argv[2]);
+    vm_free(vm);
+}
+
+TEST(natives_read_line_reads_from_stdin) {
+    FILE* saved_stdin = stdin;
+    FILE* fp = tmpfile();
+    ASSERT_PTR_NOT_NULL(fp);
+    fputs("hello\n", fp);
+    rewind(fp);
+    stdin = fp;
+
+    VM* vm = vm_init();
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("read_line"), 0, NULL, &result));
+    ASSERT_INT_EQ(VAL_STRING, result.type);
+    ASSERT_STRING_EQ("hello", result.as.as_string);
+    value_release(result);
+    vm_free(vm);
+
+    fclose(fp);
+    stdin = saved_stdin;
+}
+
 int main(void) {
     RUN_TEST(natives_finds_registered_functions);
     RUN_TEST(natives_length_returns_array_length);
@@ -512,9 +979,42 @@ int main(void) {
     RUN_TEST(natives_sort_ints_ascending);
     RUN_TEST(natives_sort_strings_ascending);
     RUN_TEST(natives_reverse_array);
+    RUN_TEST(natives_contains_finds_array_element);
+    RUN_TEST(natives_contains_returns_false_for_missing_array_element);
+    RUN_TEST(natives_index_of_returns_array_index);
+    RUN_TEST(natives_index_of_returns_minus_one_for_missing_array_element);
+    RUN_TEST(natives_slice_returns_subarray);
+    RUN_TEST(natives_remove_at_returns_array_without_element);
+    RUN_TEST(natives_remove_at_rejects_out_of_bounds);
     RUN_TEST(natives_clamp_int_within_range);
     RUN_TEST(natives_clamp_int_below_range);
     RUN_TEST(natives_clamp_float_coerces_ints);
     RUN_TEST(natives_clamp_rejects_string);
+    RUN_TEST(natives_pow_returns_float);
+    RUN_TEST(natives_sqrt_returns_float);
+    RUN_TEST(natives_sqrt_rejects_negative);
+    RUN_TEST(natives_round_returns_int);
+    RUN_TEST(natives_floor_returns_int);
+    RUN_TEST(natives_ceil_returns_int);
+    RUN_TEST(natives_mod_returns_int);
+    RUN_TEST(natives_mod_rejects_division_by_zero);
+    RUN_TEST(natives_find_returns_index_of_existing_element);
+    RUN_TEST(natives_find_returns_minus_one_for_missing_element);
+    RUN_TEST(natives_insert_adds_element_at_index);
+    RUN_TEST(natives_insert_rejects_out_of_bounds);
+    RUN_TEST(natives_trim_start_removes_leading_whitespace);
+    RUN_TEST(natives_trim_end_removes_trailing_whitespace);
+    RUN_TEST(natives_trim_start_rejects_non_string);
+    RUN_TEST(natives_env_get_returns_variable_value);
+    RUN_TEST(natives_env_get_rejects_non_string);
+    RUN_TEST(natives_sleep_returns_success);
+    RUN_TEST(natives_random_int_returns_value_in_range);
+    RUN_TEST(natives_random_int_rejects_inverted_range);
+    RUN_TEST(natives_array_fill_creates_repeated_array);
+    RUN_TEST(natives_array_fill_rejects_negative_count);
+    RUN_TEST(natives_pad_start_pads_on_left);
+    RUN_TEST(natives_pad_end_pads_on_right);
+    RUN_TEST(natives_pad_start_rejects_non_string);
+    RUN_TEST(natives_read_line_reads_from_stdin);
     TEST_SUMMARY();
 }

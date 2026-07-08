@@ -11,12 +11,18 @@ typedef enum {
     TYPE_BOOL,
     TYPE_ARRAY,
     TYPE_ROW,
+    TYPE_STRUCT,
     TYPE_UNKNOWN
 } TypeKind;
 
 typedef struct Type {
     TypeKind kind;
     struct Type* element_type;  /* only when kind == TYPE_ARRAY */
+    /* only when kind == TYPE_STRUCT */
+    char* struct_name;
+    char** field_names;
+    struct Type** field_types;
+    int field_count;
 } Type;
 
 extern Type type_int;
@@ -45,7 +51,8 @@ typedef enum {
     EXPR_ARRAY,
     EXPR_INDEX,
     EXPR_SQL_PARAM,
-    EXPR_ROW_FIELD
+    EXPR_ROW_FIELD,
+    EXPR_STRUCT_LITERAL
 } ExprKind;
 
 typedef enum {
@@ -61,6 +68,7 @@ typedef enum {
     STMT_PRINT,
     STMT_INDEX_ASSIGN,
     STMT_EXPR,
+    STMT_FOR_C,
     STMT_IMPORT,
     STMT_SQL_DDL,
     STMT_SQL_DML,
@@ -95,9 +103,19 @@ typedef struct {
 } ImportStmt;
 
 typedef struct {
+    char* name;
+    char** field_names;
+    Type** field_types;
+    int field_count;
+} StructDecl;
+
+typedef struct {
     Stmt** imports;
     int import_count;
     int import_capacity;
+    StructDecl* structs;
+    int struct_count;
+    int struct_capacity;
     ProcDecl* procs;
     int proc_count;
 } Program;
@@ -141,7 +159,15 @@ typedef struct {
 typedef struct {
     Expr* condition;
     Block* body;
+    int is_do_while;
 } WhileStmt;
+
+typedef struct {
+    Stmt* init;
+    Expr* condition;
+    Stmt* step;
+    Block* body;
+} CForStmt;
 
 typedef struct {
     Expr* value;
@@ -187,6 +213,7 @@ struct Stmt {
         PrintStmt print_stmt;
         IndexAssignStmt index_assign;
         ExprStmt expr_stmt;
+        CForStmt cfor_stmt;
         ImportStmt import_stmt;
         SqlStmt sql_stmt;
         SqlTransactionStmt sql_transaction;
@@ -242,6 +269,13 @@ typedef struct {
     char* field;
 } RowFieldExpr;
 
+typedef struct {
+    char* struct_name;
+    char** field_names;
+    Expr** values;
+    int field_count;
+} StructLiteralExpr;
+
 struct Expr {
     ExprKind kind;
     SourceLoc loc;
@@ -256,6 +290,7 @@ struct Expr {
         IndexExpr index;
         SqlParamExpr sql_param;
         RowFieldExpr row_field;
+        StructLiteralExpr struct_literal;
     } as;
 };
 
@@ -277,11 +312,13 @@ Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Expr** params, int param_count, Block* body);
 Stmt* create_foreach_stmt(const char* var_name, Expr* iterable, Block* body);
 Stmt* create_while_stmt(Expr* condition, Block* body);
+Stmt* create_do_while_stmt(Expr* condition, Block* body);
 Stmt* create_break_stmt(void);
 Stmt* create_continue_stmt(void);
 Stmt* create_return_stmt(Expr* value);
 Stmt* create_print_stmt(Expr* value);
 Stmt* create_expr_stmt(Expr* value);
+Stmt* create_cfor_stmt(Stmt* init, Expr* condition, Stmt* step, Block* body);
 Stmt* create_import_stmt(const char* path);
 Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char** into_vars, int into_count);
 Stmt* create_sql_transaction_stmt(int kind);
@@ -296,6 +333,7 @@ Expr* create_array_expr(Expr** elements, int count);
 Expr* create_index_expr(Expr* array, Expr* index);
 Expr* create_sql_param_expr(const char* name);
 Expr* create_row_field_expr(Expr* row, const char* field);
+Expr* create_struct_literal_expr(const char* struct_name, char** field_names, Expr** values, int field_count);
 Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value);
 
 #endif

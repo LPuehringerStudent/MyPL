@@ -148,6 +148,78 @@ TEST(compiler_compiles_while_continue) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_do_while_loop) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int i = 0; int s = 0; do { i = i + 1; s = s + i; } while i < 5; return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(15, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_do_while_runs_once) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int i = 0; do { i = i + 1; } while 0; return i; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_cfor_loop) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int s = 0; for (int i = 0; i < 5; i = i + 1) { s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(10, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_cfor_break) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int s = 0; for (int i = 0; i < 10; i = i + 1) { if i == 5 { break; } s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(10, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_cfor_continue) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int s = 0; for (int i = 0; i < 5; i = i + 1) { if i == 2 { continue; } s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(8, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_cfor_existing_var) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int s = 0; int i = 0; for (i = 0; i < 4; i = i + 1) { s = s + i; } return s; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(6, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_foreach_range) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -408,6 +480,74 @@ TEST(compiler_compiles_for_sql_loop_sum) {
     unlink(path);
 }
 
+TEST(compiler_compiles_for_sql_break) {
+    char path[] = "/tmp/mydb_test_compiler_break_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
+
+    Cell cells[1];
+    for (int i = 1; i <= 3; i++) {
+        cells[0].type = VAL_INT;
+        cells[0].as.as_int = i;
+        catalog_insert(&ctx, t, cells);
+    }
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int sum = 0; for row in SELECT id FROM users { if row.id == 2 { break; } sum = sum + row.id; } return sum; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    vm_set_context(vm, &ctx);
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+    catalog_close(&ctx);
+    unlink(path);
+}
+
+TEST(compiler_compiles_for_sql_continue) {
+    char path[] = "/tmp/mydb_test_compiler_continue_XXXXXX.db";
+    int fd = mkstemp(path);
+    if (fd >= 0) close(fd);
+    unlink(path);
+
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 1);
+    ASSERT_PTR_NOT_NULL(t);
+
+    Cell cells[1];
+    for (int i = 1; i <= 3; i++) {
+        cells[0].type = VAL_INT;
+        cells[0].as.as_int = i;
+        catalog_insert(&ctx, t, cells);
+    }
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { int sum = 0; for row in SELECT id FROM users { if row.id == 2 { continue; } sum = sum + row.id; } return sum; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    vm_set_context(vm, &ctx);
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(4, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+    catalog_close(&ctx);
+    unlink(path);
+}
+
 TEST(compiler_block_scope_does_not_leak_locals) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -520,10 +660,34 @@ TEST(compiler_compiles_array_append) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_struct_literal_and_field) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("struct Point { x int, y int } proc main() -> int { Point p = Point { x = 1, y = 2 }; return p.x; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(1, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_println) {
     Chunk chunk;
     init_chunk(&chunk);
     ASSERT_INT_EQ(1, compile("proc main() -> int { println(42); return 0; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_print) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { print(42); return 0; }", &chunk, NULL, 0));
 
     VM* vm = vm_init();
     ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
@@ -652,7 +816,7 @@ TEST(compiler_rejects_type_mismatch_in_assignment) {
     init_chunk(&chunk);
     char error[256];
     ASSERT_INT_EQ(0, compile("proc main() -> int { int x = \"hello\"; return 0; }", &chunk, error, sizeof(error)));
-    if (strstr(error, "Type error") == NULL || strstr(error, "string") == NULL) {
+    if (strstr(error, ": error:") == NULL || strstr(error, "string") == NULL) {
         FAIL("expected type mismatch error message");
     }
     free_chunk(&chunk);
@@ -991,7 +1155,8 @@ TEST(compiler_reports_source_line_on_native_error) {
     ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
     const char* msg = vm_get_error(vm);
     ASSERT_PTR_NOT_NULL(msg);
-    ASSERT_INT_EQ(1, strstr(msg, "[line 3]") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, "3:") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, ": error:") != NULL);
     ASSERT_INT_EQ(1, strstr(msg, "boom") != NULL);
     vm_free(vm);
     free_chunk(&chunk);
@@ -1071,6 +1236,12 @@ int main(void) {
     RUN_TEST(compiler_compiles_while_loop);
     RUN_TEST(compiler_compiles_while_break);
     RUN_TEST(compiler_compiles_while_continue);
+    RUN_TEST(compiler_compiles_do_while_loop);
+    RUN_TEST(compiler_compiles_do_while_runs_once);
+    RUN_TEST(compiler_compiles_cfor_loop);
+    RUN_TEST(compiler_compiles_cfor_break);
+    RUN_TEST(compiler_compiles_cfor_continue);
+    RUN_TEST(compiler_compiles_cfor_existing_var);
     RUN_TEST(compiler_compiles_foreach_range);
     RUN_TEST(compiler_compiles_foreach_array);
     RUN_TEST(compiler_compiles_parse_int_native);
@@ -1089,6 +1260,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_forward_call_with_arguments);
     RUN_TEST(compiler_compiles_for_sql_loop);
     RUN_TEST(compiler_compiles_for_sql_loop_sum);
+    RUN_TEST(compiler_compiles_for_sql_break);
+    RUN_TEST(compiler_compiles_for_sql_continue);
     RUN_TEST(compiler_compiles_select_into_single_value);
     RUN_TEST(compiler_compiles_select_into_multi_value);
     RUN_TEST(compiler_compiles_select_into_array_row);
@@ -1103,7 +1276,9 @@ int main(void) {
     RUN_TEST(compiler_compiles_index_assignment);
     RUN_TEST(compiler_compiles_array_length);
     RUN_TEST(compiler_compiles_array_append);
+    RUN_TEST(compiler_compiles_struct_literal_and_field);
     RUN_TEST(compiler_compiles_println);
+    RUN_TEST(compiler_compiles_print);
     RUN_TEST(compiler_compiles_clock);
     RUN_TEST(compiler_compiles_imported_procedure);
     RUN_TEST(compiler_reports_original_error_for_bad_import);
