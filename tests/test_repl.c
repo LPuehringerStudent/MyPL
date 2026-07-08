@@ -96,13 +96,13 @@ TEST(repl_reports_single_error_for_invalid_input) {
     char out[4096];
     run_repl("var x = 5;\n.exit\n", out, sizeof(out));
     ASSERT_INT_EQ(1, output_contains(out, "Compile error"));
-    int parse_error_count = 0;
+    int error_count = 0;
     const char* p = out;
-    while ((p = strstr(p, "Parse error")) != NULL) {
-        parse_error_count++;
+    while ((p = strstr(p, ": error:")) != NULL) {
+        error_count++;
         p++;
     }
-    ASSERT_INT_EQ(1, parse_error_count);
+    ASSERT_INT_EQ(1, error_count);
 }
 
 TEST(repl_connects_to_database) {
@@ -111,6 +111,52 @@ TEST(repl_connects_to_database) {
     run_repl(".connect /tmp/repl_test.db\ncreate table t (id int);\n.tables\n.exit\n", out, sizeof(out));
     ASSERT_INT_EQ(1, output_contains(out, "t"));
     remove("/tmp/repl_test.db");
+}
+
+TEST(repl_lists_columns_for_table) {
+    char out[4096];
+    run_repl(".sql CREATE TABLE users (id INT, name STRING)\n"
+             ".columns users\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "users columns:"));
+    ASSERT_INT_EQ(1, output_contains(out, "id int"));
+    ASSERT_INT_EQ(1, output_contains(out, "name string"));
+}
+
+TEST(repl_counts_rows_in_table) {
+    char out[4096];
+    run_repl(".sql CREATE TABLE items (id INT)\n"
+             ".sql INSERT INTO items VALUES (1)\n"
+             ".sql INSERT INTO items VALUES (2)\n"
+             ".count items\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "items: 2 rows"));
+}
+
+TEST(repl_accepts_multiline_block_statement) {
+    char out[4096];
+    run_repl("int x = 0;\n"
+             "if 0 {\n"
+             "x = 5;\n"
+             "}\n"
+             "x\n"
+             ".exit\n",
+             out, sizeof(out));
+    /* The inner assignment must not run because the if condition is false.
+       We look for the final "0" after the prompt for "x". */
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+    ASSERT_INT_EQ(0, output_contains(out, "5"));
+}
+
+TEST(repl_history_lists_previous_input) {
+    char out[4096];
+    run_repl("int x = 1;\n"
+             ".history\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "int x = 1;"));
 }
 
 int main(void) {
@@ -124,5 +170,9 @@ int main(void) {
     RUN_TEST(repl_shows_defined_procedures);
     RUN_TEST(repl_reports_single_error_for_invalid_input);
     RUN_TEST(repl_connects_to_database);
+    RUN_TEST(repl_lists_columns_for_table);
+    RUN_TEST(repl_counts_rows_in_table);
+    RUN_TEST(repl_accepts_multiline_block_statement);
+    RUN_TEST(repl_history_lists_previous_input);
     TEST_SUMMARY();
 }
