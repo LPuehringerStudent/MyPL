@@ -1,9 +1,11 @@
 # MyPL
 
 A lightweight, open-source alternative to PL/SQL with C-like syntax. MyPL
-compiles to bytecode for a small stack VM and uses SQLite as its embedded
-database engine, so you get stored-procedure-style scripting without the
-weight of an Oracle installation.
+compiles to bytecode for a small stack VM and can run against either its
+built-in custom SQL engine or SQLite, so you get stored-procedure-style
+scripting without the weight of an Oracle installation. SQLite is entirely
+optional — build with `USE_SQLITE=0` for a standalone custom-engine-only
+binary.
 
 ```mypl
 proc add_todo(title string) -> int {
@@ -25,8 +27,8 @@ proc list_todos() -> int {
   no PL/SQL boilerplate.
 - **Embedded SQL**: Write DDL, DML, and queries inline with `?var` parameter
   binding.
-- **SQLite-backed**: Run against `:memory:`, a file, or no database at all
-  (custom engine fallback).
+- **Dual SQL backends**: Run against `:memory:` or a file with SQLite, or use
+  the built-in custom engine with no SQLite dependency at all.
 - **Small and hackable**: A single C99 codebase. SQLite is optional — build
   with `USE_SQLITE=0` for a standalone custom-engine-only binary.
 - **Scriptable**: Run `.mypl` files from the command line or explore data
