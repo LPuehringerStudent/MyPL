@@ -286,7 +286,9 @@ TEST(sqlite_reports_source_line_on_sql_error) {
     ASSERT_INT_EQ(INTERPRET_RUNTIME_ERROR, vm_interpret(vm, &chunk));
     const char* msg = vm_get_error(vm);
     ASSERT_PTR_NOT_NULL(msg);
-    ASSERT_INT_EQ(1, strstr(msg, "SQL error at line 3") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, "3:") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, ": error:") != NULL);
+    ASSERT_INT_EQ(1, strstr(msg, "SQL error") != NULL);
 
     vm_free(vm);
     free_chunk(&chunk);
