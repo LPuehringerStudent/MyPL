@@ -1264,23 +1264,35 @@ static Cell zero_cell(void) {
     return c;
 }
 
-static int filtered_row_compare(const void* a, const void* b, void* arg) {
+/* Portable in-place insertion sort for Row* arrays. Avoids qsort_r which has
+   incompatible signatures between GNU libc and BSD/macOS. */
+static void row_ptr_sort(Row** rows, int count,
+                         int (*compare)(Row* a, Row* b, void* arg),
+                         void* arg) {
+    for (int i = 1; i < count; i++) {
+        Row* key = rows[i];
+        int j = i - 1;
+        while (j >= 0 && compare(rows[j], key, arg) > 0) {
+            rows[j + 1] = rows[j];
+            j--;
+        }
+        rows[j + 1] = key;
+    }
+}
+
+static int filtered_row_compare(Row* a, Row* b, void* arg) {
     SelectStmt* stmt = (SelectStmt*)arg;
-    Row* ra = *(Row**)a;
-    Row* rb = *(Row**)b;
-    Cell* ca = resolve_field(ra, stmt->order_by_table_prefix, stmt->order_by_column, stmt);
-    Cell* cb = resolve_field(rb, stmt->order_by_table_prefix, stmt->order_by_column, stmt);
+    Cell* ca = resolve_field(a, stmt->order_by_table_prefix, stmt->order_by_column, stmt);
+    Cell* cb = resolve_field(b, stmt->order_by_table_prefix, stmt->order_by_column, stmt);
     Cell z = zero_cell();
     int cmp = cell_compare(ca != NULL ? ca : &z, cb != NULL ? cb : &z);
     return stmt->order_by_desc ? -cmp : cmp;
 }
 
-static int group_row_compare(const void* a, const void* b, void* arg) {
+static int group_row_compare(Row* a, Row* b, void* arg) {
     SelectStmt* stmt = (SelectStmt*)arg;
-    Row* ra = *(Row**)a;
-    Row* rb = *(Row**)b;
-    Cell* ca = resolve_field(ra, stmt->group_by_table_prefix, stmt->group_by_column, stmt);
-    Cell* cb = resolve_field(rb, stmt->group_by_table_prefix, stmt->group_by_column, stmt);
+    Cell* ca = resolve_field(a, stmt->group_by_table_prefix, stmt->group_by_column, stmt);
+    Cell* cb = resolve_field(b, stmt->group_by_table_prefix, stmt->group_by_column, stmt);
     Cell z = zero_cell();
     return cell_compare(ca != NULL ? ca : &z, cb != NULL ? cb : &z);
 }
@@ -1508,7 +1520,7 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
     int has_agg = stmt_has_aggregates(stmt);
 
     if (stmt->has_order_by && !has_agg) {
-        qsort_r(filtered, (size_t)filtered_count, sizeof(Row*), filtered_row_compare, stmt);
+        row_ptr_sort(filtered, filtered_count, filtered_row_compare, stmt);
     }
 
     Result* res = result_create(has_agg ? (stmt->has_group_by ? filtered_count : 1) : filtered_count);
@@ -1520,7 +1532,7 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
 
     if (has_agg) {
         if (stmt->has_group_by) {
-            qsort_r(filtered, (size_t)filtered_count, sizeof(Row*), group_row_compare, stmt);
+            row_ptr_sort(filtered, filtered_count, group_row_compare, stmt);
             int i = 0;
             while (i < filtered_count) {
                 int j = i + 1;
