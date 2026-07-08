@@ -345,6 +345,18 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             emit_u16(compiler, (uint16_t)a->count);
             break;
         }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = &expr->as.map_literal;
+            for (int i = 0; i < m->count; i++) {
+                compile_expr(compiler, m->values[i]);
+                if (compiler->had_error) return;
+                compile_expr(compiler, m->keys[i]);
+                if (compiler->had_error) return;
+            }
+            emit_byte(compiler, OP_MAP_BUILD);
+            emit_u16(compiler, (uint16_t)m->count);
+            break;
+        }
         case EXPR_INDEX: {
             IndexExpr* idx = &expr->as.index;
             compile_expr(compiler, idx->array);

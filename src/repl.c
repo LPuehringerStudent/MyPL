@@ -802,6 +802,99 @@ static void cmd_count(ReplSession* session, const char* table_name) {
     printf("%s: %d rows\n", table_name, n);
 }
 
+static void cmd_indexes(ReplSession* session, const char* table_name) {
+    if (table_name == NULL || *table_name == '\0') {
+        fprintf(stderr, "Usage: .indexes <table>\n");
+        return;
+    }
+    while (*table_name != '\0' && isspace((unsigned char)*table_name)) table_name++;
+
+#ifdef USE_SQLITE
+    if (session->driver_open) {
+        char query[512];
+        snprintf(query, sizeof(query), "PRAGMA index_list(%s)", table_name);
+        void* result = NULL;
+        if (!session->driver.query(&session->driver, query, NULL, 0, &result)) {
+            printf("(no indexes)\n");
+            return;
+        }
+        void* row = NULL;
+        int first = 1;
+        while (session->driver.result_next(&session->driver, result, &row)) {
+            Value name;
+            int has_name = session->driver.row_get_field(&session->driver, row, "name", &name);
+            if (has_name && name.type == VAL_STRING && name.as.as_string != NULL) {
+                printf("%s\n", name.as.as_string);
+                first = 0;
+            }
+            value_release(name);
+        }
+        session->driver.result_free(&session->driver, result);
+        if (first) printf("(no indexes)\n");
+        return;
+    }
+#endif
+
+    Table* table = catalog_find_table(&session->ctx, table_name);
+    if (table == NULL) {
+        printf("(no such table)\n");
+        return;
+    }
+    printf("(no indexes)\n");
+}
+
+static void cmd_foreignkeys(ReplSession* session, const char* table_name) {
+    if (table_name == NULL || *table_name == '\0') {
+        fprintf(stderr, "Usage: .foreignkeys <table>\n");
+        return;
+    }
+    while (*table_name != '\0' && isspace((unsigned char)*table_name)) table_name++;
+
+#ifdef USE_SQLITE
+    if (session->driver_open) {
+        char query[512];
+        snprintf(query, sizeof(query), "PRAGMA foreign_key_list(%s)", table_name);
+        void* result = NULL;
+        if (!session->driver.query(&session->driver, query, NULL, 0, &result)) {
+            printf("(no foreign keys)\n");
+            return;
+        }
+        void* row = NULL;
+        int first = 1;
+        while (session->driver.result_next(&session->driver, result, &row)) {
+            Value from;
+            Value to_table;
+            Value to_col;
+            int has_from = session->driver.row_get_field(&session->driver, row, "from", &from);
+            int has_table = session->driver.row_get_field(&session->driver, row, "table", &to_table);
+            int has_to = session->driver.row_get_field(&session->driver, row, "to", &to_col);
+            if (has_from && from.type == VAL_STRING && from.as.as_string != NULL &&
+                has_table && to_table.type == VAL_STRING && to_table.as.as_string != NULL &&
+                has_to && to_col.type == VAL_STRING && to_col.as.as_string != NULL) {
+                printf("%s -> %s(%s)\n",
+                       from.as.as_string,
+                       to_table.as.as_string,
+                       to_col.as.as_string);
+                first = 0;
+            }
+            value_release(from);
+            value_release(to_table);
+            value_release(to_col);
+        }
+        session->driver.result_free(&session->driver, result);
+        if (first) printf("(no foreign keys)\n");
+        return;
+    }
+#endif
+
+    Table* table = catalog_find_table(&session->ctx, table_name);
+    if (table == NULL) {
+        printf("(no such table)\n");
+        return;
+    }
+    printf("(no foreign keys)\n");
+}
+
 static void cmd_schema(ReplSession* session, const char* table_name) {
 #ifdef USE_SQLITE
     if (session->driver_open) {
@@ -900,6 +993,8 @@ static void print_repl_help(void) {
     printf("  .schema [table]   Show schema for all tables or one table\n");
     printf("  .columns <table>  List columns for a table\n");
     printf("  .count <table>    Count rows in a table\n");
+    printf("  .indexes <table>  List indexes for a table\n");
+    printf("  .foreignkeys <table>  List foreign keys for a table\n");
     printf("  .sql <query>      Execute a SQL DDL or SELECT query\n");
     printf("  .connect <path>   Connect to a SQLite database\n");
     printf("  .vars             Show current REPL variables\n");
@@ -976,6 +1071,14 @@ void repl_run(const char* db_path) {
             }
             if (strncmp(line, ".count ", 7) == 0) {
                 cmd_count(&session, line + 7);
+                continue;
+            }
+            if (strncmp(line, ".indexes ", 9) == 0) {
+                cmd_indexes(&session, line + 9);
+                continue;
+            }
+            if (strncmp(line, ".foreignkeys ", 13) == 0) {
+                cmd_foreignkeys(&session, line + 13);
                 continue;
             }
             if (strncmp(line, ".sql ", 5) == 0) {

@@ -672,6 +672,30 @@ TEST(compiler_compiles_struct_literal_and_field) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_compiles_map_literal_and_index) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { map<string,int> m = { \"a\": 1, \"b\": 2 }; return m[\"a\"] + m[\"b\"]; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(3, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_compiles_map_index_assignment) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile("proc main() -> int { map<string,int> m = { \"a\": 1 }; m[\"a\"] = 5; return m[\"a\"]; }", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(5, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_compiles_println) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -1277,6 +1301,8 @@ int main(void) {
     RUN_TEST(compiler_compiles_array_length);
     RUN_TEST(compiler_compiles_array_append);
     RUN_TEST(compiler_compiles_struct_literal_and_field);
+    RUN_TEST(compiler_compiles_map_literal_and_index);
+    RUN_TEST(compiler_compiles_map_index_assignment);
     RUN_TEST(compiler_compiles_println);
     RUN_TEST(compiler_compiles_print);
     RUN_TEST(compiler_compiles_clock);

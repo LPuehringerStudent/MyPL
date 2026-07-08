@@ -73,7 +73,7 @@ int type_equals(Type* a, Type* b) {
     if (a == b) return 1;
     if (a == NULL || b == NULL) return 0;
     if (a->kind != b->kind) return 0;
-    if (a->kind == TYPE_ARRAY) return type_equals(a->element_type, b->element_type);
+    if (a->kind == TYPE_ARRAY || a->kind == TYPE_MAP) return type_equals(a->element_type, b->element_type);
     if (a->kind == TYPE_STRUCT) {
         if (a->struct_name == NULL || b->struct_name == NULL) return 0;
         return strcmp(a->struct_name, b->struct_name) == 0;
@@ -88,6 +88,9 @@ int type_is_numeric(Type* t) {
 int type_is_array(Type* t) {
     return t != NULL && t != &type_unknown && t->kind == TYPE_ARRAY;
 }
+int type_is_map(Type* t) {
+    return t != NULL && t != &type_unknown && t->kind == TYPE_MAP;
+}
 int type_is_unknown(Type* t) { return t == &type_unknown; }
 
 const char* type_name(Type* t) {
@@ -98,6 +101,7 @@ const char* type_name(Type* t) {
         case TYPE_STRING: return "string";
         case TYPE_BOOL:   return "bool";
         case TYPE_ARRAY:  return "array";
+        case TYPE_MAP:    return "map";
         case TYPE_ROW:    return "row";
         case TYPE_STRUCT: return t->struct_name != NULL ? t->struct_name : "struct";
         case TYPE_UNKNOWN: return "unknown";
@@ -179,6 +183,14 @@ void free_expr(Expr* expr) {
             }
             free(expr->as.struct_literal.field_names);
             free(expr->as.struct_literal.values);
+            break;
+        case EXPR_MAP_LITERAL:
+            for (int i = 0; i < expr->as.map_literal.count; i++) {
+                free_expr(expr->as.map_literal.keys[i]);
+                free_expr(expr->as.map_literal.values[i]);
+            }
+            free(expr->as.map_literal.keys);
+            free(expr->as.map_literal.values);
             break;
         default:
             break;
@@ -767,5 +779,24 @@ Expr* create_struct_literal_expr(const char* struct_name, char** field_names, Ex
     expr->as.struct_literal.field_names = field_names;
     expr->as.struct_literal.values = values;
     expr->as.struct_literal.field_count = field_count;
+    return expr;
+}
+
+Expr* create_map_literal_expr(Expr** keys, Expr** values, int count) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) {
+        for (int i = 0; i < count; i++) {
+            free_expr(keys[i]);
+            free_expr(values[i]);
+        }
+        free(keys);
+        free(values);
+        return NULL;
+    }
+    expr->loc = (SourceLoc){0, 0};
+    expr->kind = EXPR_MAP_LITERAL;
+    expr->as.map_literal.keys = keys;
+    expr->as.map_literal.values = values;
+    expr->as.map_literal.count = count;
     return expr;
 }

@@ -159,6 +159,35 @@ TEST(repl_history_lists_previous_input) {
     ASSERT_INT_EQ(1, output_contains(out, "int x = 1;"));
 }
 
+TEST(repl_no_indexes_or_foreign_keys_in_custom_engine) {
+    char out[4096];
+    run_repl(".sql CREATE TABLE users (id INT, name STRING)\n"
+             ".indexes users\n"
+             ".foreignkeys users\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "(no indexes)"));
+    ASSERT_INT_EQ(1, output_contains(out, "(no foreign keys)"));
+}
+
+#ifdef USE_SQLITE
+TEST(repl_lists_indexes_and_foreign_keys_in_sqlite) {
+    system("rm -f /tmp/repl_fk.db");
+    char out[4096];
+    run_repl(".connect /tmp/repl_fk.db\n"
+             ".sql create table users (id int primary key, name string)\n"
+             ".sql create table orders (id int, user_id int, foreign key(user_id) references users(id))\n"
+             ".sql create index idx_user_id on orders(user_id)\n"
+             ".indexes orders\n"
+             ".foreignkeys orders\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "idx_user_id"));
+    ASSERT_INT_EQ(1, output_contains(out, "user_id -> users(id)"));
+    remove("/tmp/repl_fk.db");
+}
+#endif
+
 int main(void) {
     system("rm -f mypl.db");
     RUN_TEST(repl_defines_and_calls_procedure);
@@ -174,5 +203,9 @@ int main(void) {
     RUN_TEST(repl_counts_rows_in_table);
     RUN_TEST(repl_accepts_multiline_block_statement);
     RUN_TEST(repl_history_lists_previous_input);
+    RUN_TEST(repl_no_indexes_or_foreign_keys_in_custom_engine);
+#ifdef USE_SQLITE
+    RUN_TEST(repl_lists_indexes_and_foreign_keys_in_sqlite);
+#endif
     TEST_SUMMARY();
 }

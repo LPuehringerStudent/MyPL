@@ -10,6 +10,7 @@ typedef enum {
     TYPE_STRING,
     TYPE_BOOL,
     TYPE_ARRAY,
+    TYPE_MAP,
     TYPE_ROW,
     TYPE_STRUCT,
     TYPE_UNKNOWN
@@ -17,7 +18,7 @@ typedef enum {
 
 typedef struct Type {
     TypeKind kind;
-    struct Type* element_type;  /* only when kind == TYPE_ARRAY */
+    struct Type* element_type;  /* only when kind == TYPE_ARRAY or TYPE_MAP */
     /* only when kind == TYPE_STRUCT */
     char* struct_name;
     char** field_names;
@@ -38,6 +39,7 @@ void  type_free(Type* type);
 int   type_equals(Type* a, Type* b);
 int   type_is_numeric(Type* t);
 int   type_is_array(Type* t);
+int   type_is_map(Type* t);
 int   type_is_unknown(Type* t);
 const char* type_name(Type* t);
 
@@ -52,7 +54,8 @@ typedef enum {
     EXPR_INDEX,
     EXPR_SQL_PARAM,
     EXPR_ROW_FIELD,
-    EXPR_STRUCT_LITERAL
+    EXPR_STRUCT_LITERAL,
+    EXPR_MAP_LITERAL
 } ExprKind;
 
 typedef enum {
@@ -276,6 +279,12 @@ typedef struct {
     int field_count;
 } StructLiteralExpr;
 
+typedef struct {
+    Expr** keys;
+    Expr** values;
+    int count;
+} MapLiteralExpr;
+
 struct Expr {
     ExprKind kind;
     SourceLoc loc;
@@ -291,6 +300,7 @@ struct Expr {
         SqlParamExpr sql_param;
         RowFieldExpr row_field;
         StructLiteralExpr struct_literal;
+        MapLiteralExpr map_literal;
     } as;
 };
 
@@ -334,6 +344,7 @@ Expr* create_index_expr(Expr* array, Expr* index);
 Expr* create_sql_param_expr(const char* name);
 Expr* create_row_field_expr(Expr* row, const char* field);
 Expr* create_struct_literal_expr(const char* struct_name, char** field_names, Expr** values, int field_count);
+Expr* create_map_literal_expr(Expr** keys, Expr** values, int count);
 Stmt* create_index_assign_stmt(Expr* array, Expr* index, Expr* value);
 
 #endif
