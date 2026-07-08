@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
+#include <unistd.h>
 
 #include "repl.h"
 #include "compiler.h"
@@ -15,6 +17,7 @@
 #define LINE_SIZE 1024
 #define DEFAULT_DB_PATH "mypl.db"
 #define MAX_REPL_VARS 256
+#define REPL_HISTORY_SIZE 100
 
 typedef struct {
     char* data;
@@ -27,6 +30,9 @@ typedef struct {
     StringBuffer main_body;
     char* var_names[MAX_REPL_VARS];
     int var_count;
+    char* history[REPL_HISTORY_SIZE];
+    int history_count;
+    int history_index;
     Chunk chunk;
     VM* vm;
     Context ctx;
@@ -65,10 +71,189 @@ static int string_buffer_append(StringBuffer* buf, const char* text) {
     return 1;
 }
 
+static int brace_depth(const char* s) {
+    int depth = 0;
+    int in_string = 0;
+    int escape = 0;
+    for (const char* p = s; *p != '\0'; p++) {
+        if (escape) {
+            escape = 0;
+            continue;
+        }
+        if (*p == '\\' && in_string) {
+            escape = 1;
+            continue;
+        }
+        if (*p == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (in_string) continue;
+        if (*p == '/' && *(p + 1) == '/') break;
+        if (*p == '{') depth++;
+        else if (*p == '}') depth--;
+    }
+    return depth;
+}
+
+static int input_is_complete(const char* line) {
+    return brace_depth(line) <= 0;
+}
+
+static void history_add(ReplSession* session, const char* line) {
+    if (line == NULL || *line == '\0') return;
+    /* Skip duplicates at the top of history. */
+    if (session->history_count > 0 &&
+        strcmp(session->history[session->history_count - 1], line) == 0) {
+        return;
+    }
+    char* copy = strdup(line);
+    if (copy == NULL) return;
+    if (session->history_count == REPL_HISTORY_SIZE) {
+        free(session->history[0]);
+        memmove(session->history, session->history + 1,
+                sizeof(char*) * (REPL_HISTORY_SIZE - 1));
+        session->history_count--;
+    }
+    session->history[session->history_count++] = copy;
+}
+
+static void history_free(ReplSession* session) {
+    for (int i = 0; i < session->history_count; i++) {
+        free(session->history[i]);
+    }
+    session->history_count = 0;
+    session->history_index = 0;
+}
+
+static int read_line_simple(const char* prompt, char* buf, size_t size) {
+    printf("%s", prompt);
+    fflush(stdout);
+    if (fgets(buf, (int)size, stdin) == NULL) return 0;
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
+    return 1;
+}
+
+static int read_line_tty(ReplSession* session, const char* prompt,
+                         char* buf, size_t size) {
+    printf("%s", prompt);
+    fflush(stdout);
+
+    struct termios old_tio, new_tio;
+    if (tcgetattr(STDIN_FILENO, &old_tio) != 0) {
+        return read_line_simple(prompt, buf, size);
+    }
+    new_tio = old_tio;
+    new_tio.c_lflag &= ~(ICANON | ECHO);
+    new_tio.c_cc[VMIN] = 1;
+    new_tio.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_tio) != 0) {
+        return read_line_simple(prompt, buf, size);
+    }
+
+    size_t len = 0;
+    buf[0] = '\0';
+    session->history_index = session->history_count;
+
+    for (;;) {
+        int c = getchar();
+        if (c == EOF || c == '\004') { /* Ctrl-D */
+            buf[0] = '\0';
+            len = 0;
+            break;
+        }
+        if (c == '\003') { /* Ctrl-C */
+            printf("\n");
+            buf[0] = '\0';
+            len = 0;
+            break;
+        }
+        if (c == '\r' || c == '\n') {
+            printf("\n");
+            break;
+        }
+        if (c == 127 || c == '\b') { /* Backspace */
+            if (len > 0) {
+                len--;
+                buf[len] = '\0';
+                printf("\b \b");
+                fflush(stdout);
+            }
+            continue;
+        }
+        if (c == 27) { /* Escape sequence */
+            int c1 = getchar();
+            int c2 = getchar();
+            if (c1 == '[') {
+                if (c2 == 'A' && session->history_count > 0) { /* Up */
+                    if (session->history_index > 0) {
+                        session->history_index--;
+                        const char* entry = session->history[session->history_index];
+                        while (len > 0) {
+                            printf("\b \b");
+                            len--;
+                        }
+                        size_t elen = strlen(entry);
+                        if (elen >= size) elen = size - 1;
+                        memcpy(buf, entry, elen);
+                        buf[elen] = '\0';
+                        len = elen;
+                        printf("%s", buf);
+                        fflush(stdout);
+                    }
+                    continue;
+                }
+                if (c2 == 'B' && session->history_count > 0) { /* Down */
+                    if (session->history_index < session->history_count) {
+                        session->history_index++;
+                    }
+                    while (len > 0) {
+                        printf("\b \b");
+                        len--;
+                    }
+                    const char* entry = "";
+                    if (session->history_index < session->history_count) {
+                        entry = session->history[session->history_index];
+                    }
+                    size_t elen = strlen(entry);
+                    if (elen >= size) elen = size - 1;
+                    memcpy(buf, entry, elen);
+                    buf[elen] = '\0';
+                    len = elen;
+                    printf("%s", buf);
+                    fflush(stdout);
+                    continue;
+                }
+            }
+            continue;
+        }
+        if (isprint((unsigned char)c) && len + 1 < size) {
+            buf[len++] = (char)c;
+            buf[len] = '\0';
+            putchar(c);
+            fflush(stdout);
+        }
+    }
+
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_tio);
+    return 1;
+}
+
+static int repl_read_line(ReplSession* session, const char* prompt,
+                          char* buf, size_t size) {
+    if (isatty(STDIN_FILENO)) {
+        return read_line_tty(session, prompt, buf, size);
+    }
+    return read_line_simple(prompt, buf, size);
+}
+
 static void repl_session_init(ReplSession* session, const char* db_path) {
     string_buffer_init(&session->procedures);
     string_buffer_init(&session->main_body);
     session->var_count = 0;
+    session->history_count = 0;
+    session->history_index = 0;
     init_chunk(&session->chunk);
     session->vm = vm_init();
     session->driver_open = 0;
@@ -104,6 +289,7 @@ static void repl_session_free(ReplSession* session) {
         free(session->var_names[i]);
     }
     session->var_count = 0;
+    history_free(session);
     if (session->vm != NULL) {
         vm_free(session->vm);
         session->vm = NULL;
@@ -132,7 +318,11 @@ static int is_procedure_definition(const char* line) {
 
 static int is_statement(const char* line) {
     size_t len = strlen(line);
-    return len > 0 && line[len - 1] == ';';
+    if (len == 0) return 0;
+    const char* end = line + len - 1;
+    while (end > line && isspace((unsigned char)*end)) end--;
+    char last = *end;
+    return last == ';' || last == '}';
 }
 
 static char* extract_var_name(const char* line) {
@@ -512,6 +702,106 @@ static int cmd_connect(ReplSession* session, const char* path) {
 #endif
 }
 
+static void cmd_columns(ReplSession* session, const char* table_name) {
+    if (table_name == NULL || *table_name == '\0') {
+        fprintf(stderr, "Usage: .columns <table>\n");
+        return;
+    }
+    while (*table_name != '\0' && isspace((unsigned char)*table_name)) table_name++;
+
+#ifdef USE_SQLITE
+    if (session->driver_open) {
+        char query[512];
+        snprintf(query, sizeof(query), "PRAGMA table_info(%s)", table_name);
+        void* result = NULL;
+        if (!session->driver.query(&session->driver, query, NULL, 0, &result)) {
+            printf("(no such table)\n");
+            return;
+        }
+        printf("%s columns:\n", table_name);
+        void* row = NULL;
+        int first = 1;
+        while (session->driver.result_next(&session->driver, result, &row)) {
+            Value name;
+            Value type;
+            int has_name = session->driver.row_get_field(&session->driver, row, "name", &name);
+            int has_type = session->driver.row_get_field(&session->driver, row, "type", &type);
+            if (has_name && name.type == VAL_STRING && name.as.as_string != NULL) {
+                printf("  %s", name.as.as_string);
+                if (has_type && type.type == VAL_STRING && type.as.as_string != NULL) {
+                    printf(" %s", type.as.as_string);
+                }
+                printf("\n");
+                first = 0;
+            }
+            value_release(name);
+            value_release(type);
+        }
+        session->driver.result_free(&session->driver, result);
+        if (first) printf("(no columns)\n");
+        return;
+    }
+#endif
+
+    Table* table = catalog_find_table(&session->ctx, table_name);
+    if (table == NULL) {
+        printf("(no such table)\n");
+        return;
+    }
+    printf("%s columns:\n", table_name);
+    for (int i = 0; i < table->column_count; i++) {
+        printf("  %s %s\n",
+               table->columns[i].name != NULL ? table->columns[i].name : "?",
+               type_name(table->columns[i].type));
+    }
+}
+
+static void cmd_count(ReplSession* session, const char* table_name) {
+    if (table_name == NULL || *table_name == '\0') {
+        fprintf(stderr, "Usage: .count <table>\n");
+        return;
+    }
+    while (*table_name != '\0' && isspace((unsigned char)*table_name)) table_name++;
+
+#ifdef USE_SQLITE
+    if (session->driver_open) {
+        char query[512];
+        snprintf(query, sizeof(query), "SELECT count(*) FROM %s", table_name);
+        void* result = NULL;
+        if (!session->driver.query(&session->driver, query, NULL, 0, &result)) {
+            printf("(could not count)\n");
+            return;
+        }
+        void* row = NULL;
+        int n = 0;
+        if (session->driver.result_next(&session->driver, result, &row)) {
+            Value v;
+            if (session->driver.row_get_column(&session->driver, row, 0, &v)) {
+                if (v.type == VAL_INT) n = v.as.as_int;
+                value_release(v);
+            }
+        }
+        printf("%s: %d rows\n", table_name, n);
+        session->driver.result_free(&session->driver, result);
+        return;
+    }
+#endif
+
+    char query[512];
+    snprintf(query, sizeof(query), "SELECT count(*) FROM %s", table_name);
+    Result* res = sql_exec(query, &session->ctx);
+    int n = 0;
+    if (res != NULL) {
+        Row* row = result_next(res);
+        if (row != NULL && row->field_count > 0) {
+            Cell c = row->fields[0].value;
+            if (c.type == VAL_INT) n = c.as.as_int;
+        }
+        result_free(res);
+    }
+    printf("%s: %d rows\n", table_name, n);
+}
+
 static void cmd_schema(ReplSession* session, const char* table_name) {
 #ifdef USE_SQLITE
     if (session->driver_open) {
@@ -590,6 +880,16 @@ static void cmd_defs(ReplSession* session) {
     printf("%s", session->procedures.data);
 }
 
+static void cmd_history(ReplSession* session) {
+    if (session->history_count == 0) {
+        printf("(no history)\n");
+        return;
+    }
+    for (int i = 0; i < session->history_count; i++) {
+        printf("%d  %s\n", i + 1, session->history[i]);
+    }
+}
+
 static void print_repl_help(void) {
     printf("MyPL REPL commands:\n");
     printf("  .exit             Quit the REPL\n");
@@ -598,10 +898,13 @@ static void print_repl_help(void) {
     printf("  .load <file>      Load and run a MyPL source file\n");
     printf("  .tables           List all tables in the catalog\n");
     printf("  .schema [table]   Show schema for all tables or one table\n");
+    printf("  .columns <table>  List columns for a table\n");
+    printf("  .count <table>    Count rows in a table\n");
     printf("  .sql <query>      Execute a SQL DDL or SELECT query\n");
     printf("  .connect <path>   Connect to a SQLite database\n");
     printf("  .vars             Show current REPL variables\n");
     printf("  .defs             Show defined procedures\n");
+    printf("  .history          Show REPL input history\n");
 }
 
 void repl_run(const char* db_path) {
@@ -611,26 +914,28 @@ void repl_run(const char* db_path) {
     printf("MyPL REPL (type '.help' for commands, '.exit' to quit)\n");
 
     char line[LINE_SIZE];
+    StringBuffer accumulated;
+    string_buffer_init(&accumulated);
+    if (accumulated.data == NULL) {
+        fprintf(stderr, "Out of memory\n");
+        repl_session_free(&session);
+        return;
+    }
+
     for (;;) {
-        printf("> ");
-        fflush(stdout);
-        if (fgets(line, LINE_SIZE, stdin) == NULL) {
+        const char* prompt = accumulated.len > 0 ? "... " : "> ";
+        if (!repl_read_line(&session, prompt, line, sizeof(line))) {
             printf("\n");
             break;
         }
 
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') {
-            line[len - 1] = '\0';
-            len--;
-        }
-
         trim_trailing_ws(line);
-        if (len == 0) {
+        if (accumulated.len == 0 && line[0] == '\0') {
             continue;
         }
 
-        if (line[0] == '.') {
+        /* Commands are processed immediately, not accumulated. */
+        if (accumulated.len == 0 && line[0] == '.') {
             if (strcmp(line, ".exit") == 0 || strcmp(line, ".quit") == 0) {
                 break;
             }
@@ -650,6 +955,10 @@ void repl_run(const char* db_path) {
                 cmd_defs(&session);
                 continue;
             }
+            if (strcmp(line, ".history") == 0) {
+                cmd_history(&session);
+                continue;
+            }
             if (strncmp(line, ".load ", 6) == 0) {
                 cmd_load(&session, line + 6);
                 continue;
@@ -659,6 +968,14 @@ void repl_run(const char* db_path) {
                 while (*arg != '\0' && isspace((unsigned char)*arg)) arg++;
                 if (*arg == '\0') arg = NULL;
                 cmd_schema(&session, arg);
+                continue;
+            }
+            if (strncmp(line, ".columns ", 9) == 0) {
+                cmd_columns(&session, line + 9);
+                continue;
+            }
+            if (strncmp(line, ".count ", 7) == 0) {
+                cmd_count(&session, line + 7);
                 continue;
             }
             if (strncmp(line, ".sql ", 5) == 0) {
@@ -673,8 +990,31 @@ void repl_run(const char* db_path) {
             continue;
         }
 
-        if (is_procedure_definition(line)) {
-            if (!string_buffer_append(&session.procedures, line) ||
+        if (accumulated.len > 0) {
+            if (!string_buffer_append(&accumulated, "\n") ||
+                !string_buffer_append(&accumulated, line)) {
+                fprintf(stderr, "Out of memory\n");
+                break;
+            }
+        } else {
+            string_buffer_free(&accumulated);
+            string_buffer_init(&accumulated);
+            if (accumulated.data == NULL ||
+                !string_buffer_append(&accumulated, line)) {
+                fprintf(stderr, "Out of memory\n");
+                break;
+            }
+        }
+
+        if (!input_is_complete(accumulated.data)) {
+            continue;
+        }
+
+        char* complete = accumulated.data;
+        history_add(&session, complete);
+
+        if (is_procedure_definition(complete)) {
+            if (!string_buffer_append(&session.procedures, complete) ||
                 !string_buffer_append(&session.procedures, "\n")) {
                 fprintf(stderr, "Out of memory\n");
                 break;
@@ -682,17 +1022,25 @@ void repl_run(const char* db_path) {
             /* Execute the procedure definition to validate it. */
             run_current_line(&session, "0");
         } else {
-            if (is_statement(line)) {
-                record_var_name(&session, line);
-                if (!string_buffer_append(&session.main_body, line) ||
+            if (is_statement(complete)) {
+                record_var_name(&session, complete);
+                if (!string_buffer_append(&session.main_body, complete) ||
                     !string_buffer_append(&session.main_body, " ")) {
                     fprintf(stderr, "Out of memory\n");
                     break;
                 }
             }
-            run_current_line(&session, line);
+            run_current_line(&session, complete);
+        }
+
+        string_buffer_free(&accumulated);
+        string_buffer_init(&accumulated);
+        if (accumulated.data == NULL) {
+            fprintf(stderr, "Out of memory\n");
+            break;
         }
     }
 
+    string_buffer_free(&accumulated);
     repl_session_free(&session);
 }
