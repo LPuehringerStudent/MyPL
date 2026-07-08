@@ -529,9 +529,25 @@ typedef enum {
     TOK_COMMA,
     TOK_LPAREN,
     TOK_RPAREN,
+    TOK_DOT,
     TOK_SELECT,
     TOK_FROM,
     TOK_WHERE,
+    TOK_ORDER,
+    TOK_GROUP,
+    TOK_BY,
+    TOK_ASC,
+    TOK_DESC,
+    TOK_LIMIT,
+    TOK_JOIN,
+    TOK_LEFT,
+    TOK_OUTER,
+    TOK_ON,
+    TOK_COUNT,
+    TOK_SUM,
+    TOK_AVG,
+    TOK_MIN,
+    TOK_MAX,
     TOK_CREATE,
     TOK_TABLE,
     TOK_INSERT,
@@ -589,6 +605,21 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 6 && strncasecmp(start, "SELECT", 6) == 0) return TOK_SELECT;
     if (length == 4 && strncasecmp(start, "FROM", 4) == 0) return TOK_FROM;
     if (length == 5 && strncasecmp(start, "WHERE", 5) == 0) return TOK_WHERE;
+    if (length == 5 && strncasecmp(start, "ORDER", 5) == 0) return TOK_ORDER;
+    if (length == 5 && strncasecmp(start, "GROUP", 5) == 0) return TOK_GROUP;
+    if (length == 2 && strncasecmp(start, "BY", 2) == 0) return TOK_BY;
+    if (length == 3 && strncasecmp(start, "ASC", 3) == 0) return TOK_ASC;
+    if (length == 4 && strncasecmp(start, "DESC", 4) == 0) return TOK_DESC;
+    if (length == 5 && strncasecmp(start, "LIMIT", 5) == 0) return TOK_LIMIT;
+    if (length == 4 && strncasecmp(start, "JOIN", 4) == 0) return TOK_JOIN;
+    if (length == 4 && strncasecmp(start, "LEFT", 4) == 0) return TOK_LEFT;
+    if (length == 5 && strncasecmp(start, "OUTER", 5) == 0) return TOK_OUTER;
+    if (length == 2 && strncasecmp(start, "ON", 2) == 0) return TOK_ON;
+    if (length == 5 && strncasecmp(start, "COUNT", 5) == 0) return TOK_COUNT;
+    if (length == 3 && strncasecmp(start, "SUM", 3) == 0) return TOK_SUM;
+    if (length == 3 && strncasecmp(start, "AVG", 3) == 0) return TOK_AVG;
+    if (length == 3 && strncasecmp(start, "MIN", 3) == 0) return TOK_MIN;
+    if (length == 3 && strncasecmp(start, "MAX", 3) == 0) return TOK_MAX;
     if (length == 6 && strncasecmp(start, "CREATE", 6) == 0) return TOK_CREATE;
     if (length == 5 && strncasecmp(start, "TABLE", 5) == 0) return TOK_TABLE;
     if (length == 6 && strncasecmp(start, "INSERT", 6) == 0) return TOK_INSERT;
@@ -648,6 +679,7 @@ static SqlToken sql_next_token(SqlLexer* lex) {
         case ',': return sql_make_token(lex, TOK_COMMA);
         case '(': return sql_make_token(lex, TOK_LPAREN);
         case ')': return sql_make_token(lex, TOK_RPAREN);
+        case '.': return sql_make_token(lex, TOK_DOT);
         case '=': return sql_make_token(lex, TOK_EQ);
         case '<':
             if (*lex->current == '=') { lex->current++; return sql_make_token(lex, TOK_LE); }
@@ -675,15 +707,48 @@ static void sql_token_text(SqlToken* tok, char* out, size_t out_size) {
 #define MAX_SELECT_COLUMNS 16
 #define MAX_COLUMNS        16
 
+typedef enum {
+    AGG_NONE,
+    AGG_COUNT,
+    AGG_SUM,
+    AGG_AVG,
+    AGG_MIN,
+    AGG_MAX
+} AggregateFunc;
+
 typedef struct {
     char column_names[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
+    char column_table_prefix[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
     int  column_count;
+    AggregateFunc column_aggregates[MAX_SELECT_COLUMNS];
+    char column_aggregate_args[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
+    int  column_aggregate_star[MAX_SELECT_COLUMNS];
     char table_name[MAX_NAME_LEN + 1];
     int  has_where;
+    char where_table_prefix[MAX_NAME_LEN + 1];
     char where_column[MAX_NAME_LEN + 1];
     int  where_op;
     Cell where_value;
+    int  has_join;
+    int  join_type; /* 0 = inner, 1 = left */
+    char join_table_name[MAX_NAME_LEN + 1];
+    char join_left_column[MAX_NAME_LEN + 1];
+    char join_right_column[MAX_NAME_LEN + 1];
+    int  join_left_column_count;
+    int  join_right_column_count;
+    int  has_group_by;
+    char group_by_table_prefix[MAX_NAME_LEN + 1];
+    char group_by_column[MAX_NAME_LEN + 1];
+    int  has_order_by;
+    char order_by_table_prefix[MAX_NAME_LEN + 1];
+    char order_by_column[MAX_NAME_LEN + 1];
+    int  order_by_desc;
+    int  has_limit;
+    int  limit_count;
 } SelectStmt;
+
+static Cell* resolve_field(Row* row, const char* prefix, const char* name,
+                           SelectStmt* stmt);
 
 static int sql_parse_select(const char* query, SelectStmt* stmt) {
     memset(stmt, 0, sizeof(*stmt));
@@ -699,21 +764,71 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
     if (tok.type == TOK_STAR) {
         stmt->column_count = 0;
         tok = sql_next_token(&lex);
-    } else if (tok.type == TOK_IDENT) {
-        sql_token_text(&tok, stmt->column_names[stmt->column_count++], sizeof(stmt->column_names[0]));
+    } else {
         while (1) {
-            tok = sql_next_token(&lex);
+            if (stmt->column_count >= MAX_SELECT_COLUMNS) return 0;
+
+            AggregateFunc agg = AGG_NONE;
+            if (tok.type == TOK_COUNT) agg = AGG_COUNT;
+            else if (tok.type == TOK_SUM) agg = AGG_SUM;
+            else if (tok.type == TOK_AVG) agg = AGG_AVG;
+            else if (tok.type == TOK_MIN) agg = AGG_MIN;
+            else if (tok.type == TOK_MAX) agg = AGG_MAX;
+
+            if (agg != AGG_NONE) {
+                stmt->column_aggregates[stmt->column_count] = agg;
+                tok = sql_next_token(&lex);
+                if (tok.type != TOK_LPAREN) return 0;
+                tok = sql_next_token(&lex);
+                if (tok.type == TOK_STAR) {
+                    stmt->column_aggregate_star[stmt->column_count] = 1;
+                    strcpy(stmt->column_aggregate_args[stmt->column_count], "*");
+                    tok = sql_next_token(&lex);
+                } else if (tok.type == TOK_IDENT) {
+                    sql_token_text(&tok, stmt->column_aggregate_args[stmt->column_count],
+                                   sizeof(stmt->column_aggregate_args[0]));
+                    tok = sql_next_token(&lex);
+                } else {
+                    return 0;
+                }
+                if (tok.type != TOK_RPAREN) return 0;
+                switch (agg) {
+                    case AGG_COUNT: strcpy(stmt->column_names[stmt->column_count], "count"); break;
+                    case AGG_SUM:   strcpy(stmt->column_names[stmt->column_count], "sum"); break;
+                    case AGG_AVG:   strcpy(stmt->column_names[stmt->column_count], "avg"); break;
+                    case AGG_MIN:   strcpy(stmt->column_names[stmt->column_count], "min"); break;
+                    case AGG_MAX:   strcpy(stmt->column_names[stmt->column_count], "max"); break;
+                    default: break;
+                }
+                stmt->column_count++;
+                tok = sql_next_token(&lex);
+            } else if (tok.type == TOK_IDENT) {
+                char prefix_buf[MAX_NAME_LEN + 1] = "";
+                char name_buf[MAX_NAME_LEN + 1];
+                sql_token_text(&tok, name_buf, sizeof(name_buf));
+
+                tok = sql_next_token(&lex);
+                if (tok.type == TOK_DOT) {
+                    SqlToken col_tok = sql_next_token(&lex);
+                    if (col_tok.type != TOK_IDENT) return 0;
+                    strcpy(prefix_buf, name_buf);
+                    sql_token_text(&col_tok, name_buf, sizeof(name_buf));
+                    tok = sql_next_token(&lex);
+                }
+
+                strcpy(stmt->column_names[stmt->column_count], name_buf);
+                strcpy(stmt->column_table_prefix[stmt->column_count], prefix_buf);
+                stmt->column_count++;
+            } else {
+                return 0;
+            }
+
             if (tok.type == TOK_COMMA) {
                 tok = sql_next_token(&lex);
-                if (tok.type != TOK_IDENT) return 0;
-                if (stmt->column_count >= MAX_SELECT_COLUMNS) return 0;
-                sql_token_text(&tok, stmt->column_names[stmt->column_count++], sizeof(stmt->column_names[0]));
             } else {
                 break;
             }
         }
-    } else {
-        return 0;
     }
 
     if (tok.type != TOK_FROM) return 0;
@@ -723,52 +838,170 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
     sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
 
     tok = sql_next_token(&lex);
-    if (tok.type == TOK_EOF) {
-        stmt->has_where = 0;
-        return 1;
+    if (tok.type == TOK_JOIN || tok.type == TOK_LEFT) {
+        if (tok.type == TOK_LEFT) {
+            stmt->join_type = 1;
+            tok = sql_next_token(&lex);
+            if (tok.type == TOK_OUTER) {
+                tok = sql_next_token(&lex);
+            }
+            if (tok.type != TOK_JOIN) return 0;
+            tok = sql_next_token(&lex);
+        } else {
+            stmt->join_type = 0;
+            tok = sql_next_token(&lex);
+        }
+        if (tok.type != TOK_IDENT) return 0;
+        sql_token_text(&tok, stmt->join_table_name, sizeof(stmt->join_table_name));
+        stmt->has_join = 1;
+
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_ON) return 0;
+
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        char left_table[MAX_NAME_LEN + 1];
+        sql_token_text(&tok, left_table, sizeof(left_table));
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_DOT) return 0;
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        sql_token_text(&tok, stmt->join_left_column, sizeof(stmt->join_left_column));
+
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_EQ) return 0;
+
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        char right_table[MAX_NAME_LEN + 1];
+        sql_token_text(&tok, right_table, sizeof(right_table));
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_DOT) return 0;
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        sql_token_text(&tok, stmt->join_right_column, sizeof(stmt->join_right_column));
+
+        if (strcmp(left_table, stmt->table_name) != 0 ||
+            strcmp(right_table, stmt->join_table_name) != 0) {
+            return 0;
+        }
+
+        tok = sql_next_token(&lex);
     }
 
-    if (tok.type != TOK_WHERE) return 0;
+    if (tok.type == TOK_WHERE) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        char where_prefix_buf[MAX_NAME_LEN + 1] = "";
+        char where_name_buf[MAX_NAME_LEN + 1];
+        sql_token_text(&tok, where_name_buf, sizeof(where_name_buf));
 
-    tok = sql_next_token(&lex);
-    if (tok.type != TOK_IDENT) return 0;
-    sql_token_text(&tok, stmt->where_column, sizeof(stmt->where_column));
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_DOT) {
+            SqlToken col_tok = sql_next_token(&lex);
+            if (col_tok.type != TOK_IDENT) return 0;
+            strcpy(where_prefix_buf, where_name_buf);
+            sql_token_text(&col_tok, where_name_buf, sizeof(where_name_buf));
+            tok = sql_next_token(&lex);
+        }
+        strcpy(stmt->where_table_prefix, where_prefix_buf);
+        strcpy(stmt->where_column, where_name_buf);
 
-    tok = sql_next_token(&lex);
-    if (tok.type == TOK_EQ) stmt->where_op = 0;
-    else if (tok.type == TOK_LT) stmt->where_op = 1;
-    else if (tok.type == TOK_GT) stmt->where_op = 2;
-    else if (tok.type == TOK_LE) stmt->where_op = 3;
-    else if (tok.type == TOK_GE) stmt->where_op = 4;
-    else if (tok.type == TOK_NE) stmt->where_op = 5;
-    else return 0;
+        if (tok.type == TOK_EQ) stmt->where_op = 0;
+        else if (tok.type == TOK_LT) stmt->where_op = 1;
+        else if (tok.type == TOK_GT) stmt->where_op = 2;
+        else if (tok.type == TOK_LE) stmt->where_op = 3;
+        else if (tok.type == TOK_GE) stmt->where_op = 4;
+        else if (tok.type == TOK_NE) stmt->where_op = 5;
+        else return 0;
 
-    tok = sql_next_token(&lex);
-    if (tok.type == TOK_NUMBER) {
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_NUMBER) {
+            char buf[64];
+            sql_token_text(&tok, buf, sizeof(buf));
+            if (strchr(buf, '.') != NULL) {
+                stmt->where_value.type = VAL_FLOAT;
+                stmt->where_value.as.as_float = strtod(buf, NULL);
+            } else {
+                stmt->where_value.type = VAL_INT;
+                stmt->where_value.as.as_int = atoi(buf);
+            }
+        } else if (tok.type == TOK_STRING) {
+            stmt->where_value.type = VAL_STRING;
+            stmt->where_value.as.as_string = malloc((size_t)tok.length + 1);
+            if (stmt->where_value.as.as_string == NULL) return 0;
+            memcpy(stmt->where_value.as.as_string, tok.text, (size_t)tok.length);
+            stmt->where_value.as.as_string[tok.length] = '\0';
+        } else {
+            return 0;
+        }
+        stmt->has_where = 1;
+        tok = sql_next_token(&lex);
+    }
+
+    if (tok.type == TOK_GROUP) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_BY) return 0;
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        char group_prefix_buf[MAX_NAME_LEN + 1] = "";
+        char group_name_buf[MAX_NAME_LEN + 1];
+        sql_token_text(&tok, group_name_buf, sizeof(group_name_buf));
+
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_DOT) {
+            SqlToken col_tok = sql_next_token(&lex);
+            if (col_tok.type != TOK_IDENT) return 0;
+            strcpy(group_prefix_buf, group_name_buf);
+            sql_token_text(&col_tok, group_name_buf, sizeof(group_name_buf));
+            tok = sql_next_token(&lex);
+        }
+        strcpy(stmt->group_by_table_prefix, group_prefix_buf);
+        strcpy(stmt->group_by_column, group_name_buf);
+        stmt->has_group_by = 1;
+    }
+
+    if (tok.type == TOK_ORDER) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_BY) return 0;
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        char order_prefix_buf[MAX_NAME_LEN + 1] = "";
+        char order_name_buf[MAX_NAME_LEN + 1];
+        sql_token_text(&tok, order_name_buf, sizeof(order_name_buf));
+
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_DOT) {
+            SqlToken col_tok = sql_next_token(&lex);
+            if (col_tok.type != TOK_IDENT) return 0;
+            strcpy(order_prefix_buf, order_name_buf);
+            sql_token_text(&col_tok, order_name_buf, sizeof(order_name_buf));
+            tok = sql_next_token(&lex);
+        }
+        strcpy(stmt->order_by_table_prefix, order_prefix_buf);
+        strcpy(stmt->order_by_column, order_name_buf);
+        stmt->has_order_by = 1;
+        if (tok.type == TOK_ASC) {
+            stmt->order_by_desc = 0;
+            tok = sql_next_token(&lex);
+        } else if (tok.type == TOK_DESC) {
+            stmt->order_by_desc = 1;
+            tok = sql_next_token(&lex);
+        }
+    }
+
+    if (tok.type == TOK_LIMIT) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_NUMBER) return 0;
         char buf[64];
         sql_token_text(&tok, buf, sizeof(buf));
-        if (strchr(buf, '.') != NULL) {
-            stmt->where_value.type = VAL_FLOAT;
-            stmt->where_value.as.as_float = strtod(buf, NULL);
-        } else {
-            stmt->where_value.type = VAL_INT;
-            stmt->where_value.as.as_int = atoi(buf);
-        }
-    } else if (tok.type == TOK_STRING) {
-        stmt->where_value.type = VAL_STRING;
-        stmt->where_value.as.as_string = malloc((size_t)tok.length + 1);
-        if (stmt->where_value.as.as_string == NULL) return 0;
-        memcpy(stmt->where_value.as.as_string, tok.text, (size_t)tok.length);
-        stmt->where_value.as.as_string[tok.length] = '\0';
-    } else {
-        return 0;
+        stmt->limit_count = atoi(buf);
+        if (stmt->limit_count < 0) stmt->limit_count = 0;
+        stmt->has_limit = 1;
+        tok = sql_next_token(&lex);
     }
 
-    tok = sql_next_token(&lex);
-    if (tok.type != TOK_EOF) return 0;
-
-    stmt->has_where = 1;
-    return 1;
+    return tok.type == TOK_EOF;
 }
 
 static void sql_free_select_stmt(SelectStmt* stmt) {
@@ -809,13 +1042,7 @@ static int cell_compare(Cell* a, Cell* b) {
 }
 
 static int evaluate_where(Row* row, SelectStmt* stmt) {
-    Cell* value = NULL;
-    for (int i = 0; i < row->field_count; i++) {
-        if (strcmp(row->fields[i].name, stmt->where_column) == 0) {
-            value = &row->fields[i].value;
-            break;
-        }
-    }
+    Cell* value = resolve_field(row, stmt->where_table_prefix, stmt->where_column, stmt);
     if (value == NULL) return 0;
 
     int cmp = cell_compare(value, &stmt->where_value);
@@ -828,6 +1055,112 @@ static int evaluate_where(Row* row, SelectStmt* stmt) {
         case 5: return cmp != 0;
         default: return 0;
     }
+}
+
+static void free_rows(Row* rows, int count) {
+    if (rows == NULL) return;
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < rows[i].field_count; j++) {
+            free(rows[i].fields[j].name);
+            if (rows[i].fields[j].value.type == VAL_STRING) {
+                free(rows[i].fields[j].value.as.as_string);
+            }
+        }
+        free(rows[i].fields);
+    }
+    free(rows);
+}
+
+static Cell cell_dup(Cell* src) {
+    Cell dst;
+    dst.type = src->type;
+    if (src->type == VAL_STRING) {
+        dst.as.as_string = strdup(src->as.as_string != NULL ? src->as.as_string : "");
+    } else if (src->type == VAL_FLOAT) {
+        dst.as.as_float = src->as.as_float;
+    } else {
+        dst.as.as_int = src->as.as_int;
+    }
+    return dst;
+}
+
+static Row row_combine(Row* a, Row* b) {
+    Row combined;
+    combined.field_count = a->field_count + b->field_count;
+    combined.fields = calloc((size_t)combined.field_count, sizeof(Field));
+    if (combined.fields == NULL) {
+        combined.field_count = 0;
+        return combined;
+    }
+
+    int k = 0;
+    for (int i = 0; i < a->field_count; i++) {
+        combined.fields[k].name = strdup(a->fields[i].name);
+        combined.fields[k].value = cell_dup(&a->fields[i].value);
+        k++;
+    }
+    for (int i = 0; i < b->field_count; i++) {
+        combined.fields[k].name = strdup(b->fields[i].name);
+        combined.fields[k].value = cell_dup(&b->fields[i].value);
+        k++;
+    }
+
+    return combined;
+}
+
+static Row row_zero(Table* table) {
+    Row row;
+    row.field_count = table->column_count;
+    row.fields = calloc((size_t)row.field_count, sizeof(Field));
+    if (row.fields == NULL) {
+        row.field_count = 0;
+        return row;
+    }
+    for (int i = 0; i < row.field_count; i++) {
+        row.fields[i].name = strdup(table->columns[i].name);
+        row.fields[i].value.type = table->columns[i].type;
+        if (table->columns[i].type == VAL_STRING) {
+            row.fields[i].value.as.as_string = strdup("");
+        } else if (table->columns[i].type == VAL_FLOAT) {
+            row.fields[i].value.as.as_float = 0.0;
+        } else {
+            row.fields[i].value.as.as_int = 0;
+        }
+    }
+    return row;
+}
+
+static void free_row(Row* row) {
+    if (row == NULL) return;
+    for (int i = 0; i < row->field_count; i++) {
+        free(row->fields[i].name);
+        if (row->fields[i].value.type == VAL_STRING) {
+            free(row->fields[i].value.as.as_string);
+        }
+    }
+    free(row->fields);
+}
+
+static int evaluate_join(Row* left, Row* right, SelectStmt* stmt) {
+    Cell* left_value = NULL;
+    for (int i = 0; i < left->field_count; i++) {
+        if (strcmp(left->fields[i].name, stmt->join_left_column) == 0) {
+            left_value = &left->fields[i].value;
+            break;
+        }
+    }
+    if (left_value == NULL) return 0;
+
+    Cell* right_value = NULL;
+    for (int i = 0; i < right->field_count; i++) {
+        if (strcmp(right->fields[i].name, stmt->join_right_column) == 0) {
+            right_value = &right->fields[i].value;
+            break;
+        }
+    }
+    if (right_value == NULL) return 0;
+
+    return cell_compare(left_value, right_value) == 0;
 }
 
 static Result* result_create(int capacity) {
@@ -843,13 +1176,13 @@ static Result* result_create(int capacity) {
     return res;
 }
 
-static void result_append(Result* res, Row* src, Table* table, SelectStmt* stmt) {
+static void result_append(Result* res, Row* src, SelectStmt* stmt) {
     Row* dst = &res->rows[res->row_count];
     res->row_count++;
 
     int count;
     if (stmt->column_count == 0) {
-        count = table->column_count;
+        count = src->field_count;
     } else {
         count = stmt->column_count;
     }
@@ -862,17 +1195,11 @@ static void result_append(Result* res, Row* src, Table* table, SelectStmt* stmt)
         const char* name;
         Cell* value;
         if (stmt->column_count == 0) {
-            name = table->columns[i].name;
+            name = src->fields[i].name;
             value = &src->fields[i].value;
         } else {
             name = stmt->column_names[i];
-            value = NULL;
-            for (int j = 0; j < src->field_count; j++) {
-                if (strcmp(src->fields[j].name, name) == 0) {
-                    value = &src->fields[j].value;
-                    break;
-                }
-            }
+            value = resolve_field(src, stmt->column_table_prefix[i], name, stmt);
             if (value == NULL) {
                 dst->fields[i].name = strdup(name);
                 dst->fields[i].value = cell_from_int(0);
@@ -892,50 +1219,341 @@ static void result_append(Result* res, Row* src, Table* table, SelectStmt* stmt)
     }
 }
 
-static Result* execute_select(Context* ctx, SelectStmt* stmt) {
-    Table* table = catalog_find_table(ctx, stmt->table_name);
-    if (table == NULL) {
-        return result_create(0);
+static Cell* row_find_field(Row* row, const char* name) {
+    for (int i = 0; i < row->field_count; i++) {
+        if (strcmp(row->fields[i].name, name) == 0) {
+            return &row->fields[i].value;
+        }
     }
+    return NULL;
+}
 
-    Row* rows = NULL;
-    int row_count = 0;
-    if (!read_all_rows(ctx, table, &rows, &row_count)) {
-        return result_create(0);
+static Cell* resolve_field(Row* row, const char* prefix, const char* name,
+                           SelectStmt* stmt) {
+    if (prefix != NULL && prefix[0] != '\0') {
+        int start = 0;
+        int end = row->field_count;
+        if (stmt->has_join) {
+            if (strcmp(prefix, stmt->table_name) == 0) {
+                end = stmt->join_left_column_count;
+            } else if (strcmp(prefix, stmt->join_table_name) == 0) {
+                start = stmt->join_left_column_count;
+                end = stmt->join_left_column_count + stmt->join_right_column_count;
+            } else {
+                return NULL;
+            }
+        } else {
+            if (strcmp(prefix, stmt->table_name) != 0) {
+                return NULL;
+            }
+        }
+        for (int i = start; i < end && i < row->field_count; i++) {
+            if (strcmp(row->fields[i].name, name) == 0) {
+                return &row->fields[i].value;
+            }
+        }
+        return NULL;
     }
+    return row_find_field(row, name);
+}
 
-    Result* res = result_create(row_count);
-    if (res == NULL) {
-        for (int i = 0; i < row_count; i++) {
-            for (int j = 0; j < rows[i].field_count; j++) {
-                free(rows[i].fields[j].name);
-                if (rows[i].fields[j].value.type == VAL_STRING) {
-                    free(rows[i].fields[j].value.as.as_string);
+static Cell zero_cell(void) {
+    Cell c;
+    c.type = VAL_INT;
+    c.as.as_int = 0;
+    return c;
+}
+
+static int filtered_row_compare(const void* a, const void* b, void* arg) {
+    SelectStmt* stmt = (SelectStmt*)arg;
+    Row* ra = *(Row**)a;
+    Row* rb = *(Row**)b;
+    Cell* ca = resolve_field(ra, stmt->order_by_table_prefix, stmt->order_by_column, stmt);
+    Cell* cb = resolve_field(rb, stmt->order_by_table_prefix, stmt->order_by_column, stmt);
+    Cell z = zero_cell();
+    int cmp = cell_compare(ca != NULL ? ca : &z, cb != NULL ? cb : &z);
+    return stmt->order_by_desc ? -cmp : cmp;
+}
+
+static int group_row_compare(const void* a, const void* b, void* arg) {
+    SelectStmt* stmt = (SelectStmt*)arg;
+    Row* ra = *(Row**)a;
+    Row* rb = *(Row**)b;
+    Cell* ca = resolve_field(ra, stmt->group_by_table_prefix, stmt->group_by_column, stmt);
+    Cell* cb = resolve_field(rb, stmt->group_by_table_prefix, stmt->group_by_column, stmt);
+    Cell z = zero_cell();
+    return cell_compare(ca != NULL ? ca : &z, cb != NULL ? cb : &z);
+}
+
+static void result_limit(Result* res, int limit) {
+    if (res == NULL || limit < 0) return;
+    if (limit < res->row_count) {
+        for (int i = limit; i < res->row_count; i++) {
+            Row* row = &res->rows[i];
+            for (int j = 0; j < row->field_count; j++) {
+                free(row->fields[j].name);
+                if (row->fields[j].value.type == VAL_STRING) {
+                    free(row->fields[j].value.as.as_string);
                 }
             }
-            free(rows[i].fields);
+            free(row->fields);
         }
-        free(rows);
+        res->row_count = limit;
+    }
+}
+
+static int stmt_has_aggregates(SelectStmt* stmt) {
+    for (int i = 0; i < stmt->column_count; i++) {
+        if (stmt->column_aggregates[i] != AGG_NONE) return 1;
+    }
+    return 0;
+}
+
+static Cell* source_row_find_field(Row* row, const char* name) {
+    for (int i = 0; i < row->field_count; i++) {
+        if (strcmp(row->fields[i].name, name) == 0) {
+            return &row->fields[i].value;
+        }
+    }
+    return NULL;
+}
+
+static Cell compute_aggregate(AggregateFunc agg, Row** rows, int row_count,
+                              const char* arg) {
+    Cell result;
+    if (agg == AGG_COUNT) {
+        result.type = VAL_INT;
+        result.as.as_int = row_count;
+        return result;
+    }
+
+    if (row_count == 0) {
+        result.type = VAL_INT;
+        result.as.as_int = 0;
+        return result;
+    }
+
+    if (agg == AGG_SUM || agg == AGG_AVG) {
+        double sum = 0;
+        int numeric_count = 0;
+        for (int i = 0; i < row_count; i++) {
+            Cell* value = source_row_find_field(rows[i], arg);
+            if (value == NULL) continue;
+            if (value->type == VAL_INT) {
+                sum += value->as.as_int;
+                numeric_count++;
+            } else if (value->type == VAL_FLOAT) {
+                sum += value->as.as_float;
+                numeric_count++;
+            }
+        }
+        if (agg == AGG_AVG && numeric_count > 0) {
+            result.type = VAL_FLOAT;
+            result.as.as_float = sum / numeric_count;
+        } else {
+            result.type = VAL_FLOAT;
+            result.as.as_float = sum;
+        }
+        return result;
+    }
+
+    if (agg == AGG_MIN || agg == AGG_MAX) {
+        Cell* first = source_row_find_field(rows[0], arg);
+        if (first == NULL) {
+            result.type = VAL_INT;
+            result.as.as_int = 0;
+            return result;
+        }
+        result = *first;
+        for (int i = 1; i < row_count; i++) {
+            Cell* value = source_row_find_field(rows[i], arg);
+            if (value == NULL) continue;
+            int cmp = cell_compare(value, &result);
+            if ((agg == AGG_MIN && cmp < 0) || (agg == AGG_MAX && cmp > 0)) {
+                result = *value;
+            }
+        }
+        return result;
+    }
+
+    result.type = VAL_INT;
+    result.as.as_int = 0;
+    return result;
+}
+
+static void result_append_aggregate(Result* res, SelectStmt* stmt,
+                                    Row** rows, int row_count) {
+    Row* dst = &res->rows[res->row_count++];
+    dst->field_count = stmt->column_count;
+    dst->fields = calloc((size_t)stmt->column_count, sizeof(Field));
+    if (dst->fields == NULL) return;
+
+    for (int i = 0; i < stmt->column_count; i++) {
+        dst->fields[i].name = strdup(stmt->column_names[i]);
+        if (stmt->column_aggregates[i] != AGG_NONE) {
+            Cell agg_value = compute_aggregate(stmt->column_aggregates[i], rows,
+                                               row_count,
+                                               stmt->column_aggregate_args[i]);
+            dst->fields[i].value = cell_dup(&agg_value);
+        } else if (row_count > 0) {
+            Cell* value = resolve_field(rows[0], stmt->column_table_prefix[i],
+                                        stmt->column_names[i], stmt);
+            if (value != NULL) {
+                dst->fields[i].value = cell_dup(value);
+            } else {
+                dst->fields[i].value = cell_from_int(0);
+            }
+        } else {
+            dst->fields[i].value = cell_from_int(0);
+        }
+    }
+}
+
+static Result* execute_select(Context* ctx, SelectStmt* stmt) {
+    Row* source_rows = NULL;
+    int source_count = 0;
+
+    if (stmt->has_join) {
+        Table* left_table = catalog_find_table(ctx, stmt->table_name);
+        Table* right_table = catalog_find_table(ctx, stmt->join_table_name);
+        if (left_table == NULL || right_table == NULL) {
+            return result_create(0);
+        }
+        stmt->join_left_column_count = left_table->column_count;
+        stmt->join_right_column_count = right_table->column_count;
+
+        Row* left_rows = NULL;
+        int left_count = 0;
+        Row* right_rows = NULL;
+        int right_count = 0;
+        if (!read_all_rows(ctx, left_table, &left_rows, &left_count) ||
+            !read_all_rows(ctx, right_table, &right_rows, &right_count)) {
+            free_rows(left_rows, left_count);
+            free_rows(right_rows, right_count);
+            return result_create(0);
+        }
+
+        int max_combined = left_count * (right_count + 1);
+        source_rows = calloc((size_t)max_combined, sizeof(Row));
+        if (source_rows == NULL) {
+            free_rows(left_rows, left_count);
+            free_rows(right_rows, right_count);
+            return NULL;
+        }
+
+        Row zero_right = row_zero(right_table);
+        if (zero_right.fields == NULL) {
+            free(source_rows);
+            free_rows(left_rows, left_count);
+            free_rows(right_rows, right_count);
+            return NULL;
+        }
+
+        source_count = 0;
+        for (int i = 0; i < left_count; i++) {
+            int matched = 0;
+            for (int j = 0; j < right_count; j++) {
+                if (evaluate_join(&left_rows[i], &right_rows[j], stmt)) {
+                    source_rows[source_count] = row_combine(&left_rows[i], &right_rows[j]);
+                    if (source_rows[source_count].fields == NULL) {
+                        free_row(&zero_right);
+                        free_rows(source_rows, source_count);
+                        free_rows(left_rows, left_count);
+                        free_rows(right_rows, right_count);
+                        return NULL;
+                    }
+                    source_count++;
+                    matched = 1;
+                }
+            }
+            if (!matched && stmt->join_type == 1) {
+                source_rows[source_count] = row_combine(&left_rows[i], &zero_right);
+                if (source_rows[source_count].fields == NULL) {
+                    free_row(&zero_right);
+                    free_rows(source_rows, source_count);
+                    free_rows(left_rows, left_count);
+                    free_rows(right_rows, right_count);
+                    return NULL;
+                }
+                source_count++;
+            }
+        }
+
+        free_row(&zero_right);
+        free_rows(left_rows, left_count);
+        free_rows(right_rows, right_count);
+    } else {
+        Table* table = catalog_find_table(ctx, stmt->table_name);
+        if (table == NULL) {
+            return result_create(0);
+        }
+        if (!read_all_rows(ctx, table, &source_rows, &source_count)) {
+            return result_create(0);
+        }
+    }
+
+    Row** filtered = malloc(sizeof(Row*) * (size_t)source_count);
+    if (filtered == NULL) {
+        free_rows(source_rows, source_count);
+        return NULL;
+    }
+    int filtered_count = 0;
+    for (int i = 0; i < source_count; i++) {
+        if (stmt->has_where && !evaluate_where(&source_rows[i], stmt)) {
+            continue;
+        }
+        filtered[filtered_count++] = &source_rows[i];
+    }
+
+    int has_agg = stmt_has_aggregates(stmt);
+
+    if (stmt->has_order_by && !has_agg) {
+        qsort_r(filtered, (size_t)filtered_count, sizeof(Row*), filtered_row_compare, stmt);
+    }
+
+    Result* res = result_create(has_agg ? (stmt->has_group_by ? filtered_count : 1) : filtered_count);
+    if (res == NULL) {
+        free(filtered);
+        free_rows(source_rows, source_count);
         return NULL;
     }
 
-    for (int i = 0; i < row_count; i++) {
-        if (stmt->has_where && !evaluate_where(&rows[i], stmt)) {
-            continue;
+    if (has_agg) {
+        if (stmt->has_group_by) {
+            qsort_r(filtered, (size_t)filtered_count, sizeof(Row*), group_row_compare, stmt);
+            int i = 0;
+            while (i < filtered_count) {
+                int j = i + 1;
+                Cell* key_i = resolve_field(filtered[i], stmt->group_by_table_prefix,
+                                            stmt->group_by_column, stmt);
+                Cell z = zero_cell();
+                while (j < filtered_count) {
+                    Cell* key_j = resolve_field(filtered[j], stmt->group_by_table_prefix,
+                                                stmt->group_by_column, stmt);
+                    if (cell_compare(key_i != NULL ? key_i : &z,
+                                     key_j != NULL ? key_j : &z) != 0) {
+                        break;
+                    }
+                    j++;
+                }
+                result_append_aggregate(res, stmt, &filtered[i], j - i);
+                i = j;
+            }
+        } else {
+            result_append_aggregate(res, stmt, filtered, filtered_count);
         }
-        result_append(res, &rows[i], table, stmt);
+    } else {
+        for (int i = 0; i < filtered_count; i++) {
+            result_append(res, filtered[i], stmt);
+        }
     }
 
-    for (int i = 0; i < row_count; i++) {
-        for (int j = 0; j < rows[i].field_count; j++) {
-            free(rows[i].fields[j].name);
-            if (rows[i].fields[j].value.type == VAL_STRING) {
-                free(rows[i].fields[j].value.as.as_string);
-            }
-        }
-        free(rows[i].fields);
+    free(filtered);
+    free_rows(source_rows, source_count);
+
+    if (stmt->has_limit && !has_agg) {
+        result_limit(res, stmt->limit_count);
     }
-    free(rows);
 
     return res;
 }
@@ -951,6 +1569,8 @@ typedef struct {
     int         column_count;
     Cell        values[MAX_COLUMNS];
     int         value_count;
+    int         has_select;
+    char*       select_query;
 } DdlStmt;
 
 static int sql_parse_type(SqlToken* tok, int* out_type) {
@@ -1029,6 +1649,11 @@ static int sql_parse_insert(const char* query, DdlStmt* stmt) {
     sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
 
     tok = sql_next_token(&lex);
+    if (tok.type == TOK_SELECT) {
+        stmt->has_select = 1;
+        stmt->select_query = strdup(tok.text);
+        return stmt->select_query != NULL;
+    }
     if (tok.type != TOK_VALUES) return 0;
     tok = sql_next_token(&lex);
     if (tok.type != TOK_LPAREN) return 0;
@@ -1078,6 +1703,10 @@ static void sql_free_ddl_stmt(DdlStmt* stmt) {
             free(stmt->values[i].as.as_string);
         }
     }
+    if (stmt->select_query != NULL) {
+        free(stmt->select_query);
+        stmt->select_query = NULL;
+    }
 }
 
 typedef struct {
@@ -1105,6 +1734,41 @@ static void sql_free_delete_stmt(DeleteStmt* stmt);
 static int execute_update(Context* ctx, UpdateStmt* stmt);
 static int execute_delete(Context* ctx, DeleteStmt* stmt);
 
+static int execute_insert_select(Context* ctx, Table* table, const char* select_query) {
+    Result* res = sql_exec(select_query, ctx);
+    if (res == NULL) return 0;
+
+    for (int r = 0; r < res->row_count; r++) {
+        Row* src = &res->rows[r];
+        Cell cells[MAX_COLUMNS];
+        for (int c = 0; c < table->column_count && c < MAX_COLUMNS; c++) {
+            Cell* value = row_find_field(src, table->columns[c].name);
+            if (value != NULL) {
+                cells[c] = cell_dup(value);
+            } else {
+                cells[c].type = table->columns[c].type;
+                if (cells[c].type == VAL_STRING) {
+                    cells[c].as.as_string = strdup("");
+                } else if (cells[c].type == VAL_FLOAT) {
+                    cells[c].as.as_float = 0.0;
+                } else {
+                    cells[c].as.as_int = 0;
+                }
+            }
+        }
+        catalog_insert(ctx, table, cells);
+        for (int c = 0; c < table->column_count && c < MAX_COLUMNS; c++) {
+            if (cells[c].type == VAL_STRING) {
+                free(cells[c].as.as_string);
+            }
+        }
+    }
+
+    result_free(res);
+    catalog_write_page(ctx);
+    return 1;
+}
+
 int sql_exec_ddl(const char* query, Context* ctx) {
     DdlStmt stmt;
     if (sql_parse_create_table(query, &stmt)) {
@@ -1120,6 +1784,11 @@ int sql_exec_ddl(const char* query, Context* ctx) {
         if (t == NULL) {
             sql_free_ddl_stmt(&stmt);
             return 0;
+        }
+        if (stmt.has_select) {
+            int ok = execute_insert_select(ctx, t, stmt.select_query);
+            sql_free_ddl_stmt(&stmt);
+            return ok;
         }
         if (t->column_count != stmt.value_count) {
             sql_free_ddl_stmt(&stmt);
