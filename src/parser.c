@@ -455,6 +455,65 @@ static Expr* struct_literal(Parser* parser, char* struct_name) {
     return expr;
 }
 
+static Expr* map_literal(Parser* parser) {
+    /* '{' was already consumed by the prefix dispatcher */
+    Expr** keys = NULL;
+    Expr** values = NULL;
+    int count = 0;
+    if (!check(parser, TOKEN_RBRACE)) {
+        do {
+            Expr** new_keys = malloc(sizeof(Expr*) * (size_t)(count + 1));
+            Expr** new_values = malloc(sizeof(Expr*) * (size_t)(count + 1));
+            if (new_keys == NULL || new_values == NULL) {
+                for (int i = 0; i < count; i++) {
+                    free_expr(keys[i]);
+                    free_expr(values[i]);
+                }
+                free(keys);
+                free(values);
+                free(new_keys);
+                free(new_values);
+                return NULL;
+            }
+            if (count > 0) {
+                memcpy(new_keys, keys, sizeof(Expr*) * (size_t)count);
+                memcpy(new_values, values, sizeof(Expr*) * (size_t)count);
+                free(keys);
+                free(values);
+            }
+            keys = new_keys;
+            values = new_values;
+            keys[count] = expression(parser);
+            if (!match(parser, TOKEN_COLON)) {
+                error_at_current(parser, "expected ':' after map key");
+                for (int i = 0; i <= count; i++) {
+                    free_expr(keys[i]);
+                    free_expr(values[i]);
+                }
+                free(keys);
+                free(values);
+                return NULL;
+            }
+            values[count] = expression(parser);
+            count++;
+        } while (match(parser, TOKEN_COMMA));
+    }
+    if (!match(parser, TOKEN_RBRACE)) {
+        error_at_current(parser, "expected '}' after map literal");
+        for (int i = 0; i < count; i++) {
+            free_expr(keys[i]);
+            free_expr(values[i]);
+        }
+        free(keys);
+        free(values);
+        return NULL;
+    }
+    Expr* expr = create_map_literal_expr(keys, values, count);
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
+}
+
 static Expr* variable(Parser* parser) {
     char* name = copy_token_lexeme(&parser->previous);
     if (check(parser, TOKEN_LBRACE) && parser_is_struct_name(parser, name)) {
@@ -608,6 +667,23 @@ static Type* parse_type(Parser* parser) {
             return type_new(TYPE_ARRAY, element);
         }
         return type_new(TYPE_ARRAY, NULL);  /* generic array */
+    }
+    if (match(parser, TOKEN_MAP_TYPE)) {
+        Type* value_type = &type_unknown;
+        if (match(parser, TOKEN_LT)) {
+            Type* key_type = parse_type(parser);
+            if (key_type == NULL || key_type->kind != TYPE_STRING) {
+                error_at_current(parser, "map key type must be string");
+            }
+            if (!match(parser, TOKEN_COMMA)) {
+                error_at_current(parser, "expected ',' between map key and value types");
+            }
+            value_type = parse_type(parser);
+            if (!match(parser, TOKEN_GT)) {
+                error_at_current(parser, "expected '>' after map value type");
+            }
+        }
+        return type_new(TYPE_MAP, value_type);
     }
     error_at_current(parser, "expected type");
     return &type_int;
@@ -1103,7 +1179,8 @@ static Stmt* statement(Parser* parser) {
         check(parser, TOKEN_FLOAT_TYPE) ||
         check(parser, TOKEN_STRING_TYPE) ||
         check(parser, TOKEN_BOOL_TYPE) ||
-        check(parser, TOKEN_ARRAY_TYPE)) {
+        check(parser, TOKEN_ARRAY_TYPE) ||
+        check(parser, TOKEN_MAP_TYPE)) {
         return var_decl(parser);
     }
     if (check(parser, TOKEN_IDENT)) {
@@ -1258,7 +1335,7 @@ static ParseRule rules[] = {
 
     [TOKEN_LPAREN]     = {grouping,    call,   PREC_CALL},
     [TOKEN_RPAREN]     = {NULL,        NULL,   PREC_NONE},
-    [TOKEN_LBRACE]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_LBRACE]     = {map_literal, NULL,   PREC_NONE},
     [TOKEN_RBRACE]     = {NULL,        NULL,   PREC_NONE},
     [TOKEN_LBRACKET]   = {array_literal, index_expr, PREC_CALL},
     [TOKEN_RBRACKET]   = {NULL,        NULL,   PREC_NONE},

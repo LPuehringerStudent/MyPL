@@ -414,6 +414,17 @@ Value row_obj_get_field(RowObj* row, const char* name) {
     return value_int(0);
 }
 
+int row_obj_set_field(RowObj* row, const char* name, Value value) {
+    if (row == NULL || name == NULL) return 0;
+    for (int i = 0; i < row->column_count; i++) {
+        if (row->column_names[i] != NULL && strcmp(row->column_names[i], name) == 0) {
+            row_obj_set_column(row, i, name, value);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int array_append(ArrayObj* array, Value value) {
     if (array->count >= array->capacity) {
         int new_capacity = array->capacity == 0 ? 4 : array->capacity * 2;

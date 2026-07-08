@@ -216,6 +216,22 @@ static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
     return t;
 }
 
+static Type* transient_map_type(TypeChecker* tc, Type* value_type) {
+    if (tc->transient_count >= MAX_TRANSIENTS) {
+        type_error(tc, (SourceLoc){0,0}, "too many inferred types");
+        return &type_unknown;
+    }
+    Type* owned_value = type_copy(value_type);
+    Type* t = type_new(TYPE_MAP, owned_value);
+    if (t == NULL) {
+        type_free(owned_value);
+        type_error(tc, (SourceLoc){0,0}, "out of memory");
+        return &type_unknown;
+    }
+    tc->transient_types[tc->transient_count++] = t;
+    return t;
+}
+
 static void check_stmt(TypeChecker* tc, Stmt* stmt);
 static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint);
 
@@ -278,7 +294,12 @@ static int is_native(const char* name) {
            strcmp(name, "assert") == 0 ||
            strcmp(name, "parse_int") == 0 ||
            strcmp(name, "split_lines") == 0 ||
-           strcmp(name, "join_paths") == 0;
+           strcmp(name, "join_paths") == 0 ||
+           strcmp(name, "is_dir") == 0 ||
+           strcmp(name, "list_dir") == 0 ||
+           strcmp(name, "mkdir") == 0 ||
+           strcmp(name, "is_digit") == 0 ||
+           strcmp(name, "is_alpha") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -787,6 +808,39 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return &type_string;
     }
+    if (strcmp(name, "is_dir") == 0 || strcmp(name, "mkdir") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "%s expects 1 argument", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects a string path", name);
+        }
+        return &type_bool;
+    }
+    if (strcmp(name, "list_dir") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "list_dir expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "list_dir expects a string path");
+        }
+        return transient_array_type(tc, &type_string);
+    }
+    if (strcmp(name, "is_digit") == 0 || strcmp(name, "is_alpha") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "%s expects 1 argument", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects a string", name);
+        }
+        return &type_bool;
+    }
     if (strcmp(name, "format") == 0) {
         if (arg_count != 2) {
             type_error(tc, loc, "format expects 2 arguments");
@@ -1099,15 +1153,26 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
             Type* base = infer_expr(tc, expr->as.index.array, NULL);
             Type* idx  = infer_expr(tc, expr->as.index.index, NULL);
             if (tc->had_error) return NULL;
-            if (base == NULL || base->kind != TYPE_ARRAY) {
-                type_error(tc, expr->loc, "Cannot index non-array type");
+            if (base == NULL) {
+                type_error(tc, expr->loc, "Cannot index value with no type");
                 return NULL;
             }
-            if (idx == NULL || idx->kind != TYPE_INT) {
-                type_error(tc, expr->loc, "Array index must be int");
-                return NULL;
+            if (base->kind == TYPE_ARRAY) {
+                if (idx == NULL || idx->kind != TYPE_INT) {
+                    type_error(tc, expr->loc, "Array index must be int");
+                    return NULL;
+                }
+                return base->element_type;
             }
-            return base->element_type;
+            if (base->kind == TYPE_MAP) {
+                if (idx == NULL || idx->kind != TYPE_STRING) {
+                    type_error(tc, expr->loc, "Map key must be string");
+                    return NULL;
+                }
+                return base->element_type;
+            }
+            type_error(tc, expr->loc, "Cannot index non-array type");
+            return NULL;
         }
 
         case EXPR_FIELD: {
@@ -1191,6 +1256,40 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                 }
             }
             return make_struct_type(tc, sl->struct_name);
+        }
+
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = &expr->as.map_literal;
+            Type* value_type = NULL;
+            if (m->count == 0) {
+                if (hint != NULL && hint->kind == TYPE_MAP) {
+                    value_type = hint->element_type;
+                } else {
+                    type_error(tc, expr->loc, "Cannot infer value type of empty map");
+                    return transient_map_type(tc, &type_unknown);
+                }
+            } else if (hint != NULL && hint->kind == TYPE_MAP) {
+                value_type = hint->element_type;
+            }
+            for (int i = 0; i < m->count; i++) {
+                Type* key_type = infer_expr(tc, m->keys[i], NULL);
+                if (tc->had_error) return NULL;
+                if (key_type != NULL && key_type != &type_unknown &&
+                    key_type->kind != TYPE_STRING) {
+                    type_error(tc, m->keys[i]->loc, "Map key must be string");
+                    return NULL;
+                }
+                Type* val = infer_expr(tc, m->values[i], value_type);
+                if (tc->had_error) return NULL;
+                if (value_type == NULL) {
+                    value_type = val;
+                } else if (val != NULL && val != &type_unknown &&
+                           !type_equals(value_type, val)) {
+                    type_error(tc, m->values[i]->loc, "Map value type mismatch");
+                    return NULL;
+                }
+            }
+            return transient_map_type(tc, value_type);
         }
     }
 
@@ -1389,22 +1488,39 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             Type* base = infer_expr(tc, stmt->as.index_assign.array, NULL);
             Type* idx  = infer_expr(tc, stmt->as.index_assign.index, NULL);
             Type* val  = infer_expr(tc, stmt->as.index_assign.value,
-                                    base != NULL && base->kind == TYPE_ARRAY
+                                    base != NULL &&
+                                        (base->kind == TYPE_ARRAY || base->kind == TYPE_MAP)
                                         ? base->element_type : NULL);
             if (tc->had_error) return;
-            if (base == NULL || base->kind != TYPE_ARRAY) {
-                type_error(tc, stmt->loc, "Cannot index assign to non-array type");
+            if (base == NULL) {
+                type_error(tc, stmt->loc, "Cannot index assign to value with no type");
                 return;
             }
-            if (idx == NULL || idx->kind != TYPE_INT) {
-                type_error(tc, stmt->loc, "Array index must be int");
+            if (base->kind == TYPE_ARRAY) {
+                if (idx == NULL || idx->kind != TYPE_INT) {
+                    type_error(tc, stmt->loc, "Array index must be int");
+                    return;
+                }
+                if (!types_assignable(base->element_type, val)) {
+                    type_error(tc, stmt->loc,
+                               "Cannot assign value of type '%s' to array element of type '%s'",
+                               type_name(val), type_name(base->element_type));
+                }
                 return;
             }
-            if (!types_assignable(base->element_type, val)) {
-                type_error(tc, stmt->loc,
-                           "Cannot assign value of type '%s' to array element of type '%s'",
-                           type_name(val), type_name(base->element_type));
+            if (base->kind == TYPE_MAP) {
+                if (idx == NULL || idx->kind != TYPE_STRING) {
+                    type_error(tc, stmt->loc, "Map key must be string");
+                    return;
+                }
+                if (!types_assignable(base->element_type, val)) {
+                    type_error(tc, stmt->loc,
+                               "Cannot assign value of type '%s' to map value of type '%s'",
+                               type_name(val), type_name(base->element_type));
+                }
+                return;
             }
+            type_error(tc, stmt->loc, "Cannot index assign to non-array type");
             break;
         }
 

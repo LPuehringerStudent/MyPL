@@ -44,6 +44,7 @@ typedef enum {
     OP_SQL_GET_COLUMN,
     OP_SQL_TO_ARRAY,
     OP_STRUCT_BUILD,
+    OP_MAP_BUILD,
     OP_RUNTIME_ERROR
 } OpCode;
 
@@ -121,6 +122,7 @@ RowObj* row_obj_new(int column_count);
 void    row_obj_free(RowObj* row);
 void    row_obj_set_column(RowObj* row, int index, const char* name, Value value);
 Value   row_obj_get_field(RowObj* row, const char* name);
+int     row_obj_set_field(RowObj* row, const char* name, Value value);
 
 Value value_add(Value a, Value b);
 Value value_sub(Value a, Value b);

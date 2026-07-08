@@ -636,6 +636,92 @@ static int native_file_exists(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_is_dir(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "is_dir expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    *out = value_bool(os_is_dir(path));
+    return 1;
+}
+
+static int native_mkdir(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "mkdir expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    *out = value_bool(os_mkdir(path));
+    return 1;
+}
+
+static int native_list_dir(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "list_dir expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    char** names = NULL;
+    int count = 0;
+    if (!os_list_dir(path, &names, &count)) {
+        vm_set_error(vm, "list_dir: could not read directory");
+        return 0;
+    }
+    ArrayObj* arr = array_new();
+    if (arr == NULL) {
+        for (int i = 0; i < count; i++) free(names[i]);
+        free(names);
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!array_append(arr, value_string(strdup(names[i])))) {
+            for (int j = i; j < count; j++) free(names[j]);
+            free(names);
+            array_free(arr);
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+    }
+    for (int i = 0; i < count; i++) free(names[i]);
+    free(names);
+    *out = value_array(arr);
+    return 1;
+}
+
+static int native_is_digit(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "is_digit expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int result = (s[0] != '\0' && s[1] == '\0' && isdigit((unsigned char)s[0]));
+    *out = value_bool(result);
+    return 1;
+}
+
+static int native_is_alpha(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "is_alpha expects a string");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int result = (s[0] != '\0' && s[1] == '\0' && isalpha((unsigned char)s[0]));
+    *out = value_bool(result);
+    return 1;
+}
+
 static int native_split(VM* vm, int argc, Value* argv, Value* out) {
     (void)argc;
     if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
@@ -1429,6 +1515,11 @@ static NativeDef natives[] = {
     {"read_file", 1, native_read_file},
     {"write_file", 2, native_write_file},
     {"file_exists", 1, native_file_exists},
+    {"is_dir", 1, native_is_dir},
+    {"mkdir", 1, native_mkdir},
+    {"list_dir", 1, native_list_dir},
+    {"is_digit", 1, native_is_digit},
+    {"is_alpha", 1, native_is_alpha},
     {"split", 2, native_split},
     {"join", 2, native_join},
     {"replace", 3, native_replace},

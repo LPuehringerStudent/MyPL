@@ -39,6 +39,7 @@ typedef enum {
     TOKEN_STRING_TYPE,
     TOKEN_BOOL_TYPE,
     TOKEN_ARRAY_TYPE,
+    TOKEN_MAP_TYPE,
 
     /* literals */
     TOKEN_IDENT,

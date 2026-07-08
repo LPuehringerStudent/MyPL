@@ -585,35 +585,91 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 free(temp);
                 break;
             }
+            case OP_MAP_BUILD: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t count = read_u16(vm->ip);
+                vm->ip += 2;
+                if (count * 2 > (size_t)(vm->stack_top - vm->frame_base)) {
+                    set_runtime_error(vm, "Not enough values for map");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                RowObj* row = row_obj_new((int)count);
+                if (row == NULL) {
+                    set_runtime_error(vm, "Out of memory");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                for (int i = (int)count - 1; i >= 0; i--) {
+                    Value key;
+                    Value val;
+                    if (!pop(vm, &key)) {
+                        row_obj_free(row);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    if (!pop(vm, &val)) {
+                        value_release(key);
+                        row_obj_free(row);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    if (key.type != VAL_STRING) {
+                        value_release(key);
+                        value_release(val);
+                        row_obj_free(row);
+                        set_runtime_error(vm, "Map key must be string");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    row_obj_set_column(row, i, key.as.as_string, val);
+                    value_release(key);
+                    value_release(val);
+                }
+                Value result = value_row(row);
+                if (!push(vm, result)) {
+                    value_release(result);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
             case OP_INDEX_GET: {
                 Value idx_val;
                 Value arr_val;
                 if (!pop(vm, &idx_val)) return INTERPRET_RUNTIME_ERROR;
                 if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
-                if (arr_val.type != VAL_ARRAY || idx_val.type != VAL_INT) {
+                if (arr_val.type == VAL_ARRAY && idx_val.type == VAL_INT) {
+                    int idx = idx_val.as.as_int;
+                    if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Array index out of bounds");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    Value result = array_get(arr_val.as.as_array, idx);
+                    value_retain(result);
+                    if (!push(vm, result)) {
+                        value_release(result);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
                     value_release(idx_val);
                     value_release(arr_val);
-                    set_runtime_error(vm, "Invalid array index");
-                    return INTERPRET_RUNTIME_ERROR;
+                    break;
                 }
-                int idx = idx_val.as.as_int;
-                if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                if (arr_val.type == VAL_ROW && idx_val.type == VAL_STRING) {
+                    Value result = row_obj_get_field((RowObj*)arr_val.as.as_row_handle,
+                                                     idx_val.as.as_string);
+                    if (!push(vm, result)) {
+                        value_release(result);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
                     value_release(idx_val);
                     value_release(arr_val);
-                    set_runtime_error(vm, "Array index out of bounds");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                Value result = array_get(arr_val.as.as_array, idx);
-                value_retain(result);
-                if (!push(vm, result)) {
-                    value_release(result);
-                    value_release(idx_val);
-                    value_release(arr_val);
-                    return INTERPRET_RUNTIME_ERROR;
+                    break;
                 }
                 value_release(idx_val);
                 value_release(arr_val);
-                break;
+                set_runtime_error(vm, "Invalid index");
+                return INTERPRET_RUNTIME_ERROR;
             }
             case OP_INDEX_SET: {
                 Value val;
@@ -622,26 +678,40 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 if (!pop(vm, &val)) return INTERPRET_RUNTIME_ERROR;
                 if (!pop(vm, &idx_val)) return INTERPRET_RUNTIME_ERROR;
                 if (!pop(vm, &arr_val)) return INTERPRET_RUNTIME_ERROR;
-                if (arr_val.type != VAL_ARRAY || idx_val.type != VAL_INT) {
+                if (arr_val.type == VAL_ARRAY && idx_val.type == VAL_INT) {
+                    int idx = idx_val.as.as_int;
+                    if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                        value_release(val);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Array index out of bounds");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    array_set(arr_val.as.as_array, idx, val);
                     value_release(val);
                     value_release(idx_val);
                     value_release(arr_val);
-                    set_runtime_error(vm, "Invalid array index assignment");
-                    return INTERPRET_RUNTIME_ERROR;
+                    break;
                 }
-                int idx = idx_val.as.as_int;
-                if (idx < 0 || idx >= array_length(arr_val.as.as_array)) {
+                if (arr_val.type == VAL_ROW && idx_val.type == VAL_STRING) {
+                    RowObj* row = (RowObj*)arr_val.as.as_row_handle;
+                    if (!row_obj_set_field(row, idx_val.as.as_string, val)) {
+                        value_release(val);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Map key not found");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
                     value_release(val);
                     value_release(idx_val);
                     value_release(arr_val);
-                    set_runtime_error(vm, "Array index out of bounds");
-                    return INTERPRET_RUNTIME_ERROR;
+                    break;
                 }
-                array_set(arr_val.as.as_array, idx, val);
                 value_release(val);
                 value_release(idx_val);
                 value_release(arr_val);
-                break;
+                set_runtime_error(vm, "Invalid index assignment");
+                return INTERPRET_RUNTIME_ERROR;
             }
             case OP_SQL_EXEC: {
                 if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;

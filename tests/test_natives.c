@@ -947,6 +947,120 @@ TEST(natives_read_line_reads_from_stdin) {
     stdin = saved_stdin;
 }
 
+TEST(natives_is_dir_detects_directory) {
+    system("rm -rf /tmp/mypl_isdir_test");
+    system("mkdir -p /tmp/mypl_isdir_test");
+
+    VM* vm = vm_init();
+    Value argv[1];
+    Value result;
+
+    argv[0] = value_string(strdup("/tmp/mypl_isdir_test"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_dir"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    argv[0] = value_string(strdup("/tmp/mypl_isdir_test_does_not_exist"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_dir"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(0, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    vm_free(vm);
+    system("rm -rf /tmp/mypl_isdir_test");
+}
+
+TEST(natives_mkdir_creates_directory) {
+    system("rm -rf /tmp/mypl_mkdir_test");
+
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_string(strdup("/tmp/mypl_mkdir_test"));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("mkdir"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    argv[0] = value_string(strdup("/tmp/mypl_mkdir_test"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_dir"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    vm_free(vm);
+    system("rm -rf /tmp/mypl_mkdir_test");
+}
+
+TEST(natives_list_dir_lists_entries) {
+    system("rm -rf /tmp/mypl_listdir_test");
+    system("mkdir -p /tmp/mypl_listdir_test");
+    system("touch /tmp/mypl_listdir_test/hello.txt");
+
+    VM* vm = vm_init();
+    Value argv[1];
+    argv[0] = value_string(strdup("/tmp/mypl_listdir_test"));
+    Value result;
+    ASSERT_INT_EQ(1, native_call(vm, native_find("list_dir"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_ARRAY, result.type);
+    ASSERT_INT_EQ(1, array_length(result.as.as_array));
+    ASSERT_STRING_EQ("hello.txt", array_get(result.as.as_array, 0).as.as_string);
+    value_release(argv[0]);
+    value_release(result);
+
+    vm_free(vm);
+    system("rm -rf /tmp/mypl_listdir_test");
+}
+
+TEST(natives_is_digit_checks_single_character) {
+    VM* vm = vm_init();
+    Value argv[1];
+    Value result;
+
+    argv[0] = value_string(strdup("5"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_digit"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    argv[0] = value_string(strdup("a"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_digit"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(0, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    vm_free(vm);
+}
+
+TEST(natives_is_alpha_checks_single_character) {
+    VM* vm = vm_init();
+    Value argv[1];
+    Value result;
+
+    argv[0] = value_string(strdup("a"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_alpha"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(1, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    argv[0] = value_string(strdup("5"));
+    ASSERT_INT_EQ(1, native_call(vm, native_find("is_alpha"), 1, argv, &result));
+    ASSERT_INT_EQ(VAL_BOOL, result.type);
+    ASSERT_INT_EQ(0, result.as.as_int);
+    value_release(argv[0]);
+    value_release(result);
+
+    vm_free(vm);
+}
+
 int main(void) {
     RUN_TEST(natives_finds_registered_functions);
     RUN_TEST(natives_length_returns_array_length);
@@ -1016,5 +1130,10 @@ int main(void) {
     RUN_TEST(natives_pad_end_pads_on_right);
     RUN_TEST(natives_pad_start_rejects_non_string);
     RUN_TEST(natives_read_line_reads_from_stdin);
+    RUN_TEST(natives_is_dir_detects_directory);
+    RUN_TEST(natives_mkdir_creates_directory);
+    RUN_TEST(natives_list_dir_lists_entries);
+    RUN_TEST(natives_is_digit_checks_single_character);
+    RUN_TEST(natives_is_alpha_checks_single_character);
     TEST_SUMMARY();
 }

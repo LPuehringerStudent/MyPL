@@ -1,6 +1,9 @@
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "os.h"
@@ -60,6 +63,62 @@ char* os_read_file(const char* path) {
     buffer[size] = '\0';
     close(fd);
     return buffer;
+}
+
+int os_is_dir(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode);
+}
+
+int os_mkdir(const char* path) {
+    return mkdir(path, 0755) == 0;
+}
+
+int os_list_dir(const char* path, char*** out_names, int* out_count) {
+    if (out_names == NULL || out_count == NULL) return 0;
+    *out_names = NULL;
+    *out_count = 0;
+    DIR* dir = opendir(path);
+    if (dir == NULL) return 0;
+
+    int capacity = 8;
+    int count = 0;
+    char** names = malloc(sizeof(char*) * (size_t)capacity);
+    if (names == NULL) {
+        closedir(dir);
+        return 0;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        if (count >= capacity) {
+            capacity *= 2;
+            char** new_names = realloc(names, sizeof(char*) * (size_t)capacity);
+            if (new_names == NULL) {
+                for (int i = 0; i < count; i++) free(names[i]);
+                free(names);
+                closedir(dir);
+                return 0;
+            }
+            names = new_names;
+        }
+        names[count] = strdup(entry->d_name);
+        if (names[count] == NULL) {
+            for (int i = 0; i < count; i++) free(names[i]);
+            free(names);
+            closedir(dir);
+            return 0;
+        }
+        count++;
+    }
+    closedir(dir);
+    *out_names = names;
+    *out_count = count;
+    return 1;
 }
 
 int os_open(const char* path) {
