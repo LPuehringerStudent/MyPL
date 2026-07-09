@@ -6,6 +6,9 @@ build/
 *.so
 mydb
 
+# Graphify output
+graphify-out/
+
 # Runtime/test artifacts
 *.db
 

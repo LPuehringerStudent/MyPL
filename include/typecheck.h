@@ -10,6 +10,7 @@ struct ProcSignature {
     const char* name;
     Type* return_type;
     Type** param_types;
+    ParamMode* param_modes;
     int param_count;
 };
 

@@ -76,7 +76,9 @@ typedef enum {
     STMT_SQL_DDL,
     STMT_SQL_DML,
     STMT_SQL_QUERY,
-    STMT_SQL_TRANSACTION
+    STMT_SQL_TRANSACTION,
+    STMT_TRY_CATCH,
+    STMT_CASE
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -88,9 +90,16 @@ typedef struct {
     int column;
 } SourceLoc;
 
+typedef enum {
+    PARAM_IN,
+    PARAM_OUT,
+    PARAM_INOUT
+} ParamMode;
+
 typedef struct {
     char* name;
     Type* type;
+    ParamMode mode;
 } Param;
 
 typedef struct {
@@ -99,6 +108,7 @@ typedef struct {
     int param_count;
     Type* return_type;
     Block* body;
+    int is_function;  /* 1 = function (may be used in SQL expressions), 0 = procedure */
 } ProcDecl;
 
 typedef struct {
@@ -144,6 +154,14 @@ typedef struct {
     Block* then_block;
     Block* else_block;
 } IfStmt;
+
+typedef struct {
+    Expr* selector;
+    Expr** values;
+    Block** blocks;
+    int branch_count;
+    Block* else_block;
+} CaseStmt;
 
 typedef struct {
     char* var_name;
@@ -202,6 +220,12 @@ typedef struct {
     int kind; /* 0=begin, 1=commit, 2=rollback */
 } SqlTransactionStmt;
 
+typedef struct {
+    Block* try_block;
+    char* catch_var;
+    Block* catch_block;
+} TryCatchStmt;
+
 struct Stmt {
     StmtKind kind;
     SourceLoc loc;
@@ -220,6 +244,8 @@ struct Stmt {
         ImportStmt import_stmt;
         SqlStmt sql_stmt;
         SqlTransactionStmt sql_transaction;
+        TryCatchStmt try_catch;
+        CaseStmt case_stmt;
     } as;
 };
 
@@ -332,6 +358,8 @@ Stmt* create_cfor_stmt(Stmt* init, Expr* condition, Stmt* step, Block* body);
 Stmt* create_import_stmt(const char* path);
 Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char** into_vars, int into_count);
 Stmt* create_sql_transaction_stmt(int kind);
+Stmt* create_try_catch_stmt(Block* try_block, const char* catch_var, Block* catch_block);
+Stmt* create_case_stmt(Expr* selector, Expr** values, Block** blocks, int branch_count, Block* else_block);
 
 Expr* create_literal_expr(Value value);
 Expr* create_variable_expr(const char* name);

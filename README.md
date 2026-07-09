@@ -237,17 +237,20 @@ Useful commands:
   `replace`, `trim`, `to_upper`, `to_lower`, `parse_int`, `split_lines`,
   `range`, `assert`, file I/O, and more.
 
-## Roadmap
+## Roadmap / Next Steps
 
 MyPL is intentionally small today, but the goal is to become a credible
-open-source alternative to PL/SQL for lightweight database scripting. Upcoming
-directions include:
+open-source alternative to PL/SQL for lightweight database scripting. See
+[`NEXT_STEPS.md`](NEXT_STEPS.md) for a concrete, phased comparison with Oracle
+PL/SQL and the prioritized goals that will close the gap.
 
-- More control flow and collection operations.
-- Better error messages with source locations.
-- A small package/module ecosystem.
-- More comprehensive standard library.
-- Improved custom SQL engine.
+High-level direction:
+
+- Stabilize exception handling, SQL DML feedback, and dynamic SQL (Phase 1).
+- Add functions, parameter modes, `case`, and anonymous blocks (Phase 2).
+- Introduce explicit cursors, cursor attributes, and richer collections (Phase 3).
+- Build packages, stored program units, triggers, and `AUTHID` support (Phase 4).
+- Expand the type system (`%TYPE`, `%ROWTYPE`, dates) and standard library (Phase 5).
 
 Contributions and ideas are welcome.
 

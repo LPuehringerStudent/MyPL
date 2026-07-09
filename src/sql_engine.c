@@ -2320,14 +2320,14 @@ static void custom_close(DBDriver* driver) {
 static int custom_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
     (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
-    int ok = sql_exec_ddl(sql, &impl->ctx);
-    if (!ok) {
+    int row_count = sql_exec_ddl(sql, &impl->ctx);
+    if (!row_count) {
         snprintf(driver->error_message, sizeof(driver->error_message),
                  "custom engine: could not execute '%s'", sql);
-    } else {
-        driver->error_message[0] = '\0';
+        return -1;
     }
-    return ok;
+    driver->error_message[0] = '\0';
+    return row_count;
 }
 
 static int custom_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {

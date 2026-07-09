@@ -142,32 +142,47 @@ static char* sqlite_normalize_types(const char* sql) {
     return out;
 }
 
+static int sqlite_is_ddl(const char* sql) {
+    const char* p = sql;
+    while (*p != '\0' && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+    size_t len = strlen(p);
+    if (len >= 6 && strncasecmp(p, "CREATE", 6) == 0) return 1;
+    if (len >= 4 && strncasecmp(p, "DROP", 4) == 0) return 1;
+    if (len >= 5 && strncasecmp(p, "ALTER", 5) == 0) return 1;
+    return 0;
+}
+
 static int sqlite_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
     SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
     char* normalized = sqlite_normalize_types(sql);
     if (normalized == NULL) {
         snprintf(driver->error_message, sizeof(driver->error_message), "out of memory");
-        return 0;
+        return -1;
     }
     sqlite3_stmt* stmt = NULL;
     int rc = sqlite3_prepare_v2(impl->db, normalized, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
         free(normalized);
-        return 0;
+        return -1;
     }
     if (!bind_params(driver, stmt, params, param_count)) {
         sqlite3_finalize(stmt);
         free(normalized);
-        return 0;
+        return -1;
     }
     rc = sqlite3_step(stmt);
-    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+    int row_count = 0;
+    if (rc == SQLITE_DONE || rc == SQLITE_ROW) {
+        driver->error_message[0] = '\0';
+        row_count = sqlite_is_ddl(normalized) ? 1 : sqlite3_changes(impl->db);
+    } else {
         snprintf(driver->error_message, sizeof(driver->error_message), "%s", sqlite3_errmsg(impl->db));
+        row_count = -1;
     }
     sqlite3_finalize(stmt);
     free(normalized);
-    return (rc == SQLITE_DONE || rc == SQLITE_ROW) ? 1 : 0;
+    return row_count;
 }
 
 static int sqlite_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {
@@ -286,15 +301,15 @@ static void sqlite_result_free(DBDriver* driver, void* result_handle) {
 }
 
 static int sqlite_begin(DBDriver* driver) {
-    return sqlite_exec(driver, "BEGIN", NULL, 0);
+    return sqlite_exec(driver, "BEGIN", NULL, 0) >= 0 ? 1 : 0;
 }
 
 static int sqlite_commit(DBDriver* driver) {
-    return sqlite_exec(driver, "COMMIT", NULL, 0);
+    return sqlite_exec(driver, "COMMIT", NULL, 0) >= 0 ? 1 : 0;
 }
 
 static int sqlite_rollback(DBDriver* driver) {
-    return sqlite_exec(driver, "ROLLBACK", NULL, 0);
+    return sqlite_exec(driver, "ROLLBACK", NULL, 0) >= 0 ? 1 : 0;
 }
 
 void sqlite_driver_init(DBDriver* driver) {

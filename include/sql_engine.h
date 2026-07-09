@@ -90,6 +90,7 @@ struct DBDriver {
     char error_message[256];
     int (*open)(DBDriver* driver, const char* connection_string);
     void (*close)(DBDriver* driver);
+    /* Returns number of rows affected on success (>= 0), or -1 on error. */
     int (*exec)(DBDriver* driver, const char* sql, Value* params, int param_count);
     int (*query)(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle);
     int (*result_next)(DBDriver* driver, void* result_handle, void** row_handle);

@@ -1,0 +1,52 @@
+/* Phase 2 capabilities demo: func, OUT/IN OUT parameters, case, anonymous block. */
+
+func square(n int) -> int {
+    return n * n;
+}
+
+func greet(name string) -> string {
+    return concat("Hello, ", name);
+}
+
+proc swap(a in out int, b in out int) -> int {
+    int tmp = a;
+    a = b;
+    b = tmp;
+    return 0;
+}
+
+proc compute(x int, doubled in out int, squared out int) -> int {
+    doubled = x * 2;
+    squared = square(x);
+    return 0;
+}
+
+block {
+    print "=== func calls ===";
+    print int_to_string(square(7));
+    print greet("MyPL");
+
+    print "=== IN OUT parameters ===";
+    int a = 10;
+    int b = 20;
+    swap(a, b);
+    print concat("a=", int_to_string(a));
+    print concat("b=", int_to_string(b));
+
+    print "=== OUT parameters ===";
+    int n = 5;
+    int d = 0;
+    int s = 0;
+    compute(n, d, s);
+    print concat("doubled=", int_to_string(d));
+    print concat("squared=", int_to_string(s));
+
+    print "=== case statement ===";
+    int code = 2;
+    case code {
+        when 1: { print "one"; }
+        when 2: { print "two"; }
+        when 3: { print "three"; }
+        else:   { print "other"; }
+    }
+}

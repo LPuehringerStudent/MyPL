@@ -225,6 +225,7 @@ ProcDecl* create_proc_decl(const char* name, Type* return_type) {
     proc->param_count = 0;
     proc->return_type = return_type;
     proc->body = NULL;
+    proc->is_function = 0;
     return proc;
 }
 
@@ -342,6 +343,21 @@ void free_stmt(Stmt* stmt) {
             free(stmt->as.sql_stmt.into_vars);
             break;
         case STMT_SQL_TRANSACTION:
+            break;
+        case STMT_TRY_CATCH:
+            free_block(stmt->as.try_catch.try_block);
+            free(stmt->as.try_catch.catch_var);
+            free_block(stmt->as.try_catch.catch_block);
+            break;
+        case STMT_CASE:
+            free_expr(stmt->as.case_stmt.selector);
+            for (int i = 0; i < stmt->as.case_stmt.branch_count; i++) {
+                free_expr(stmt->as.case_stmt.values[i]);
+                free_block(stmt->as.case_stmt.blocks[i]);
+            }
+            free(stmt->as.case_stmt.values);
+            free(stmt->as.case_stmt.blocks);
+            free_block(stmt->as.case_stmt.else_block);
             break;
     }
     free(stmt);
@@ -727,6 +743,50 @@ Stmt* create_sql_transaction_stmt(int kind) {
     stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_SQL_TRANSACTION;
     stmt->as.sql_transaction.kind = kind;
+    return stmt;
+}
+
+Stmt* create_try_catch_stmt(Block* try_block, const char* catch_var, Block* catch_block) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_block(try_block);
+        free_block(catch_block);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_TRY_CATCH;
+    stmt->as.try_catch.try_block = try_block;
+    stmt->as.try_catch.catch_var = copy_string(catch_var);
+    if (stmt->as.try_catch.catch_var == NULL && catch_var != NULL) {
+        free_block(try_block);
+        free_block(catch_block);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.try_catch.catch_block = catch_block;
+    return stmt;
+}
+
+Stmt* create_case_stmt(Expr* selector, Expr** values, Block** blocks, int branch_count, Block* else_block) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(selector);
+        for (int i = 0; i < branch_count; i++) {
+            free_expr(values[i]);
+            free_block(blocks[i]);
+        }
+        free(values);
+        free(blocks);
+        free_block(else_block);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_CASE;
+    stmt->as.case_stmt.selector = selector;
+    stmt->as.case_stmt.values = values;
+    stmt->as.case_stmt.blocks = blocks;
+    stmt->as.case_stmt.branch_count = branch_count;
+    stmt->as.case_stmt.else_block = else_block;
     return stmt;
 }
 

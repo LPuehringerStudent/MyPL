@@ -55,7 +55,9 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_repl tests/test_repl.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_typecheck tests/test_typecheck.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_errors tests/test_errors.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase2 tests/test_phase2.c $(LIB_OBJECTS) $(LDFLAGS)
 ifeq ($(USE_SQLITE),1)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase1 tests/test_phase1.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sqlite tests/test_sqlite.c $(LIB_OBJECTS) $(LDFLAGS)
 endif
 	$(BINDIR)/test_value
@@ -75,7 +77,9 @@ endif
 	$(BINDIR)/test_repl
 	$(BINDIR)/test_typecheck
 	$(BINDIR)/test_errors
+	$(BINDIR)/test_phase2
 ifeq ($(USE_SQLITE),1)
+	$(BINDIR)/test_phase1
 	$(BINDIR)/test_sqlite
 endif
 

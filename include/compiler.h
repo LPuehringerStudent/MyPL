@@ -21,12 +21,14 @@ typedef enum {
     OP_NEGATE,
     OP_NOT,
     OP_POP,
+    OP_DUP,
     OP_JZ,
     OP_JMP,
     OP_SQL,
     OP_SQL_NEXT,
     OP_GET_FIELD,
     OP_CALL,
+    OP_CALL_OUT,
     OP_RETURN,
     OP_PRINT,
     OP_ARRAY_BUILD,
@@ -45,6 +47,8 @@ typedef enum {
     OP_SQL_TO_ARRAY,
     OP_STRUCT_BUILD,
     OP_MAP_BUILD,
+    OP_TRY,
+    OP_END_TRY,
     OP_RUNTIME_ERROR
 } OpCode;
 

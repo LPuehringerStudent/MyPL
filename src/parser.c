@@ -890,6 +890,144 @@ static Stmt* continue_statement(Parser* parser) {
     return stmt;
 }
 
+static Stmt* try_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'try' was just consumed */
+    Block* try_block = block(parser);
+    if (try_block == NULL) return NULL;
+    if (!match(parser, TOKEN_CATCH)) {
+        error_at_current(parser, "expected 'catch' after 'try' body");
+        free_block(try_block);
+        return NULL;
+    }
+    if (!match(parser, TOKEN_LPAREN)) {
+        error_at_current(parser, "expected '(' after 'catch'");
+        free_block(try_block);
+        return NULL;
+    }
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected catch variable name");
+        free_block(try_block);
+        return NULL;
+    }
+    advance(parser); /* catch variable */
+    char* catch_var = copy_token_lexeme(&parser->previous);
+    if (catch_var == NULL) {
+        free_block(try_block);
+        return NULL;
+    }
+    if (!match(parser, TOKEN_RPAREN)) {
+        error_at_current(parser, "expected ')' after catch variable");
+        free(catch_var);
+        free_block(try_block);
+        return NULL;
+    }
+    Block* catch_block = block(parser);
+    if (catch_block == NULL) {
+        free(catch_var);
+        free_block(try_block);
+        return NULL;
+    }
+    Stmt* stmt = create_try_catch_stmt(try_block, catch_var, catch_block);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    free(catch_var);
+    return stmt;
+}
+
+static Stmt* case_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'case' was just consumed */
+    Expr* selector = expression(parser);
+    if (selector == NULL) return NULL;
+    if (!match(parser, TOKEN_LBRACE)) {
+        error_at_current(parser, "expected '{' after 'case' selector");
+        free_expr(selector);
+        return NULL;
+    }
+
+    int capacity = 4;
+    int count = 0;
+    Expr** values = malloc(sizeof(Expr*) * (size_t)capacity);
+    Block** blocks = malloc(sizeof(Block*) * (size_t)capacity);
+    if (values == NULL || blocks == NULL) {
+        free_expr(selector);
+        free(values);
+        free(blocks);
+        error_at_current(parser, "out of memory");
+        return NULL;
+    }
+
+    Block* else_block = NULL;
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        if (match(parser, TOKEN_ELSE)) {
+            if (!match(parser, TOKEN_COLON)) {
+                error_at_current(parser, "expected ':' after 'else'");
+                goto cleanup;
+            }
+            else_block = block(parser);
+            if (else_block == NULL) goto cleanup;
+            break;
+        }
+        if (!match(parser, TOKEN_WHEN)) {
+            error_at_current(parser, "expected 'when' or 'else' in 'case' body");
+            goto cleanup;
+        }
+        Expr* value = expression(parser);
+        if (value == NULL) goto cleanup;
+        if (!match(parser, TOKEN_COLON)) {
+            error_at_current(parser, "expected ':' after 'when' value");
+            free_expr(value);
+            goto cleanup;
+        }
+        Block* branch_block = block(parser);
+        if (branch_block == NULL) {
+            free_expr(value);
+            goto cleanup;
+        }
+        if (count >= capacity) {
+            int new_capacity = capacity * 2;
+            Expr** new_values = realloc(values, sizeof(Expr*) * (size_t)new_capacity);
+            Block** new_blocks = realloc(blocks, sizeof(Block*) * (size_t)new_capacity);
+            if (new_values == NULL || new_blocks == NULL) {
+                free_expr(value);
+                free_block(branch_block);
+                error_at_current(parser, "out of memory");
+                goto cleanup;
+            }
+            values = new_values;
+            blocks = new_blocks;
+            capacity = new_capacity;
+        }
+        values[count] = value;
+        blocks[count] = branch_block;
+        count++;
+    }
+
+    if (!match(parser, TOKEN_RBRACE)) {
+        error_at_current(parser, "expected '}' after 'case' body");
+        goto cleanup;
+    }
+
+    Stmt* stmt = create_case_stmt(selector, values, blocks, count, else_block);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    return stmt;
+
+cleanup:
+    free_expr(selector);
+    for (int i = 0; i < count; i++) {
+        free_expr(values[i]);
+        free_block(blocks[i]);
+    }
+    free(values);
+    free(blocks);
+    free_block(else_block);
+    return NULL;
+}
+
 static Stmt* sql_for_statement(Parser* parser, Token kw, char* var_name) {
     Token sql_token = parser->current;
     advance(parser); /* SQL query */
@@ -1198,6 +1336,8 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_FOR)) return for_statement(parser);
     if (match(parser, TOKEN_BREAK)) return break_statement(parser);
     if (match(parser, TOKEN_CONTINUE)) return continue_statement(parser);
+    if (match(parser, TOKEN_TRY)) return try_statement(parser);
+    if (match(parser, TOKEN_CASE)) return case_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
     if (match(parser, TOKEN_PRINT)) return print_statement(parser);
     if (match(parser, TOKEN_CREATE) || match(parser, TOKEN_DROP)) {
@@ -1225,8 +1365,8 @@ static Stmt* statement(Parser* parser) {
     return NULL;
 }
 
-static void parse_proc(Parser* parser, Program* program) {
-    /* current is IDENT (procedure name); 'proc' was consumed by caller */
+static void parse_proc_with_kind(Parser* parser, Program* program, int is_function) {
+    /* current is IDENT (procedure/function name); 'proc'/'func' was consumed by caller */
     advance(parser); /* name */
     char* name = copy_token_lexeme(&parser->previous);
     advance(parser); /* ( */
@@ -1237,6 +1377,15 @@ static void parse_proc(Parser* parser, Program* program) {
         do {
             advance(parser); /* param name */
             char* param_name = copy_token_lexeme(&parser->previous);
+
+            ParamMode mode = PARAM_IN;
+            if (match(parser, TOKEN_OUT)) {
+                mode = PARAM_OUT;
+            } else if (match(parser, TOKEN_IN) && check(parser, TOKEN_OUT)) {
+                advance(parser);
+                mode = PARAM_INOUT;
+            }
+
             Type* param_type = parse_type(parser);
 
             Param* new_params = realloc(params,
@@ -1256,6 +1405,7 @@ static void parse_proc(Parser* parser, Program* program) {
             params = new_params;
             params[param_count].name = param_name;
             params[param_count].type = param_type;
+            params[param_count].mode = mode;
             param_count++;
         } while (match(parser, TOKEN_COMMA));
     }
@@ -1274,6 +1424,7 @@ static void parse_proc(Parser* parser, Program* program) {
         error_at_current(parser, "out of memory");
         return;
     }
+    proc->is_function = is_function;
     proc->params = params;
     proc->param_count = param_count;
     proc->body = block(parser);
@@ -1296,12 +1447,73 @@ static void parse_proc(Parser* parser, Program* program) {
     free(proc);
 }
 
+static void parse_proc(Parser* parser, Program* program) {
+    parse_proc_with_kind(parser, program, 0);
+}
+
+static void parse_func(Parser* parser, Program* program) {
+    parse_proc_with_kind(parser, program, 1);
+}
+
+static int program_has_main(Program* program) {
+    for (int i = 0; i < program->proc_count; i++) {
+        if (strcmp(program->procs[i].name, "main") == 0) return 1;
+    }
+    return 0;
+}
+
+static void parse_anon_block(Parser* parser, Program* program) {
+    /* 'block' was already consumed by the top-level dispatcher */
+    if (program_has_main(program)) {
+        error_at_current(parser, "anonymous block cannot be used when 'main' is already defined");
+        return;
+    }
+    Block* body = block(parser);
+    if (body == NULL) return;
+
+    /* Append 'return 0;' to the block body. */
+    Stmt** new_stmts = realloc(body->stmts,
+        sizeof(Stmt*) * (size_t)(body->stmt_count + 1));
+    if (new_stmts == NULL) {
+        error_at_current(parser, "out of memory");
+        free_block(body);
+        return;
+    }
+    body->stmts = new_stmts;
+    body->stmts[body->stmt_count++] = create_return_stmt(
+        create_literal_expr(value_int(0)));
+
+    ProcDecl* proc = create_proc_decl("main", &type_int);
+    if (proc == NULL) {
+        error_at_current(parser, "out of memory");
+        free_block(body);
+        return;
+    }
+    proc->body = body;
+
+    ProcDecl* new_procs = realloc(program->procs,
+        sizeof(ProcDecl) * (size_t)(program->proc_count + 1));
+    if (new_procs == NULL) {
+        error_at_current(parser, "out of memory");
+        free(proc->name);
+        free(proc);
+        free_block(body);
+        return;
+    }
+    program->procs = new_procs;
+    program->procs[program->proc_count++] = *proc;
+    free(proc);
+}
+
 static ParseRule rules[] = {
     [TOKEN_PROC]       = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_FUNC]       = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_IN]         = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_OUT]        = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_BLOCK]      = {NULL,        NULL,   PREC_NONE},
     [TOKEN_FOR]        = {NULL,        NULL,   PREC_NONE},
     [TOKEN_IF]         = {NULL,        NULL,   PREC_NONE},
     [TOKEN_RETURN]     = {NULL,        NULL,   PREC_NONE},
-    [TOKEN_IN]         = {NULL,        NULL,   PREC_NONE},
     [TOKEN_PRINT]      = {NULL,        NULL,   PREC_NONE},
     [TOKEN_IMPORT]     = {NULL,        NULL,   PREC_NONE},
     [TOKEN_INT_TYPE]   = {NULL,        NULL,   PREC_NONE},
@@ -1477,8 +1689,12 @@ Program* parse_with_path(const char* source, const char* path, char* error, size
             parse_struct(&parser, program);
         } else if (match(&parser, TOKEN_PROC)) {
             parse_proc(&parser, program);
+        } else if (match(&parser, TOKEN_FUNC)) {
+            parse_func(&parser, program);
+        } else if (match(&parser, TOKEN_BLOCK)) {
+            parse_anon_block(&parser, program);
         } else {
-            error_at_current(&parser, "expected 'proc', 'struct', or 'import'");
+            error_at_current(&parser, "expected 'proc', 'func', 'struct', 'import', or 'block'");
             break;
         }
     }

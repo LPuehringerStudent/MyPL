@@ -129,7 +129,7 @@ TEST(typecheck_rejects_out_of_scope_block_variable) {
 TEST(typecheck_accepts_external_proc_signature_arguments) {
     char error[256];
     Type* params[] = { &type_int, &type_int };
-    ProcSignature sig = { "add", &type_int, params, 2 };
+    ProcSignature sig = { .name = "add", .return_type = &type_int, .param_types = params, .param_count = 2 };
     ProcSignature procs[] = { sig };
     Program* program = parse("proc main() -> int { int x = add(1, 2); return x; }", error, sizeof(error));
     ASSERT_PTR_NOT_NULL(program);

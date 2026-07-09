@@ -43,6 +43,7 @@ typedef struct {
     int offset;
     Type* return_type;
     Type** param_types;
+    ParamMode* param_modes;
     int param_count;
 } ProcEntry;
 
@@ -78,7 +79,8 @@ typedef struct {
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
-                          Type* return_type, Type** param_types, int param_count) {
+                          Type* return_type, Type** param_types,
+                          ParamMode* param_modes, int param_count) {
     if (compiler->proc_count >= MAX_PROCS) return -3;
     for (int i = 0; i < compiler->proc_count; i++) {
         if (strcmp(compiler->procs[i].name, name) == 0) return -2;
@@ -89,24 +91,35 @@ static int add_proc_entry(Compiler* compiler, const char* name, int offset,
     Type* rt_copy = type_copy(return_type);
     if (rt_copy == NULL && return_type != NULL) { free(name_copy); return -1; }
     Type** pt_copy = NULL;
+    ParamMode* pm_copy = NULL;
     if (param_count > 0) {
         pt_copy = malloc(sizeof(Type*) * (size_t)param_count);
         if (pt_copy == NULL) { free(name_copy); type_free(rt_copy); return -1; }
+        pm_copy = malloc(sizeof(ParamMode) * (size_t)param_count);
+        if (pm_copy == NULL) {
+            free(pt_copy);
+            free(name_copy);
+            type_free(rt_copy);
+            return -1;
+        }
         for (int i = 0; i < param_count; i++) {
             pt_copy[i] = type_copy(param_types[i]);
             if (pt_copy[i] == NULL && param_types[i] != NULL) {
                 for (int j = 0; j < i; j++) type_free(pt_copy[j]);
                 free(pt_copy);
+                free(pm_copy);
                 free(name_copy);
                 type_free(rt_copy);
                 return -1;
             }
+            pm_copy[i] = param_modes[i];
         }
     }
     compiler->procs[compiler->proc_count].name = name_copy;
     compiler->procs[compiler->proc_count].offset = offset;
     compiler->procs[compiler->proc_count].return_type = rt_copy;
     compiler->procs[compiler->proc_count].param_types = pt_copy;
+    compiler->procs[compiler->proc_count].param_modes = pm_copy;
     compiler->procs[compiler->proc_count].param_count = param_count;
     return compiler->proc_count++;
 }
@@ -119,6 +132,7 @@ static void free_proc_entries(Compiler* compiler) {
             type_free(compiler->procs[i].param_types[p]);
         }
         free(compiler->procs[i].param_types);
+        free(compiler->procs[i].param_modes);
     }
 }
 
@@ -417,11 +431,67 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 emit_u16(compiler, (uint16_t)native_idx);
                 emit_byte(compiler, (uint8_t)c->arg_count);
             } else {
-                for (int i = 0; i < c->arg_count; i++) {
-                    compile_expr(compiler, c->args[i]);
-                    if (compiler->had_error) return;
+                int proc_idx = find_proc(compiler, c->name);
+                ParamMode* modes = NULL;
+                if (proc_idx >= 0) {
+                    modes = compiler->procs[proc_idx].param_modes;
                 }
-                emit_call(compiler, c->name, c->arg_count);
+
+                int out_count = 0;
+                uint8_t out_slots[64];
+                int out_positions[64];
+                for (int i = 0; i < c->arg_count; i++) {
+                    ParamMode mode = (modes != NULL && i < compiler->procs[proc_idx].param_count)
+                                         ? modes[i]
+                                         : PARAM_IN;
+                    if (mode == PARAM_OUT) {
+                        emit_constant(compiler, value_int(0));
+                    } else {
+                        compile_expr(compiler, c->args[i]);
+                        if (compiler->had_error) return;
+                    }
+                    if (mode == PARAM_OUT || mode == PARAM_INOUT) {
+                        if (c->args[i]->kind != EXPR_VARIABLE) {
+                            error(compiler, "OUT/IN OUT argument must be a variable");
+                            return;
+                        }
+                        if (out_count >= 64) {
+                            error(compiler, "too many OUT/IN OUT arguments");
+                            return;
+                        }
+                        const char* var_name = c->args[i]->as.variable.name;
+                        int slot = resolve_local(compiler, var_name, (int)strlen(var_name));
+                        if (slot < 0) {
+                            char msg[256];
+                            snprintf(msg, sizeof(msg), "Undefined variable '%s'", var_name);
+                            error(compiler, msg);
+                            return;
+                        }
+                        out_positions[out_count] = i;
+                        out_slots[out_count++] = (uint8_t)slot;
+                    }
+                }
+
+                if (out_count > 0) {
+                    emit_byte(compiler, OP_CALL_OUT);
+                    if (proc_idx >= 0 && compiler->procs[proc_idx].offset >= 0) {
+                        emit_u16(compiler, (uint16_t)compiler->procs[proc_idx].offset);
+                    } else {
+                        if (!add_call_patch(compiler, c->name, compiler->chunk->count)) {
+                            error(compiler, "too many call patches");
+                            return;
+                        }
+                        emit_u16(compiler, 0);
+                    }
+                    emit_byte(compiler, (uint8_t)c->arg_count);
+                    emit_byte(compiler, (uint8_t)out_count);
+                    for (int i = 0; i < out_count; i++) {
+                        emit_byte(compiler, (uint8_t)out_positions[i]);
+                        emit_byte(compiler, out_slots[i]);
+                    }
+                } else {
+                    emit_call(compiler, c->name, c->arg_count);
+                }
             }
             break;
         }
@@ -841,6 +911,98 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             break;
         }
+        case STMT_TRY_CATCH: {
+            TryCatchStmt* tc = &stmt->as.try_catch;
+            int catch_slot = add_local(compiler, tc->catch_var, (int)strlen(tc->catch_var), &type_string);
+            if (catch_slot < 0) {
+                error(compiler, "too many locals");
+                return;
+            }
+            int local_count_at_try = compiler->local_count;
+
+            emit_byte(compiler, OP_TRY);
+            int catch_offset = compiler->chunk->count;
+            emit_u16(compiler, 0);
+            emit_byte(compiler, (uint8_t)local_count_at_try);
+            int after_try_operands = compiler->chunk->count;
+
+            compile_block(compiler, tc->try_block);
+            if (compiler->had_error) return;
+
+            emit_byte(compiler, OP_END_TRY);
+            int end_offset = compiler->chunk->count;
+            emit_u16(compiler, 0);
+
+            int catch_start = compiler->chunk->count;
+            int catch_jump = catch_start - after_try_operands;
+            compiler->chunk->code[catch_offset] = (uint8_t)((catch_jump >> 8) & 0xFF);
+            compiler->chunk->code[catch_offset + 1] = (uint8_t)(catch_jump & 0xFF);
+
+            /* vm_catch already pushed the error message at frame_base[catch_slot]
+             * and set stack_top to catch_slot + 1, so the message is both the
+             * initial value of the catch variable and the bottom of the stack.
+             * Emitting SET_LOCAL + POP here would release the same object twice
+             * because the source and destination are the same slot. */
+            (void)catch_slot;
+
+            compile_block(compiler, tc->catch_block);
+            if (compiler->had_error) return;
+
+            emit_byte(compiler, OP_POP);
+            compiler->local_count--;
+
+            int after_catch = compiler->chunk->count;
+            patch_jump_to(compiler, end_offset, after_catch);
+            break;
+        }
+        case STMT_CASE: {
+            CaseStmt* cs = &stmt->as.case_stmt;
+            compile_expr(compiler, cs->selector);
+            if (compiler->had_error) return;
+
+            int* end_jumps = malloc(sizeof(int) * (size_t)(cs->branch_count + 1));
+            if (end_jumps == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            int end_count = 0;
+
+            for (int i = 0; i < cs->branch_count; i++) {
+                emit_byte(compiler, OP_DUP);
+                compile_expr(compiler, cs->values[i]);
+                if (compiler->had_error) {
+                    free(end_jumps);
+                    return;
+                }
+                emit_byte(compiler, OP_EQ);
+                int skip_branch = emit_jump(compiler, OP_JZ);
+
+                compile_block(compiler, cs->blocks[i]);
+                if (compiler->had_error) {
+                    free(end_jumps);
+                    return;
+                }
+                end_jumps[end_count++] = emit_jump(compiler, OP_JMP);
+
+                patch_jump_to(compiler, skip_branch, compiler->chunk->count);
+            }
+
+            if (cs->else_block != NULL) {
+                compile_block(compiler, cs->else_block);
+                if (compiler->had_error) {
+                    free(end_jumps);
+                    return;
+                }
+            }
+
+            int after_case = compiler->chunk->count;
+            for (int i = 0; i < end_count; i++) {
+                patch_jump_to(compiler, end_jumps[i], after_case);
+            }
+            emit_byte(compiler, OP_POP); /* pop selector */
+            free(end_jumps);
+            break;
+        }
         case STMT_SQL_QUERY: {
             SqlStmt* s = &stmt->as.sql_stmt;
             if (s->into_count == 0) {
@@ -1063,12 +1225,18 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
         Type** pts = NULL;
+        ParamMode* pms = NULL;
         if (proc->param_count > 0) {
             pts = malloc(sizeof(Type*) * (size_t)proc->param_count);
-            for (int p = 0; p < proc->param_count; p++) pts[p] = proc->params[p].type;
+            pms = malloc(sizeof(ParamMode) * (size_t)proc->param_count);
+            for (int p = 0; p < proc->param_count; p++) {
+                pts[p] = proc->params[p].type;
+                pms[p] = proc->params[p].mode;
+            }
         }
-        int idx = add_proc_entry(compiler, proc->name, -1, proc->return_type, pts, proc->param_count);
+        int idx = add_proc_entry(compiler, proc->name, -1, proc->return_type, pts, pms, proc->param_count);
         free(pts);
+        free(pms);
         if (idx < 0) {
             if (error != NULL && error_size > 0) {
                 if (idx == -1) {
@@ -1100,6 +1268,7 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         sigs[i].name = compiler->procs[i].name;
         sigs[i].return_type = compiler->procs[i].return_type;
         sigs[i].param_types = compiler->procs[i].param_types;
+        sigs[i].param_modes = compiler->procs[i].param_modes;
         sigs[i].param_count = compiler->procs[i].param_count;
     }
 

@@ -291,6 +291,10 @@ static int is_native(const char* name) {
            strcmp(name, "array_fill") == 0 ||
            strcmp(name, "pad_start") == 0 ||
            strcmp(name, "pad_end") == 0 ||
+           strcmp(name, "sql_rowcount") == 0 ||
+           strcmp(name, "sql_found") == 0 ||
+           strcmp(name, "sql_notfound") == 0 ||
+           strcmp(name, "execute_immediate") == 0 ||
            strcmp(name, "assert") == 0 ||
            strcmp(name, "parse_int") == 0 ||
            strcmp(name, "split_lines") == 0 ||
@@ -981,6 +985,31 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return &type_string;
     }
+    if (strcmp(name, "sql_rowcount") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "sql_rowcount expects 0 arguments");
+            return NULL;
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "execute_immediate") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "execute_immediate expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "execute_immediate expects a string");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "sql_found") == 0 || strcmp(name, "sql_notfound") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "%s expects 0 arguments", name);
+            return NULL;
+        }
+        return &type_bool;
+    }
     return NULL;
 }
 
@@ -1113,6 +1142,16 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                 return sig->return_type;
             }
             for (int i = 0; i < expr->as.call.arg_count; i++) {
+                if (sig->param_modes != NULL &&
+                    (sig->param_modes[i] == PARAM_OUT ||
+                     sig->param_modes[i] == PARAM_INOUT)) {
+                    if (expr->as.call.args[i]->kind != EXPR_VARIABLE) {
+                        type_error(tc, expr->as.call.args[i]->loc,
+                                   "Argument %d of '%s' must be a variable for OUT/IN OUT parameter",
+                                   i + 1, expr->as.call.name);
+                        return sig->return_type;
+                    }
+                }
                 Type* arg_type = infer_expr(tc, expr->as.call.args[i],
                                             sig->param_types[i]);
                 if (tc->had_error) return sig->return_type;
@@ -1570,6 +1609,45 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             break;
         }
 
+        case STMT_TRY_CATCH: {
+            TryCatchStmt* tcs = &stmt->as.try_catch;
+            check_block(tc, tcs->try_block);
+            if (tc->had_error) return;
+            if (!push_scope(tc)) {
+                type_error(tc, (SourceLoc){0, 0}, "too many nested scopes");
+                return;
+            }
+            if (!add_local(tc, tcs->catch_var, &type_string)) {
+                type_error(tc, (SourceLoc){0, 0}, "too many locals");
+                pop_scope(tc);
+                return;
+            }
+            check_block(tc, tcs->catch_block);
+            pop_scope(tc);
+            break;
+        }
+        case STMT_CASE: {
+            CaseStmt* cs = &stmt->as.case_stmt;
+            Type* selector_type = infer_expr(tc, cs->selector, NULL);
+            if (tc->had_error) return;
+            for (int i = 0; i < cs->branch_count; i++) {
+                Type* value_type = infer_expr(tc, cs->values[i], NULL);
+                if (tc->had_error) return;
+                if (!type_equals(selector_type, value_type)) {
+                    type_error(tc, cs->values[i]->loc,
+                               "case value type does not match selector type");
+                    return;
+                }
+            }
+            for (int i = 0; i < cs->branch_count; i++) {
+                check_block(tc, cs->blocks[i]);
+                if (tc->had_error) return;
+            }
+            if (cs->else_block != NULL) {
+                check_block(tc, cs->else_block);
+            }
+            break;
+        }
         case STMT_SQL_TRANSACTION: {
             /* no type checking needed */
             break;
@@ -1628,24 +1706,34 @@ int typecheck_program(Program* program,
         }
         for (int i = 0; i < program->proc_count; i++) {
             ProcDecl* proc = &program->procs[i];
-            Type** param_types = malloc(sizeof(Type*) * proc->param_count);
-            if (param_types == NULL && proc->param_count > 0) {
-                for (int j = 0; j < i; j++) {
-                    free(combined_procs[j].param_types);
+            Type** param_types = NULL;
+            ParamMode* param_modes = NULL;
+            if (proc->param_count > 0) {
+                param_types = malloc(sizeof(Type*) * proc->param_count);
+                param_modes = malloc(sizeof(ParamMode) * proc->param_count);
+                if (param_types == NULL || param_modes == NULL) {
+                    free(param_types);
+                    free(param_modes);
+                    for (int j = 0; j < i; j++) {
+                        free(combined_procs[j].param_types);
+                        free(combined_procs[j].param_modes);
+                    }
+                    free(combined_procs);
+                    if (error != NULL && error_size > 0) {
+                        format_error(error, error_size, source_path, 0, 0,
+                                     "Type error: out of memory");
+                    }
+                    return 0;
                 }
-                free(combined_procs);
-                if (error != NULL && error_size > 0) {
-                    format_error(error, error_size, source_path, 0, 0,
-                                 "Type error: out of memory");
-                }
-                return 0;
             }
             for (int p = 0; p < proc->param_count; p++) {
                 param_types[p] = proc->params[p].type;
+                param_modes[p] = proc->params[p].mode;
             }
             combined_procs[i].name = proc->name;
             combined_procs[i].return_type = proc->return_type;
             combined_procs[i].param_types = param_types;
+            combined_procs[i].param_modes = param_modes;
             combined_procs[i].param_count = proc->param_count;
         }
         for (int i = 0; i < proc_count; i++) {
@@ -1687,6 +1775,7 @@ int typecheck_program(Program* program,
 
     for (int i = 0; i < program->proc_count; i++) {
         free(combined_procs[i].param_types);
+        free(combined_procs[i].param_modes);
     }
     free(combined_procs);
 
