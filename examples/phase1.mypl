@@ -1,0 +1,45 @@
+// Phase 1 demo: exception handling, SQL DML feedback, and dynamic SQL.
+// Run with: ./bin/mypl examples/phase1.mypl --db :memory:
+
+proc main() -> int {
+    // Set up a table using dynamic SQL.
+    execute_immediate("CREATE TABLE tasks (id INT PRIMARY KEY, title STRING, done INT)");
+
+    // Insert some rows and report how many were affected.
+    execute_immediate("INSERT INTO tasks VALUES (1, 'buy milk', 0), (2, 'walk dog', 0), (3, 'read book', 0)");
+    print concat("Inserted rows: ", int_to_string(sql_rowcount()));
+
+    // Use DML feedback to detect whether a SELECT INTO found a row.
+    int id = 0;
+    string title = "";
+    SELECT id, title INTO id, title FROM tasks WHERE id = 2;
+    if (sql_found()) {
+        print concat("Found task: ", concat(int_to_string(id), concat(" - ", title)));
+    } else {
+        print "Task not found";
+    }
+
+    // A SELECT INTO with no match throws; catch the error message.
+    try {
+        SELECT id, title INTO id, title FROM tasks WHERE id = 99;
+    } catch (err) {
+        print concat("Caught expected SELECT INTO error: ", err);
+    }
+
+    // sql_notfound() is true after a DML statement affects zero rows.
+    execute_immediate("DELETE FROM tasks WHERE id = 99");
+    if (sql_notfound()) {
+        print "No rows deleted (as expected)";
+    }
+
+    // Demonstrate structured exception handling around a bad dynamic SQL statement.
+    try {
+        execute_immediate("INSERT INTO missing_table VALUES (1)");
+    } catch (err) {
+        print concat("Caught error: ", err);
+    }
+
+    // Show that normal execution continues after the catch block.
+    print "Done";
+    return 0;
+}

@@ -109,11 +109,14 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 5 && memcmp(lexer->start, "array", 5) == 0) return TOKEN_ARRAY_TYPE;
             break;
         case 'b':
+            if (length == 5 && memcmp(lexer->start, "block", 5) == 0) return TOKEN_BLOCK;
             if (length == 4 && memcmp(lexer->start, "bool", 4) == 0) return TOKEN_BOOL_TYPE;
             if (length == 5 && memcmp(lexer->start, "begin", 5) == 0) return TOKEN_BEGIN;
             if (length == 5 && memcmp(lexer->start, "break", 5) == 0) return TOKEN_BREAK;
             break;
         case 'c':
+            if (length == 4 && memcmp(lexer->start, "case", 4) == 0) return TOKEN_CASE;
+            if (length == 5 && memcmp(lexer->start, "catch", 5) == 0) return TOKEN_CATCH;
             if (length == 6 && memcmp(lexer->start, "commit", 6) == 0) return TOKEN_COMMIT;
             if (length == 6 && memcmp(lexer->start, "create", 6) == 0) return TOKEN_CREATE;
             if (length == 8 && memcmp(lexer->start, "continue", 8) == 0) return TOKEN_CONTINUE;
@@ -127,6 +130,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 4 && memcmp(lexer->start, "else", 4) == 0) return TOKEN_ELSE;
             break;
         case 'f':
+            if (length == 4 && memcmp(lexer->start, "func", 4) == 0) return TOKEN_FUNC;
             if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
             if (length == 4 && memcmp(lexer->start, "from", 4) == 0) return TOKEN_FROM;
             if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
@@ -142,6 +146,9 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 'm':
             if (length == 3 && memcmp(lexer->start, "map", 3) == 0) return TOKEN_MAP_TYPE;
+            break;
+        case 'o':
+            if (length == 3 && memcmp(lexer->start, "out", 3) == 0) return TOKEN_OUT;
             break;
         case 'p':
             if (length == 4 && memcmp(lexer->start, "proc", 4) == 0) return TOKEN_PROC;
@@ -162,6 +169,7 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 't':
             if (length == 5 && memcmp(lexer->start, "table", 5) == 0) return TOKEN_TABLE;
+            if (length == 3 && memcmp(lexer->start, "try", 3) == 0) return TOKEN_TRY;
             if (length == 4 && memcmp(lexer->start, "true", 4) == 0) return TOKEN_TRUE;
             break;
         case 'u':
@@ -171,6 +179,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "values", 6) == 0) return TOKEN_VALUES;
             break;
         case 'w':
+            if (length == 4 && memcmp(lexer->start, "when", 4) == 0) return TOKEN_WHEN;
             if (length == 5 && memcmp(lexer->start, "while", 5) == 0) return TOKEN_WHILE;
             if (length == 5 && memcmp(lexer->start, "where", 5) == 0) return TOKEN_WHERE;
             break;

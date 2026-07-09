@@ -1426,6 +1426,53 @@ static int native_pad_start(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_sql_rowcount(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)argv;
+    *out = value_int(vm_get_sql_rowcount(vm));
+    return 1;
+}
+
+static int native_sql_found(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)argv;
+    *out = value_bool(vm_get_sql_found(vm));
+    return 1;
+}
+
+static int native_sql_notfound(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)argv;
+    *out = value_bool(vm_get_sql_notfound(vm));
+    return 1;
+}
+
+static int native_execute_immediate(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "execute_immediate expects a string");
+        return 0;
+    }
+    const char* sql = argv[0].as.as_string ? argv[0].as.as_string : "";
+    DBDriver* driver = vm_get_driver(vm);
+    if (driver == NULL) {
+        vm_set_error(vm, "execute_immediate: no database driver");
+        return 0;
+    }
+    int row_count = driver->exec(driver, sql, NULL, 0);
+    if (row_count < 0) {
+        if (driver->error_message[0] != '\0') {
+            vm_set_error(vm, driver->error_message);
+        } else {
+            vm_set_error(vm, "execute_immediate: SQL execution failed");
+        }
+        return 0;
+    }
+    vm_set_sql_rowcount(vm, row_count);
+    *out = value_int(row_count);
+    return 1;
+}
+
 static int native_pad_end(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
@@ -1538,6 +1585,10 @@ static NativeDef natives[] = {
     {"random_int", 2, native_random_int},
     {"pad_start", 3, native_pad_start},
     {"pad_end", 3, native_pad_end},
+    {"sql_rowcount", 0, native_sql_rowcount},
+    {"sql_found", 0, native_sql_found},
+    {"sql_notfound", 0, native_sql_notfound},
+    {"execute_immediate", 1, native_execute_immediate},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},
