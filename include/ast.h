@@ -19,7 +19,8 @@ typedef enum {
 
 typedef struct Type {
     TypeKind kind;
-    struct Type* element_type;  /* only when kind == TYPE_ARRAY or TYPE_MAP */
+    struct Type* element_type;  /* only when kind == TYPE_ARRAY or TYPE_MAP (value type for maps) */
+    struct Type* map_key_type;  /* only when kind == TYPE_MAP */
     /* only when kind == TYPE_STRUCT */
     char* struct_name;
     char** field_names;
@@ -36,6 +37,7 @@ extern Type type_cursor;
 extern Type type_unknown;
 
 Type* type_new(TypeKind kind, Type* element_type);
+Type* type_new_map(Type* key_type, Type* value_type);
 Type* type_copy(Type* type);
 void  type_free(Type* type);
 int   type_equals(Type* a, Type* b);

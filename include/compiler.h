@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 typedef struct ArrayObj ArrayObj;
+typedef struct MapObj MapObj;
 typedef struct RowObj RowObj;
 typedef struct CursorObj CursorObj;
 typedef struct DBDriver DBDriver;
@@ -12,6 +13,7 @@ typedef struct DBDriver DBDriver;
 typedef enum {
     OBJ_STRING,
     OBJ_ARRAY,
+    OBJ_MAP,
     OBJ_ROW,
     OBJ_CURSOR
 } ObjType;
@@ -89,6 +91,7 @@ typedef enum {
     VAL_STRING,
     VAL_BOOL,
     VAL_ARRAY,
+    VAL_MAP,
     VAL_ROW,
     VAL_CURSOR
 } ValueType;
@@ -101,9 +104,18 @@ typedef struct {
         char*     as_string;
         void*     as_row_handle;
         ArrayObj* as_array;
+        MapObj*   as_map;
         CursorObj* as_cursor;
     } as;
 } Value;
+
+struct MapObj {
+    Obj obj;
+    Value* keys;
+    Value* values;
+    int count;
+    int capacity;
+};
 
 typedef struct {
     uint8_t* code;
@@ -140,6 +152,7 @@ Value value_float(double v);
 Value value_string(char* s);
 Value value_bool(int v);
 Value value_array(ArrayObj* array);
+Value value_map(MapObj* map);
 Value value_row(RowObj* row);
 Value value_cursor(CursorObj* cursor);
 CursorObj* cursor_obj_new(DBDriver* driver);
@@ -156,6 +169,17 @@ Value     array_get(ArrayObj* array, int index);
 void      array_set(ArrayObj* array, int index, Value value);
 int       array_length(ArrayObj* array);
 void      array_pool_free_all(void);
+
+MapObj*   map_new(void);
+void      map_free(MapObj* map);
+int       map_set(MapObj* map, Value key, Value value);
+int       map_get(MapObj* map, Value key, Value* out);
+int       map_delete(MapObj* map, Value key);
+int       map_count(MapObj* map);
+int       map_first_key(MapObj* map, Value* out);
+int       map_last_key(MapObj* map, Value* out);
+int       map_next_key(MapObj* map, Value key, Value* out);
+int       map_prior_key(MapObj* map, Value key, Value* out);
 
 RowObj* row_obj_new(int column_count);
 void    row_obj_free(RowObj* row);

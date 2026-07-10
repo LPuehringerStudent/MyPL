@@ -274,14 +274,16 @@ static Type* transient_array_type(TypeChecker* tc, Type* element_type) {
     return t;
 }
 
-static Type* transient_map_type(TypeChecker* tc, Type* value_type) {
+static Type* transient_map_type(TypeChecker* tc, Type* key_type, Type* value_type) {
     if (tc->transient_count >= MAX_TRANSIENTS) {
         type_error(tc, (SourceLoc){0,0}, "too many inferred types");
         return &type_unknown;
     }
+    Type* owned_key = type_copy(key_type);
     Type* owned_value = type_copy(value_type);
-    Type* t = type_new(TYPE_MAP, owned_value);
+    Type* t = type_new_map(owned_key, owned_value);
     if (t == NULL) {
+        type_free(owned_key);
         type_free(owned_value);
         type_error(tc, (SourceLoc){0,0}, "out of memory");
         return &type_unknown;
@@ -1320,8 +1322,9 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                 return base->element_type;
             }
             if (base->kind == TYPE_MAP) {
-                if (idx == NULL || idx->kind != TYPE_STRING) {
-                    type_error(tc, expr->loc, "Map key must be string");
+                Type* expected_key = base->map_key_type != NULL ? base->map_key_type : &type_string;
+                if (idx == NULL || !type_equals(idx, expected_key)) {
+                    type_error(tc, expr->loc, "Map key must be %s", type_name(expected_key));
                     return NULL;
                 }
                 return base->element_type;
@@ -1440,23 +1443,33 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
 
         case EXPR_MAP_LITERAL: {
             MapLiteralExpr* m = &expr->as.map_literal;
+            Type* key_type = NULL;
             Type* value_type = NULL;
             if (m->count == 0) {
                 if (hint != NULL && hint->kind == TYPE_MAP) {
+                    key_type = hint->map_key_type;
                     value_type = hint->element_type;
                 } else {
                     type_error(tc, expr->loc, "Cannot infer value type of empty map");
-                    return transient_map_type(tc, &type_unknown);
+                    return transient_map_type(tc, &type_string, &type_unknown);
                 }
             } else if (hint != NULL && hint->kind == TYPE_MAP) {
+                key_type = hint->map_key_type;
                 value_type = hint->element_type;
             }
             for (int i = 0; i < m->count; i++) {
-                Type* key_type = infer_expr(tc, m->keys[i], NULL);
+                Type* inferred_key = infer_expr(tc, m->keys[i], NULL);
                 if (tc->had_error) return NULL;
-                if (key_type != NULL && key_type != &type_unknown &&
-                    key_type->kind != TYPE_STRING) {
-                    type_error(tc, m->keys[i]->loc, "Map key must be string");
+                if (inferred_key != NULL && inferred_key != &type_unknown &&
+                    inferred_key->kind != TYPE_STRING && inferred_key->kind != TYPE_INT) {
+                    type_error(tc, m->keys[i]->loc, "Map key must be int or string");
+                    return NULL;
+                }
+                if (key_type == NULL) {
+                    key_type = inferred_key;
+                } else if (inferred_key != NULL && inferred_key != &type_unknown &&
+                           !type_equals(key_type, inferred_key)) {
+                    type_error(tc, m->keys[i]->loc, "Map key type mismatch");
                     return NULL;
                 }
                 Type* val = infer_expr(tc, m->values[i], value_type);
@@ -1469,7 +1482,9 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                     return NULL;
                 }
             }
-            return transient_map_type(tc, value_type);
+            if (key_type == NULL) key_type = &type_string;
+            if (value_type == NULL) value_type = &type_unknown;
+            return transient_map_type(tc, key_type, value_type);
         }
     }
 
@@ -1689,8 +1704,9 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 return;
             }
             if (base->kind == TYPE_MAP) {
-                if (idx == NULL || idx->kind != TYPE_STRING) {
-                    type_error(tc, stmt->loc, "Map key must be string");
+                Type* expected_key = base->map_key_type != NULL ? base->map_key_type : &type_string;
+                if (idx == NULL || !type_equals(idx, expected_key)) {
+                    type_error(tc, stmt->loc, "Map key must be %s", type_name(expected_key));
                     return;
                 }
                 if (!types_assignable(base->element_type, val)) {

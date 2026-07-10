@@ -99,6 +99,13 @@ Value value_array(ArrayObj* array) {
     return value;
 }
 
+Value value_map(MapObj* map) {
+    Value value;
+    value.type = VAL_MAP;
+    value.as.as_map = map;
+    return value;
+}
+
 Value value_row(RowObj* row) {
     Value value;
     value.type = VAL_ROW;
@@ -118,6 +125,8 @@ void value_retain(Value v) {
         string_obj_from_chars(v.as.as_string)->obj.ref_count++;
     } else if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
         v.as.as_array->obj.ref_count++;
+    } else if (v.type == VAL_MAP && v.as.as_map != NULL) {
+        v.as.as_map->obj.ref_count++;
     } else if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
         ((RowObj*)v.as.as_row_handle)->obj.ref_count++;
     } else if (v.type == VAL_CURSOR && v.as.as_cursor != NULL) {
@@ -144,6 +153,11 @@ void value_release(Value v) {
         if (--array->obj.ref_count <= 0) {
             array_free(array);
         }
+    } else if (v.type == VAL_MAP && v.as.as_map != NULL) {
+        MapObj* map = v.as.as_map;
+        if (--map->obj.ref_count <= 0) {
+            map_free(map);
+        }
     } else if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
         RowObj* row = (RowObj*)v.as.as_row_handle;
         if (--row->obj.ref_count <= 0) {
@@ -163,6 +177,9 @@ int value_ref_count(Value v) {
     }
     if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
         return v.as.as_array->obj.ref_count;
+    }
+    if (v.type == VAL_MAP && v.as.as_map != NULL) {
+        return v.as.as_map->obj.ref_count;
     }
     if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
         return ((RowObj*)v.as.as_row_handle)->obj.ref_count;
@@ -312,6 +329,8 @@ int value_is_truthy(Value value) {
             return value.as.as_int != 0;
         case VAL_ARRAY:
             return value.as.as_array != NULL;
+        case VAL_MAP:
+            return value.as.as_map != NULL;
         case VAL_CURSOR:
             return value.as.as_cursor != NULL;
         default:
@@ -344,6 +363,20 @@ void value_print(Value value) {
                 }
             }
             printf("]");
+            break;
+        }
+        case VAL_MAP: {
+            MapObj* map = value.as.as_map;
+            printf("{");
+            if (map != NULL) {
+                for (int i = 0; i < map->count; i++) {
+                    value_print(map->keys[i]);
+                    printf(": ");
+                    value_print(map->values[i]);
+                    if (i < map->count - 1) printf(", ");
+                }
+            }
+            printf("}");
             break;
         }
         case VAL_ROW:
@@ -489,4 +522,182 @@ void array_set(ArrayObj* array, int index, Value value) {
 int array_length(ArrayObj* array) {
     if (array == NULL) return 0;
     return array->count;
+}
+
+static int values_equal_values(Value a, Value b) {
+    if (a.type != b.type) return 0;
+    switch (a.type) {
+        case VAL_INT:    return a.as.as_int == b.as.as_int;
+        case VAL_FLOAT:  return a.as.as_float == b.as.as_float;
+        case VAL_BOOL:   return a.as.as_int == b.as.as_int;
+        case VAL_STRING: {
+            const char* as = a.as.as_string ? a.as.as_string : "";
+            const char* bs = b.as.as_string ? b.as.as_string : "";
+            return strcmp(as, bs) == 0;
+        }
+        case VAL_ARRAY:  return a.as.as_array == b.as.as_array;
+        case VAL_MAP:    return a.as.as_map == b.as.as_map;
+        case VAL_ROW:    return a.as.as_row_handle == b.as.as_row_handle;
+        case VAL_CURSOR: return a.as.as_cursor == b.as.as_cursor;
+    }
+    return 0;
+}
+
+MapObj* map_new(void) {
+    MapObj* map = malloc(sizeof(MapObj));
+    if (map == NULL) return NULL;
+    map->obj.type = OBJ_MAP;
+    map->obj.ref_count = 1;
+    map->keys = NULL;
+    map->values = NULL;
+    map->count = 0;
+    map->capacity = 0;
+    return map;
+}
+
+void map_free(MapObj* map) {
+    if (map == NULL) return;
+    for (int i = 0; i < map->count; i++) {
+        value_release(map->keys[i]);
+        value_release(map->values[i]);
+    }
+    free(map->keys);
+    free(map->values);
+    free(map);
+}
+
+static int map_find_key(MapObj* map, Value key) {
+    for (int i = 0; i < map->count; i++) {
+        if (values_equal_values(map->keys[i], key)) return i;
+    }
+    return -1;
+}
+
+int map_set(MapObj* map, Value key, Value value) {
+    if (map == NULL) return 0;
+    if (key.type != VAL_INT && key.type != VAL_STRING) return 0;
+    int idx = map_find_key(map, key);
+    if (idx >= 0) {
+        value_release(map->values[idx]);
+        map->values[idx] = value;
+        value_retain(value);
+        return 1;
+    }
+    if (map->count >= map->capacity) {
+        int new_capacity = map->capacity == 0 ? 4 : map->capacity * 2;
+        Value* new_keys = realloc(map->keys, sizeof(Value) * (size_t)new_capacity);
+        Value* new_values = realloc(map->values, sizeof(Value) * (size_t)new_capacity);
+        if (new_keys == NULL || new_values == NULL) {
+            free(new_keys);
+            free(new_values);
+            return 0;
+        }
+        map->keys = new_keys;
+        map->values = new_values;
+        map->capacity = new_capacity;
+    }
+    value_retain(key);
+    value_retain(value);
+    map->keys[map->count] = key;
+    map->values[map->count] = value;
+    map->count++;
+    return 1;
+}
+
+int map_get(MapObj* map, Value key, Value* out) {
+    if (map == NULL || out == NULL) return 0;
+    int idx = map_find_key(map, key);
+    if (idx < 0) return 0;
+    *out = map->values[idx];
+    value_retain(*out);
+    return 1;
+}
+
+int map_delete(MapObj* map, Value key) {
+    if (map == NULL) return 0;
+    int idx = map_find_key(map, key);
+    if (idx < 0) return 0;
+    value_release(map->keys[idx]);
+    value_release(map->values[idx]);
+    map->count--;
+    for (int i = idx; i < map->count; i++) {
+        map->keys[i] = map->keys[i + 1];
+        map->values[i] = map->values[i + 1];
+    }
+    return 1;
+}
+
+int map_count(MapObj* map) {
+    if (map == NULL) return 0;
+    return map->count;
+}
+
+static int map_key_compare(Value a, Value b) {
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        return a.as.as_int - b.as.as_int;
+    }
+    if (a.type == VAL_STRING && b.type == VAL_STRING) {
+        const char* as = a.as.as_string ? a.as.as_string : "";
+        const char* bs = b.as.as_string ? b.as.as_string : "";
+        return strcmp(as, bs);
+    }
+    return 0;
+}
+
+int map_first_key(MapObj* map, Value* out) {
+    if (map == NULL || map->count == 0 || out == NULL) return 0;
+    Value min = map->keys[0];
+    for (int i = 1; i < map->count; i++) {
+        if (map_key_compare(map->keys[i], min) < 0) min = map->keys[i];
+    }
+    *out = min;
+    value_retain(*out);
+    return 1;
+}
+
+int map_last_key(MapObj* map, Value* out) {
+    if (map == NULL || map->count == 0 || out == NULL) return 0;
+    Value max = map->keys[0];
+    for (int i = 1; i < map->count; i++) {
+        if (map_key_compare(map->keys[i], max) > 0) max = map->keys[i];
+    }
+    *out = max;
+    value_retain(*out);
+    return 1;
+}
+
+int map_next_key(MapObj* map, Value key, Value* out) {
+    if (map == NULL || map->count == 0 || out == NULL) return 0;
+    Value candidate;
+    int found = 0;
+    for (int i = 0; i < map->count; i++) {
+        if (map_key_compare(map->keys[i], key) > 0) {
+            if (!found || map_key_compare(map->keys[i], candidate) < 0) {
+                candidate = map->keys[i];
+                found = 1;
+            }
+        }
+    }
+    if (!found) return 0;
+    *out = candidate;
+    value_retain(*out);
+    return 1;
+}
+
+int map_prior_key(MapObj* map, Value key, Value* out) {
+    if (map == NULL || map->count == 0 || out == NULL) return 0;
+    Value candidate;
+    int found = 0;
+    for (int i = 0; i < map->count; i++) {
+        if (map_key_compare(map->keys[i], key) < 0) {
+            if (!found || map_key_compare(map->keys[i], candidate) > 0) {
+                candidate = map->keys[i];
+                found = 1;
+            }
+        }
+    }
+    if (!found) return 0;
+    *out = candidate;
+    value_retain(*out);
+    return 1;
 }
