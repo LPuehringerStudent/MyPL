@@ -24,7 +24,7 @@ jobs:
       run: |
         make clean
         make all \
-          CFLAGS="-Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude ${{ env.SANITIZE_FLAGS }}" \
+          CFLAGS="-Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude -DUSE_SQLITE ${{ env.SANITIZE_FLAGS }}" \
           LDFLAGS="-lsqlite3 -lm ${{ env.SANITIZE_FLAGS }}"
 
     - name: Run tests with sanitizers
@@ -32,5 +32,5 @@ jobs:
         ASAN_OPTIONS: detect_leaks=0
       run: |
         make test \
-          CFLAGS="-Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude ${{ env.SANITIZE_FLAGS }}" \
+          CFLAGS="-Wall -Wextra -std=c99 -D_GNU_SOURCE -Iinclude -DUSE_SQLITE ${{ env.SANITIZE_FLAGS }}" \
           LDFLAGS="-lsqlite3 -lm ${{ env.SANITIZE_FLAGS }}"
