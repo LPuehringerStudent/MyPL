@@ -76,6 +76,7 @@ typedef enum {
     OP_TRY,
     OP_END_TRY,
     OP_RUNTIME_ERROR,
+    OP_RAISE,
     OP_CURSOR_OPEN,
     OP_CURSOR_FETCH,
     OP_CURSOR_CLOSE,

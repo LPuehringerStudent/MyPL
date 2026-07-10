@@ -12,6 +12,7 @@
 #define MAX_TRANSIENTS 256
 #define MAX_ROWS 16
 #define MAX_STRUCTS 64
+#define MAX_EXCEPTIONS 64
 
 typedef struct {
     const char* name;
@@ -61,6 +62,8 @@ typedef struct {
     int struct_count;
     const char* current_package;
     Program* program;
+    const char* exceptions[MAX_EXCEPTIONS];
+    int exception_count;
 } TypeChecker;
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
@@ -108,6 +111,20 @@ static Type* resolve_local(TypeChecker* tc, const char* name) {
         }
     }
     return NULL;
+}
+
+static int resolve_exception(TypeChecker* tc, const char* name) {
+    for (int i = 0; i < tc->exception_count; i++) {
+        if (strcmp(tc->exceptions[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+static int add_exception(TypeChecker* tc, const char* name) {
+    if (tc->exception_count >= MAX_EXCEPTIONS) return 0;
+    if (resolve_exception(tc, name)) return 1;  /* idempotent */
+    tc->exceptions[tc->exception_count++] = name;
+    return 1;
 }
 
 static ProcSignature* resolve_proc(TypeChecker* tc, const char* name) {
@@ -344,7 +361,10 @@ static int is_native(const char* name) {
            strcmp(name, "list_dir") == 0 ||
            strcmp(name, "mkdir") == 0 ||
            strcmp(name, "is_digit") == 0 ||
-           strcmp(name, "is_alpha") == 0;
+           strcmp(name, "is_alpha") == 0 ||
+           strcmp(name, "sqlcode") == 0 ||
+           strcmp(name, "sqlerrm") == 0 ||
+           strcmp(name, "raise_application_error") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -1051,6 +1071,35 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return &type_bool;
     }
+    if (strcmp(name, "sqlcode") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "sqlcode expects 0 arguments");
+            return NULL;
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "sqlerrm") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "sqlerrm expects 0 arguments");
+            return NULL;
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "raise_application_error") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "raise_application_error expects 2 arguments");
+            return NULL;
+        }
+        Type* code = infer_expr(tc, args[0], NULL);
+        Type* msg = infer_expr(tc, args[1], NULL);
+        if (code != &type_unknown && code != NULL && code->kind != TYPE_INT) {
+            type_error(tc, loc, "raise_application_error expects an int code");
+        }
+        if (msg != &type_unknown && msg != NULL && msg->kind != TYPE_STRING) {
+            type_error(tc, loc, "raise_application_error expects a string message");
+        }
+        return &type_int;
+    }
     return NULL;
 }
 
@@ -1718,6 +1767,19 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             pop_scope(tc);
             break;
         }
+        case STMT_EXCEPTION_DECL: {
+            if (!add_exception(tc, stmt->as.exception_decl.name)) {
+                type_error(tc, stmt->loc, "too many exceptions");
+            }
+            break;
+        }
+        case STMT_RAISE: {
+            if (!resolve_exception(tc, stmt->as.raise_stmt.name)) {
+                type_error(tc, stmt->loc, "Undefined exception '%s'",
+                           stmt->as.raise_stmt.name);
+            }
+            break;
+        }
         case STMT_CASE: {
             CaseStmt* cs = &stmt->as.case_stmt;
             Type* selector_type = infer_expr(tc, cs->selector, NULL);
@@ -1850,6 +1912,10 @@ int typecheck_program(Program* program,
     tc.error = error;
     tc.error_size = error_size;
     tc.program = program;
+
+    /* Predefined exceptions mirror Oracle PL/SQL codes. */
+    add_exception(&tc, "no_data_found");
+    add_exception(&tc, "too_many_rows");
 
     for (int i = 0; i < program->struct_count && tc.struct_count < MAX_STRUCTS; i++) {
         StructDecl* decl = &program->structs[i];

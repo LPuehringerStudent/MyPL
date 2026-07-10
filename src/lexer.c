@@ -132,6 +132,7 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'e':
             if (length == 4 && memcmp(lexer->start, "else", 4) == 0) return TOKEN_ELSE;
             if (length == 3 && memcmp(lexer->start, "end", 3) == 0) return TOKEN_END;
+            if (length == 9 && memcmp(lexer->start, "exception", 9) == 0) return TOKEN_EXCEPTION;
             break;
         case 'f':
             if (length == 4 && memcmp(lexer->start, "func", 4) == 0) return TOKEN_FUNC;
@@ -165,6 +166,7 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'r':
             if (length == 8 && memcmp(lexer->start, "rollback", 8) == 0) return TOKEN_ROLLBACK;
             if (length == 6 && memcmp(lexer->start, "return", 6) == 0) return TOKEN_RETURN;
+            if (length == 5 && memcmp(lexer->start, "raise", 5) == 0) return TOKEN_RAISE;
             break;
         case 'S':
             if (length == 6 && memcmp(lexer->start, "SELECT", 6) == 0) return TOKEN_SQL_QUERY;
@@ -174,6 +176,8 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "select", 6) == 0) return TOKEN_SQL_QUERY;
             if (length == 3 && memcmp(lexer->start, "set", 3) == 0) return TOKEN_SET;
             if (length == 6 && memcmp(lexer->start, "string", 6) == 0) return TOKEN_STRING_TYPE;
+            if (length == 7 && memcmp(lexer->start, "sqlcode", 7) == 0) return TOKEN_SQLCODE;
+            if (length == 7 && memcmp(lexer->start, "sqlerrm", 7) == 0) return TOKEN_SQLERRM;
             break;
         case 't':
             if (length == 5 && memcmp(lexer->start, "table", 5) == 0) return TOKEN_TABLE;

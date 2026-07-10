@@ -1,0 +1,48 @@
+// Phase 5 example: Exception Model & Named Errors
+// Demonstrates user-defined exceptions, predefined exceptions,
+// raise_application_error, sqlcode, and sqlerrm.
+
+proc main() -> int {
+    // Declare a user-defined exception.
+    bad_input exception;
+
+    // Raise and catch a user-defined exception.
+    try {
+        raise bad_input;
+    } catch (err) {
+        print "Caught: ";
+        print err;
+        print "SQLCODE = ";
+        print int_to_string(sqlcode);
+    }
+
+    // Catch a predefined exception by raising it explicitly.
+    try {
+        raise no_data_found;
+    } catch (err) {
+        print "no_data_found SQLCODE = ";
+        print int_to_string(sqlcode);
+    }
+
+    // Raise a custom application error with a code and message.
+    try {
+        raise_application_error(-20001, "Account balance cannot be negative");
+    } catch (err) {
+        print "SQLERRM = ";
+        print sqlerrm;
+        print "SQLCODE = ";
+        print int_to_string(sqlcode);
+    }
+
+    // Automatic no_data_found from SELECT INTO with no rows.
+    create table accounts (id int, balance int);
+    int balance = 0;
+    try {
+        select balance into balance from accounts where id = 999;
+    } catch (err) {
+        print "SELECT INTO raised SQLCODE = ";
+        print int_to_string(sqlcode);
+    }
+
+    return 0;
+}

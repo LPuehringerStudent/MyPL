@@ -85,7 +85,9 @@ typedef enum {
     STMT_CURSOR_DECL,
     STMT_CURSOR_OPEN,
     STMT_CURSOR_FETCH,
-    STMT_CURSOR_CLOSE
+    STMT_CURSOR_CLOSE,
+    STMT_EXCEPTION_DECL,
+    STMT_RAISE
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -282,6 +284,14 @@ typedef struct {
 } CursorCloseStmt;
 
 typedef struct {
+    char* name;
+} ExceptionDeclStmt;
+
+typedef struct {
+    char* name;
+} RaiseStmt;
+
+typedef struct {
     Block* try_block;
     char* catch_var;
     Block* catch_block;
@@ -311,6 +321,8 @@ struct Stmt {
         CursorOpenStmt cursor_open;
         CursorFetchStmt cursor_fetch;
         CursorCloseStmt cursor_close;
+        ExceptionDeclStmt exception_decl;
+        RaiseStmt raise_stmt;
     } as;
 };
 
@@ -438,6 +450,8 @@ Stmt* create_cursor_decl_stmt(const char* name, char* sql_query);
 Stmt* create_cursor_open_stmt(const char* name, char* sql_query, Expr** params, int param_count);
 Stmt* create_cursor_fetch_stmt(const char* name, char** into_vars, int into_count);
 Stmt* create_cursor_close_stmt(const char* name);
+Stmt* create_exception_decl_stmt(const char* name);
+Stmt* create_raise_stmt(const char* name);
 Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name);
 
 Expr* create_literal_expr(Value value);

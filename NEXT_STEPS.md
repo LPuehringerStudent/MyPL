@@ -15,6 +15,7 @@ MyPL is a usable small-language prototype with these features already in place:
 - **SQL feedback:** `sql_rowcount()`, `sql_found()`, `sql_notfound()` report the result of the last DML statement.
 - **Dynamic SQL:** `execute_immediate(sql_string)` runs DDL/DML built at runtime and returns the affected-row count.
 - **Exception handling:** `try { ... } catch (err) { ... }` with a reliable error-message variable.
+- **Named exceptions:** predefined (`no_data_found`, `too_many_rows`) and user-defined exceptions, `raise exception_name;`, `raise_application_error(code, message)`, and `sqlcode`/`sqlerrm` inside catch blocks.
 - **Explicit cursors:** `cursor` variables, `OPEN`, `FETCH`, `CLOSE`, and attributes `%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`.
 - **Packages:** `package is` specs and `package body is` bodies with public/private members, package state, and sidecar persistence across runs.
 - **Modules:** `import "path";` splits code across files and prevents circular/duplicate imports.
@@ -74,10 +75,10 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 - [x] `tests/test_phase4.c` and `examples/phase4.mypl`
 
 ### Phase 5 — Exception Model & Named Errors
-- [ ] Named predefined exceptions
-- [ ] User-defined exceptions
-- [ ] `raise` and `raise_application_error`
-- [ ] `sqlcode` and `sqlerrm`
+- [x] Named predefined exceptions
+- [x] User-defined exceptions
+- [x] `raise` and `raise_application_error`
+- [x] `sqlcode` and `sqlerrm`
 
 ### Phase 6 — Collections & Bulk Binds
 - [ ] Associative arrays
