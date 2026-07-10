@@ -113,6 +113,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 4 && memcmp(lexer->start, "bool", 4) == 0) return TOKEN_BOOL_TYPE;
             if (length == 5 && memcmp(lexer->start, "begin", 5) == 0) return TOKEN_BEGIN;
             if (length == 5 && memcmp(lexer->start, "break", 5) == 0) return TOKEN_BREAK;
+            if (length == 4 && memcmp(lexer->start, "body", 4) == 0) return TOKEN_BODY;
             break;
         case 'c':
             if (length == 4 && memcmp(lexer->start, "case", 4) == 0) return TOKEN_CASE;
@@ -130,6 +131,7 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 'e':
             if (length == 4 && memcmp(lexer->start, "else", 4) == 0) return TOKEN_ELSE;
+            if (length == 3 && memcmp(lexer->start, "end", 3) == 0) return TOKEN_END;
             break;
         case 'f':
             if (length == 4 && memcmp(lexer->start, "func", 4) == 0) return TOKEN_FUNC;
@@ -158,6 +160,7 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'p':
             if (length == 4 && memcmp(lexer->start, "proc", 4) == 0) return TOKEN_PROC;
             if (length == 5 && memcmp(lexer->start, "print", 5) == 0) return TOKEN_PRINT;
+            if (length == 7 && memcmp(lexer->start, "package", 7) == 0) return TOKEN_PACKAGE;
             break;
         case 'r':
             if (length == 8 && memcmp(lexer->start, "rollback", 8) == 0) return TOKEN_ROLLBACK;

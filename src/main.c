@@ -7,6 +7,7 @@
 #include "vm.h"
 #include "compiler.h"
 #include "os.h"
+#include "packages.h"
 #include "sql_engine.h"
 #ifdef USE_SQLITE
 #include "sqlite_driver.h"
@@ -36,16 +37,46 @@ static int run_file(const char* path, DBDriver* driver) {
         return 1;
     }
 
+    Context* ctx = NULL;
+    Context custom_ctx;
+    if (driver != NULL && !driver->is_sqlite) {
+        custom_ctx.db_path = "mypl.db";
+        custom_ctx.pager = NULL;
+        ctx = &custom_ctx;
+    }
+
+    char* persisted = driver != NULL ? packages_load_source(driver, ctx) : NULL;
+    char* combined = NULL;
+    if (persisted != NULL && *persisted != '\0') {
+        size_t plen = strlen(persisted);
+        size_t slen = strlen(source);
+        combined = malloc(plen + slen + 2);
+        if (combined != NULL) {
+            memcpy(combined, persisted, plen);
+            combined[plen] = '\n';
+            memcpy(combined + plen + 1, source, slen + 1);
+        }
+    }
+    free(persisted);
+    const char* compile_source = combined != NULL ? combined : source;
+
     Chunk chunk;
     init_chunk(&chunk);
     char error[256];
-    if (!compile_with_context_and_path(source, &chunk, path, error, sizeof(error), NULL)) {
+    if (!compile_with_context_and_path(compile_source, &chunk, path, error, sizeof(error), NULL)) {
         fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
         free(source);
+        free(combined);
         free_chunk(&chunk);
         return 1;
     }
+
+    if (driver != NULL && strstr(source, "package ") != NULL) {
+        packages_save_source(driver, ctx, source, 0);
+    }
+
     free(source);
+    free(combined);
 
     VM* vm = vm_init();
     if (vm == NULL) {

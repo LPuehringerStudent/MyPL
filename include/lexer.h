@@ -28,6 +28,9 @@ typedef enum {
     TOKEN_FETCH,
     TOKEN_CLOSE,
     TOKEN_IS,
+    TOKEN_PACKAGE,
+    TOKEN_BODY,
+    TOKEN_END,
 
     /* SQL keywords */
     TOKEN_CREATE,

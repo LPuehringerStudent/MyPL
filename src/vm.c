@@ -48,6 +48,8 @@ struct VM {
     TryFrame      try_frames[TRY_MAX];
     int           try_count;
     char          error_message[256];
+    Value         globals[256];
+    int           global_count;
 };
 
 VM* vm_init(void) {
@@ -69,6 +71,11 @@ VM* vm_init(void) {
     vm->sql_rowcount = 0;
     vm->try_count = 0;
     vm->error_message[0] = '\0';
+    vm->global_count = 0;
+    for (int i = 0; i < 256; i++) {
+        vm->globals[i].type = VAL_INT;
+        vm->globals[i].as.as_int = 0;
+    }
     return vm;
 }
 
@@ -191,7 +198,7 @@ static int vm_catch(VM* vm) {
 
 #define THROW(vm) do { \
     if (!vm_catch(vm)) return INTERPRET_RUNTIME_ERROR; \
-    continue; \
+    goto dispatch; \
 } while (0)
 
 void vm_free(VM* vm) {
@@ -292,6 +299,7 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
     uint8_t* end = chunk->code + chunk->count;
 
     for (;;) {
+dispatch:
         if (vm->ip >= end) {
             set_runtime_error(vm, "Runtime error");
             THROW(vm);
@@ -354,6 +362,31 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                         vm->repl_local_count = slot + 1;
                     }
                 }
+                break;
+            }
+            case OP_GET_GLOBAL: {
+                if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
+                uint8_t slot = *vm->ip++;
+                if (slot >= (size_t)vm->global_count) return INTERPRET_RUNTIME_ERROR;
+                Value v = vm->globals[slot];
+                value_retain(v);
+                if (!push(vm, v)) {
+                    value_release(v);
+                    set_runtime_error(vm, "Stack overflow");
+                    THROW(vm);
+                }
+                break;
+            }
+            case OP_SET_GLOBAL: {
+                if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
+                uint8_t slot = *vm->ip++;
+                if (slot >= (size_t)vm->global_count) {
+                    vm->global_count = slot + 1;
+                }
+                Value v = *(vm->stack_top - 1);
+                value_retain(v);
+                value_release(vm->globals[slot]);
+                vm->globals[slot] = v;
                 break;
             }
             case OP_ADD: {

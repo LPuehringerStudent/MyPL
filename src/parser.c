@@ -529,6 +529,37 @@ static Expr* variable(Parser* parser) {
 static Expr* field(Parser* parser, Expr* left) {
     advance(parser); /* field name */
     char* field_name = copy_token_lexeme(&parser->previous);
+
+    if (check(parser, TOKEN_LPAREN) && left->kind == EXPR_VARIABLE) {
+        /* Qualified package call: pkg.member(...) */
+        advance(parser); /* ( */
+        Expr** args = NULL;
+        int arg_count = 0;
+        if (!check(parser, TOKEN_RPAREN)) {
+            do {
+                Expr** new_args = realloc(args, sizeof(Expr*) * (size_t)(arg_count + 1));
+                if (new_args == NULL) {
+                    for (int i = 0; i < arg_count; i++) free_expr(args[i]);
+                    free(args);
+                    free(field_name);
+                    free_expr(left);
+                    return NULL;
+                }
+                args = new_args;
+                args[arg_count++] = expression(parser);
+            } while (match(parser, TOKEN_COMMA));
+        }
+        advance(parser); /* ) */
+        Expr* expr = create_qualified_call_expr(left->as.variable.name, field_name, args, arg_count);
+        free(field_name);
+        free_expr(left);
+        if (expr != NULL) {
+            expr->loc.line = parser->previous.line;
+            expr->loc.column = parser->previous.column;
+        }
+        return expr;
+    }
+
     Expr* expr;
     if (left->kind == EXPR_VARIABLE && strcmp(left->as.variable.name, "row") == 0) {
         expr = create_field_expr(left->as.variable.name, field_name);
@@ -757,6 +788,50 @@ static Stmt* assignment(Parser* parser) {
     int id_line = parser->previous.line;
     int id_column = parser->previous.column;
     char* name = copy_token_lexeme(&parser->previous);
+
+    if (check(parser, TOKEN_DOT)) {
+        advance(parser); /* . */
+        if (!check(parser, TOKEN_IDENT)) {
+            error_at_current(parser, "expected field or member name after '.'");
+            free(name);
+            return NULL;
+        }
+        advance(parser); /* field/member name */
+        char* field_name = copy_token_lexeme(&parser->previous);
+        Stmt* stmt = NULL;
+        if (check(parser, TOKEN_LPAREN)) {
+            advance(parser); /* ( */
+            Expr* left = create_variable_expr(name);
+            Expr* call_expr = call(parser, left);
+            if (call_expr != NULL && call_expr->kind == EXPR_CALL) {
+                free(call_expr->as.call.package_name);
+                call_expr->as.call.package_name = name;
+                call_expr->as.call.name = field_name;
+                stmt = create_expr_stmt(call_expr);
+            } else {
+                free_expr(call_expr);
+                free(field_name);
+            }
+        } else {
+            Expr* left = create_variable_expr(name);
+            Expr* field_expr = create_row_field_expr(left, field_name);
+            free(field_name);
+            stmt = create_expr_stmt(field_expr);
+        }
+        if (stmt == NULL) {
+            free(name);
+            return NULL;
+        }
+        if (!check(parser, TOKEN_SEMICOLON)) {
+            error_at_current(parser, "expected ';' after statement");
+            free_stmt(stmt);
+            return NULL;
+        }
+        advance(parser); /* ; */
+        stmt->loc.line = id_line;
+        stmt->loc.column = id_column;
+        return stmt;
+    }
 
     if (check(parser, TOKEN_LPAREN)) {
         advance(parser); /* ( */
@@ -1598,16 +1673,30 @@ static Stmt* statement(Parser* parser) {
     return NULL;
 }
 
-static void parse_proc_with_kind(Parser* parser, Program* program, int is_function) {
+static ProcDecl* parse_proc_header(Parser* parser, int is_function) {
     /* current is IDENT (procedure/function name); 'proc'/'func' was consumed by caller */
     advance(parser); /* name */
     char* name = copy_token_lexeme(&parser->previous);
-    advance(parser); /* ( */
+    if (!match(parser, TOKEN_LPAREN)) {
+        error_at_current(parser, "expected '(' after procedure name");
+        free(name);
+        return NULL;
+    }
 
     Param* params = NULL;
     int param_count = 0;
     if (!check(parser, TOKEN_RPAREN)) {
         do {
+            if (!check(parser, TOKEN_IDENT)) {
+                error_at_current(parser, "expected parameter name");
+                for (int i = 0; i < param_count; i++) {
+                    free(params[i].name);
+                    type_free(params[i].type);
+                }
+                free(params);
+                free(name);
+                return NULL;
+            }
             advance(parser); /* param name */
             char* param_name = copy_token_lexeme(&parser->previous);
 
@@ -1632,8 +1721,7 @@ static void parse_proc_with_kind(Parser* parser, Program* program, int is_functi
                 }
                 free(params);
                 free(name);
-                error_at_current(parser, "out of memory");
-                return;
+                return NULL;
             }
             params = new_params;
             params[param_count].name = param_name;
@@ -1643,8 +1731,26 @@ static void parse_proc_with_kind(Parser* parser, Program* program, int is_functi
         } while (match(parser, TOKEN_COMMA));
     }
 
-    advance(parser); /* ) */
-    advance(parser); /* -> */
+    if (!match(parser, TOKEN_RPAREN)) {
+        error_at_current(parser, "expected ')' after parameters");
+        for (int i = 0; i < param_count; i++) {
+            free(params[i].name);
+            type_free(params[i].type);
+        }
+        free(params);
+        free(name);
+        return NULL;
+    }
+    if (!match(parser, TOKEN_ARROW)) {
+        error_at_current(parser, "expected '->' after parameter list");
+        for (int i = 0; i < param_count; i++) {
+            free(params[i].name);
+            type_free(params[i].type);
+        }
+        free(params);
+        free(name);
+        return NULL;
+    }
     Type* return_type = parse_type(parser);
     ProcDecl* proc = create_proc_decl(name, return_type);
     free(name);
@@ -1654,16 +1760,21 @@ static void parse_proc_with_kind(Parser* parser, Program* program, int is_functi
             type_free(params[i].type);
         }
         free(params);
-        error_at_current(parser, "out of memory");
-        return;
+        return NULL;
     }
     proc->is_function = is_function;
     proc->params = params;
     proc->param_count = param_count;
+    return proc;
+}
+
+static void parse_proc_with_kind(Parser* parser, Program* program, int is_function) {
+    ProcDecl* proc = parse_proc_header(parser, is_function);
+    if (proc == NULL) return;
     proc->body = block(parser);
     if (proc->body == NULL) {
         free(proc->name);
-        for (int i = 0; i < param_count; i++) {
+        for (int i = 0; i < proc->param_count; i++) {
             free(proc->params[i].name);
             type_free(proc->params[i].type);
         }
@@ -1686,6 +1797,351 @@ static void parse_proc(Parser* parser, Program* program) {
 
 static void parse_func(Parser* parser, Program* program) {
     parse_proc_with_kind(parser, program, 1);
+}
+
+static int package_add_var(Stmt*** vars, int* count, int* capacity, Stmt* var) {
+    if (*count >= *capacity) {
+        int new_capacity = *capacity == 0 ? 4 : *capacity * 2;
+        Stmt** new_vars = realloc(*vars, sizeof(Stmt*) * (size_t)new_capacity);
+        if (new_vars == NULL) return 0;
+        *vars = new_vars;
+        *capacity = new_capacity;
+    }
+    (*vars)[(*count)++] = var;
+    return 1;
+}
+
+static int package_add_proc(ProcDecl** procs, int* count, int* capacity, ProcDecl* proc) {
+    if (*count >= *capacity) {
+        int new_capacity = *capacity == 0 ? 4 : *capacity * 2;
+        ProcDecl* new_procs = realloc(*procs, sizeof(ProcDecl) * (size_t)new_capacity);
+        if (new_procs == NULL) return 0;
+        *procs = new_procs;
+        *capacity = new_capacity;
+    }
+    (*procs)[(*count)++] = *proc;
+    return 1;
+}
+
+static int token_is_type_after(Parser* parser) {
+    Token next = peek_next(parser);
+    return next.type == TOKEN_INT_TYPE ||
+           next.type == TOKEN_FLOAT_TYPE ||
+           next.type == TOKEN_STRING_TYPE ||
+           next.type == TOKEN_BOOL_TYPE ||
+           next.type == TOKEN_ARRAY_TYPE ||
+           next.type == TOKEN_MAP_TYPE ||
+           next.type == TOKEN_CURSOR ||
+           next.type == TOKEN_IDENT;
+}
+
+static int token_starts_type(Parser* parser) {
+    return check(parser, TOKEN_INT_TYPE) ||
+           check(parser, TOKEN_FLOAT_TYPE) ||
+           check(parser, TOKEN_STRING_TYPE) ||
+           check(parser, TOKEN_BOOL_TYPE) ||
+           check(parser, TOKEN_ARRAY_TYPE) ||
+           check(parser, TOKEN_MAP_TYPE) ||
+           check(parser, TOKEN_CURSOR) ||
+           (check(parser, TOKEN_IDENT) &&
+            peek_next(parser).type == TOKEN_IDENT);
+}
+
+static Stmt* parse_package_var(Parser* parser) {
+    if (token_starts_type(parser)) {
+        return var_decl(parser);
+    }
+    if (check(parser, TOKEN_IDENT) && token_is_type_after(parser)) {
+        /* name-then-type form: "var_name int;" */
+        Token name_token = parser->current;
+        advance(parser); /* name */
+        Type* type = parse_type(parser);
+        if (!match(parser, TOKEN_SEMICOLON)) {
+            error_at_current(parser, "expected ';' after variable declaration");
+            type_free(type);
+            return NULL;
+        }
+        char* name = copy_token_lexeme(&name_token);
+        Stmt* stmt = create_var_decl_stmt(type, name, NULL);
+        stmt->loc.line = name_token.line;
+        stmt->loc.column = name_token.column;
+        free(name);
+        return stmt;
+    }
+    return NULL;
+}
+
+static void parse_package_spec(Parser* parser, Program* program) {
+    /* 'package' was already consumed; current is IDENT (package name) */
+    advance(parser); /* name */
+    char* name = copy_token_lexeme(&parser->previous);
+    if (!match(parser, TOKEN_IS)) {
+        error_at_current(parser, "expected 'is' after package name");
+        free(name);
+        return;
+    }
+
+    PackageSpecDecl spec = {0};
+    spec.name = name;
+
+    while (!check(parser, TOKEN_END) && !check(parser, TOKEN_EOF) && !parser->had_error) {
+        if (check(parser, TOKEN_PROC)) {
+            advance(parser); /* proc */
+            ProcDecl* proc = parse_proc_header(parser, 0);
+            if (proc == NULL) {
+                free_package_spec(&spec);
+                return;
+            }
+            if (!match(parser, TOKEN_SEMICOLON)) {
+                error_at_current(parser, "expected ';' after procedure declaration");
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_spec(&spec);
+                return;
+            }
+            if (!package_add_proc(&spec.procs, &spec.proc_count, &spec.proc_capacity, proc)) {
+                error_at_current(parser, "out of memory");
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_spec(&spec);
+                return;
+            }
+            free(proc);
+        } else if (check(parser, TOKEN_FUNC)) {
+            advance(parser); /* func */
+            ProcDecl* proc = parse_proc_header(parser, 1);
+            if (proc == NULL) {
+                free_package_spec(&spec);
+                return;
+            }
+            if (!match(parser, TOKEN_SEMICOLON)) {
+                error_at_current(parser, "expected ';' after function declaration");
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_spec(&spec);
+                return;
+            }
+            if (!package_add_proc(&spec.funcs, &spec.func_count, &spec.func_capacity, proc)) {
+                error_at_current(parser, "out of memory");
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_spec(&spec);
+                return;
+            }
+            free(proc);
+        } else {
+            Stmt* var = parse_package_var(parser);
+            if (var == NULL) {
+                error_at_current(parser, "expected variable, procedure, or function declaration in package spec");
+                free_package_spec(&spec);
+                return;
+            }
+            if (!package_add_var(&spec.vars, &spec.var_count, &spec.var_capacity, var)) {
+                error_at_current(parser, "out of memory");
+                free_stmt(var);
+                free_package_spec(&spec);
+                return;
+            }
+        }
+    }
+
+    if (!match(parser, TOKEN_END)) {
+        error_at_current(parser, "expected 'end' to close package spec");
+        free_package_spec(&spec);
+        return;
+    }
+    if (!check(parser, TOKEN_IDENT) ||
+        (int)strlen(name) != parser->current.length ||
+        memcmp(parser->current.start, name, parser->current.length) != 0) {
+        error_at_current(parser, "expected matching package name after 'end'");
+        free_package_spec(&spec);
+        return;
+    }
+    advance(parser); /* matching name */
+    if (!match(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after 'end package'");
+        free_package_spec(&spec);
+        return;
+    }
+
+    if (program->spec_count >= program->spec_capacity) {
+        int new_capacity = program->spec_capacity == 0 ? 4 : program->spec_capacity * 2;
+        PackageSpecDecl* new_specs = realloc(program->specs,
+            sizeof(PackageSpecDecl) * (size_t)new_capacity);
+        if (new_specs == NULL) {
+            error_at_current(parser, "out of memory");
+            free_package_spec(&spec);
+            return;
+        }
+        program->specs = new_specs;
+        program->spec_capacity = new_capacity;
+    }
+    program->specs[program->spec_count++] = spec;
+}
+
+static void parse_package_body(Parser* parser, Program* program) {
+    /* 'package' and 'body' were already consumed; current is IDENT (package name) */
+    advance(parser); /* name */
+    char* name = copy_token_lexeme(&parser->previous);
+    if (!match(parser, TOKEN_IS)) {
+        error_at_current(parser, "expected 'is' after package body name");
+        free(name);
+        return;
+    }
+
+    PackageBodyDecl body = {0};
+    body.name = name;
+
+    while (!check(parser, TOKEN_END) && !check(parser, TOKEN_EOF) && !parser->had_error) {
+        if (check(parser, TOKEN_PROC)) {
+            advance(parser); /* proc */
+            ProcDecl* proc = parse_proc_header(parser, 0);
+            if (proc == NULL) {
+                free_package_body(&body);
+                return;
+            }
+            proc->body = block(parser);
+            if (proc->body == NULL) {
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_body(&body);
+                return;
+            }
+            if (!package_add_proc(&body.procs, &body.proc_count, &body.proc_capacity, proc)) {
+                error_at_current(parser, "out of memory");
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_body(&body);
+                return;
+            }
+            free(proc);
+        } else if (check(parser, TOKEN_FUNC)) {
+            advance(parser); /* func */
+            ProcDecl* proc = parse_proc_header(parser, 1);
+            if (proc == NULL) {
+                free_package_body(&body);
+                return;
+            }
+            proc->body = block(parser);
+            if (proc->body == NULL) {
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_body(&body);
+                return;
+            }
+            if (!package_add_proc(&body.funcs, &body.func_count, &body.func_capacity, proc)) {
+                error_at_current(parser, "out of memory");
+                free(proc->name);
+                for (int i = 0; i < proc->param_count; i++) {
+                    free(proc->params[i].name);
+                    type_free(proc->params[i].type);
+                }
+                free(proc->params);
+                type_free(proc->return_type);
+                free(proc);
+                free_package_body(&body);
+                return;
+            }
+            free(proc);
+        } else {
+            Stmt* var = parse_package_var(parser);
+            if (var == NULL) {
+                error_at_current(parser, "expected variable, procedure, or function declaration in package body");
+                free_package_body(&body);
+                return;
+            }
+            if (!package_add_var(&body.vars, &body.var_count, &body.var_capacity, var)) {
+                error_at_current(parser, "out of memory");
+                free_stmt(var);
+                free_package_body(&body);
+                return;
+            }
+        }
+    }
+
+    if (!match(parser, TOKEN_END)) {
+        error_at_current(parser, "expected 'end' to close package body");
+        free_package_body(&body);
+        return;
+    }
+    if (!check(parser, TOKEN_IDENT) ||
+        (int)strlen(name) != parser->current.length ||
+        memcmp(parser->current.start, name, parser->current.length) != 0) {
+        error_at_current(parser, "expected matching package name after 'end'");
+        free_package_body(&body);
+        return;
+    }
+    advance(parser); /* matching name */
+    if (!match(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after 'end package body'");
+        free_package_body(&body);
+        return;
+    }
+
+    if (program->body_count >= program->body_capacity) {
+        int new_capacity = program->body_capacity == 0 ? 4 : program->body_capacity * 2;
+        PackageBodyDecl* new_bodies = realloc(program->bodies,
+            sizeof(PackageBodyDecl) * (size_t)new_capacity);
+        if (new_bodies == NULL) {
+            error_at_current(parser, "out of memory");
+            free_package_body(&body);
+            return;
+        }
+        program->bodies = new_bodies;
+        program->body_capacity = new_capacity;
+    }
+    program->bodies[program->body_count++] = body;
+}
+
+static void parse_package(Parser* parser, Program* program) {
+    /* 'package' was already consumed */
+    if (match(parser, TOKEN_BODY)) {
+        parse_package_body(parser, program);
+    } else {
+        parse_package_spec(parser, program);
+    }
 }
 
 static int program_has_main(Program* program) {
@@ -1759,6 +2215,9 @@ static ParseRule rules[] = {
     [TOKEN_FETCH]      = {NULL,        NULL,   PREC_NONE},
     [TOKEN_CLOSE]      = {NULL,        NULL,   PREC_NONE},
     [TOKEN_IS]         = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_PACKAGE]    = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_BODY]       = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_END]        = {NULL,        NULL,   PREC_NONE},
     [TOKEN_TRUE]       = {literal_bool,NULL,   PREC_NONE},
     [TOKEN_FALSE]      = {literal_bool,NULL,   PREC_NONE},
     [TOKEN_IDENT]      = {variable,    NULL,   PREC_NONE},
@@ -1930,10 +2389,32 @@ Program* parse_with_path(const char* source, const char* path, char* error, size
             parse_proc(&parser, program);
         } else if (match(&parser, TOKEN_FUNC)) {
             parse_func(&parser, program);
+        } else if (match(&parser, TOKEN_PACKAGE)) {
+            parse_package(&parser, program);
+        } else if (check(&parser, TOKEN_CREATE)) {
+            /* Support 'create [or replace] package [body] ...' syntax. */
+            advance(&parser); /* create */
+            if (check(&parser, TOKEN_IDENT) && parser.current.length == 2 &&
+                memcmp(parser.current.start, "or", 2) == 0) {
+                advance(&parser); /* or */
+                if (check(&parser, TOKEN_IDENT) && parser.current.length == 7 &&
+                    memcmp(parser.current.start, "replace", 7) == 0) {
+                    advance(&parser); /* replace */
+                } else {
+                    error_at_current(&parser, "expected 'replace' after 'or'");
+                    break;
+                }
+            }
+            if (match(&parser, TOKEN_PACKAGE)) {
+                parse_package(&parser, program);
+            } else {
+                error_at_current(&parser, "expected 'package' after 'create'");
+                break;
+            }
         } else if (match(&parser, TOKEN_BLOCK)) {
             parse_anon_block(&parser, program);
         } else {
-            error_at_current(&parser, "expected 'proc', 'func', 'struct', 'import', or 'block'");
+            error_at_current(&parser, "expected 'proc', 'func', 'struct', 'import', 'package', or 'block'");
             break;
         }
     }

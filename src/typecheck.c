@@ -59,6 +59,8 @@ typedef struct {
     int cursor_count;
     StructInfo structs[MAX_STRUCTS];
     int struct_count;
+    const char* current_package;
+    Program* program;
 } TypeChecker;
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
@@ -113,6 +115,30 @@ static ProcSignature* resolve_proc(TypeChecker* tc, const char* name) {
         if (strcmp(tc->procs[i].name, name) == 0) return &tc->procs[i];
     }
     return NULL;
+}
+
+static ProcSignature* resolve_proc_in_package(TypeChecker* tc, const char* package_name, const char* name) {
+    size_t len = strlen(package_name) + 1 + strlen(name) + 1;
+    char* mangled = malloc(len);
+    if (mangled == NULL) return NULL;
+    snprintf(mangled, len, "%s.%s", package_name, name);
+    ProcSignature* sig = resolve_proc(tc, mangled);
+    free(mangled);
+    return sig;
+}
+
+static int package_has_public_member(Program* program, const char* package_name, const char* member_name) {
+    for (int i = 0; i < program->spec_count; i++) {
+        PackageSpecDecl* spec = &program->specs[i];
+        if (strcmp(spec->name, package_name) != 0) continue;
+        for (int p = 0; p < spec->proc_count; p++) {
+            if (strcmp(spec->procs[p].name, member_name) == 0) return 1;
+        }
+        for (int p = 0; p < spec->func_count; p++) {
+            if (strcmp(spec->funcs[p].name, member_name) == 0) return 1;
+        }
+    }
+    return 0;
 }
 
 static int bind_row(TypeChecker* tc, const char* var_name, const char* query) {
@@ -1139,15 +1165,41 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
 
         case EXPR_CALL: {
             const char* call_name = expr->as.call.name;
-            if (is_native(call_name)) {
-                return check_native_call(tc, call_name, expr->as.call.args,
-                                         expr->as.call.arg_count, expr->loc);
-            }
-            ProcSignature* sig = resolve_proc(tc, call_name);
-            if (sig == NULL) {
-                type_error(tc, expr->loc, "Undefined procedure '%s'",
-                           call_name);
-                return NULL;
+            const char* package_name = expr->as.call.package_name;
+            ProcSignature* sig = NULL;
+
+            if (package_name != NULL) {
+                sig = resolve_proc_in_package(tc, package_name, call_name);
+                if (sig == NULL) {
+                    type_error(tc, expr->loc, "Undefined package member '%s.%s'",
+                               package_name, call_name);
+                    return NULL;
+                }
+                if (tc->current_package == NULL ||
+                    strcmp(tc->current_package, package_name) != 0) {
+                    if (!package_has_public_member(tc->program, package_name, call_name)) {
+                        type_error(tc, expr->loc,
+                                   "Package member '%s.%s' is private",
+                                   package_name, call_name);
+                        return sig->return_type;
+                    }
+                }
+            } else {
+                if (is_native(call_name)) {
+                    return check_native_call(tc, call_name, expr->as.call.args,
+                                             expr->as.call.arg_count, expr->loc);
+                }
+                if (tc->current_package != NULL) {
+                    sig = resolve_proc_in_package(tc, tc->current_package, call_name);
+                }
+                if (sig == NULL) {
+                    sig = resolve_proc(tc, call_name);
+                }
+                if (sig == NULL) {
+                    type_error(tc, expr->loc, "Undefined procedure '%s'",
+                               call_name);
+                    return NULL;
+                }
             }
             if (expr->as.call.arg_count != sig->param_count) {
                 type_error(tc, expr->loc,
@@ -1797,6 +1849,7 @@ int typecheck_program(Program* program,
     tc.source_path = source_path;
     tc.error = error;
     tc.error_size = error_size;
+    tc.program = program;
 
     for (int i = 0; i < program->struct_count && tc.struct_count < MAX_STRUCTS; i++) {
         StructDecl* decl = &program->structs[i];
@@ -1886,6 +1939,56 @@ int typecheck_program(Program* program,
         pop_scope(&tc);
         if (tc.had_error) break;
     }
+
+    for (int b = 0; b < program->body_count && !tc.had_error; b++) {
+        PackageBodyDecl* body = &program->bodies[b];
+        tc.current_package = body->name;
+        if (!push_scope(&tc)) {
+            type_error(&tc, (SourceLoc){0, 0}, "Too many nested scopes");
+            break;
+        }
+        for (int v = 0; v < body->var_count; v++) {
+            VarDeclStmt* var = &body->vars[v]->as.var_decl;
+            if (!add_local(&tc, var->name, var->type)) {
+                type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                break;
+            }
+        }
+        if (tc.had_error) {
+            pop_scope(&tc);
+            break;
+        }
+        for (int v = 0; v < body->var_count && !tc.had_error; v++) {
+            check_stmt(&tc, body->vars[v]);
+        }
+        if (tc.had_error) {
+            pop_scope(&tc);
+            break;
+        }
+
+        for (int i = 0; i < body->proc_count + body->func_count && !tc.had_error; i++) {
+            ProcDecl* proc = (i < body->proc_count) ? &body->procs[i] : &body->funcs[i - body->proc_count];
+            if (!push_scope(&tc)) {
+                type_error(&tc, (SourceLoc){0, 0}, "Too many nested scopes");
+                break;
+            }
+            for (int p = 0; p < proc->param_count; p++) {
+                if (!add_local(&tc, proc->params[p].name, proc->params[p].type)) {
+                    type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                    break;
+                }
+            }
+            if (tc.had_error) {
+                pop_scope(&tc);
+                break;
+            }
+            tc.return_type = proc->return_type;
+            check_block(&tc, proc->body);
+            pop_scope(&tc);
+        }
+        pop_scope(&tc);
+    }
+    tc.current_package = NULL;
 
     for (int i = 0; i < tc.transient_count; i++) {
         type_free(tc.transient_types[i]);

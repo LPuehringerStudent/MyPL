@@ -8,6 +8,7 @@
 #include "repl.h"
 #include "compiler.h"
 #include "os.h"
+#include "packages.h"
 #include "sql_engine.h"
 #ifdef USE_SQLITE
 #include "sqlite_driver.h"
@@ -96,8 +97,34 @@ static int brace_depth(const char* s) {
     return depth;
 }
 
+static int package_is_complete(const char* s) {
+    while (*s != '\0' && isspace((unsigned char)*s)) s++;
+    const char* first = s;
+    while (*first != '\0' && (*first == ' ' || *first == '\t')) first++;
+    if (strncmp(first, "package ", 8) != 0 && strncmp(first, "create ", 7) != 0) return 1;
+
+    int starts = 0;
+    int ends = 0;
+    const char* p = s;
+    while (*p != '\0') {
+        while (*p != '\0' && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
+        if (*p == '\0') break;
+        if (strncmp(p, "package ", 8) == 0) {
+            starts++;
+        } else if (strncmp(p, "end ", 4) == 0) {
+            const char* q = p;
+            while (*q != '\0' && *q != '\n') q++;
+            while (q > p && isspace((unsigned char)q[-1])) q--;
+            if (q > p && q[-1] == ';') ends++;
+        }
+        while (*p != '\0' && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+    return starts > 0 && starts == ends;
+}
+
 static int input_is_complete(const char* line) {
-    return brace_depth(line) <= 0;
+    return brace_depth(line) <= 0 && package_is_complete(line);
 }
 
 static void history_add(ReplSession* session, const char* line) {
@@ -280,6 +307,15 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
             vm_set_context(session->vm, &session->ctx);
         }
     }
+
+    DBDriver* driver = session->driver_open ? &session->driver : NULL;
+    Context* ctx = session->driver_open ? NULL : &session->ctx;
+    char* persisted = packages_load_source(driver, ctx);
+    if (persisted != NULL) {
+        string_buffer_append(&session->procedures, persisted);
+        string_buffer_append(&session->procedures, "\n");
+        free(persisted);
+    }
 }
 
 static void repl_session_free(ReplSession* session) {
@@ -314,6 +350,27 @@ static void trim_trailing_ws(char* s) {
 static int is_procedure_definition(const char* line) {
     while (*line != '\0' && isspace((unsigned char)*line)) line++;
     return strncmp(line, "proc ", 5) == 0;
+}
+
+static int is_package_definition(const char* line) {
+    while (*line != '\0' && isspace((unsigned char)*line)) line++;
+    if (strncmp(line, "package ", 8) == 0) return 1;
+    if (strncmp(line, "create ", 7) == 0) {
+        line += 7;
+        while (*line != '\0' && isspace((unsigned char)*line)) line++;
+        if (strncmp(line, "or ", 3) == 0) {
+            line += 3;
+            while (*line != '\0' && isspace((unsigned char)*line)) line++;
+            if (strncmp(line, "replace ", 8) == 0) {
+                line += 8;
+                while (*line != '\0' && isspace((unsigned char)*line)) line++;
+            } else {
+                return 0;
+            }
+        }
+        return strncmp(line, "package ", 8) == 0;
+    }
+    return 0;
 }
 
 static int is_statement(const char* line) {
@@ -1123,6 +1180,17 @@ void repl_run(const char* db_path) {
                 break;
             }
             /* Execute the procedure definition to validate it. */
+            run_current_line(&session, "0");
+        } else if (is_package_definition(complete)) {
+            if (!string_buffer_append(&session.procedures, complete) ||
+                !string_buffer_append(&session.procedures, "\n")) {
+                fprintf(stderr, "Out of memory\n");
+                break;
+            }
+            DBDriver* driver = session.driver_open ? &session.driver : NULL;
+            Context* ctx = session.driver_open ? NULL : &session.ctx;
+            packages_save_source(driver, ctx, session.procedures.data, 1);
+            /* Execute the package definition to validate it. */
             run_current_line(&session, "0");
         } else {
             if (is_statement(complete)) {
