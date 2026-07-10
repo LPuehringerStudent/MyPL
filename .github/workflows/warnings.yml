@@ -18,7 +18,7 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
     - name: Build with -Werror
-      run: make clean && make all CFLAGS="-Wall -Wextra -Werror -std=c99 -D_GNU_SOURCE -Iinclude"
+      run: make clean && make all CFLAGS="-Wall -Wextra -Werror -std=c99 -D_GNU_SOURCE -Iinclude -DUSE_SQLITE"
 
     - name: Run tests
-      run: make test CFLAGS="-Wall -Wextra -Werror -std=c99 -D_GNU_SOURCE -Iinclude"
+      run: make test CFLAGS="-Wall -Wextra -Werror -std=c99 -D_GNU_SOURCE -Iinclude -DUSE_SQLITE"

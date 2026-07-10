@@ -83,8 +83,6 @@ int sql_query_column_type(Context* ctx, const char* query, const char* column_na
 /* Database driver abstraction                                                */
 /* -------------------------------------------------------------------------- */
 
-typedef struct DBDriver DBDriver;
-
 struct DBDriver {
     void* impl;
     char error_message[256];
