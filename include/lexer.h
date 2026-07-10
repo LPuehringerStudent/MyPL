@@ -23,6 +23,11 @@ typedef enum {
     TOKEN_OUT,
     TOKEN_PRINT,
     TOKEN_IMPORT,
+    TOKEN_CURSOR,
+    TOKEN_OPEN,
+    TOKEN_FETCH,
+    TOKEN_CLOSE,
+    TOKEN_IS,
 
     /* SQL keywords */
     TOKEN_CREATE,
@@ -86,6 +91,7 @@ typedef enum {
     TOKEN_COMMA,
     TOKEN_SEMICOLON,
     TOKEN_COLON,
+    TOKEN_PERCENT,
 
     TOKEN_ERROR,
     TOKEN_EOF

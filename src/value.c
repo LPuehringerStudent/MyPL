@@ -4,17 +4,7 @@
 #include <string.h>
 
 #include "compiler.h"
-
-typedef enum {
-    OBJ_STRING,
-    OBJ_ARRAY,
-    OBJ_ROW
-} ObjType;
-
-typedef struct {
-    ObjType type;
-    int ref_count;
-} Obj;
+#include "sql_engine.h"
 
 typedef struct {
     Obj obj;
@@ -35,6 +25,20 @@ struct RowObj {
     char** column_names;
     Value* column_values;
 };
+
+CursorObj* cursor_obj_new(DBDriver* driver) {
+    CursorObj* cursor = malloc(sizeof(CursorObj));
+    if (cursor == NULL) return NULL;
+    cursor->obj.type = OBJ_CURSOR;
+    cursor->obj.ref_count = 1;
+    cursor->driver = driver;
+    cursor->result_handle = NULL;
+    cursor->row_handle = NULL;
+    cursor->is_open = 0;
+    cursor->row_count = 0;
+    cursor->found = 0;
+    return cursor;
+}
 
 static ArrayObj* array_pool = NULL;
 
@@ -102,6 +106,13 @@ Value value_row(RowObj* row) {
     return value;
 }
 
+Value value_cursor(CursorObj* cursor) {
+    Value value;
+    value.type = VAL_CURSOR;
+    value.as.as_cursor = cursor;
+    return value;
+}
+
 void value_retain(Value v) {
     if (v.type == VAL_STRING && v.as.as_string != NULL) {
         string_obj_from_chars(v.as.as_string)->obj.ref_count++;
@@ -109,7 +120,17 @@ void value_retain(Value v) {
         v.as.as_array->obj.ref_count++;
     } else if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
         ((RowObj*)v.as.as_row_handle)->obj.ref_count++;
+    } else if (v.type == VAL_CURSOR && v.as.as_cursor != NULL) {
+        v.as.as_cursor->obj.ref_count++;
     }
+}
+
+static void cursor_obj_free(CursorObj* cursor) {
+    if (cursor == NULL) return;
+    if (cursor->result_handle != NULL && cursor->driver != NULL) {
+        cursor->driver->result_free(cursor->driver, cursor->result_handle);
+    }
+    free(cursor);
 }
 
 void value_release(Value v) {
@@ -128,6 +149,11 @@ void value_release(Value v) {
         if (--row->obj.ref_count <= 0) {
             row_obj_free(row);
         }
+    } else if (v.type == VAL_CURSOR && v.as.as_cursor != NULL) {
+        CursorObj* cursor = v.as.as_cursor;
+        if (--cursor->obj.ref_count <= 0) {
+            cursor_obj_free(cursor);
+        }
     }
 }
 
@@ -140,6 +166,9 @@ int value_ref_count(Value v) {
     }
     if (v.type == VAL_ROW && v.as.as_row_handle != NULL) {
         return ((RowObj*)v.as.as_row_handle)->obj.ref_count;
+    }
+    if (v.type == VAL_CURSOR && v.as.as_cursor != NULL) {
+        return v.as.as_cursor->obj.ref_count;
     }
     return 0;
 }
@@ -283,6 +312,8 @@ int value_is_truthy(Value value) {
             return value.as.as_int != 0;
         case VAL_ARRAY:
             return value.as.as_array != NULL;
+        case VAL_CURSOR:
+            return value.as.as_cursor != NULL;
         default:
             /* VAL_ROW_HANDLE and any future types: treat non-NULL as truthy. */
             return value.as.as_row_handle != NULL;
@@ -317,6 +348,9 @@ void value_print(Value value) {
         }
         case VAL_ROW:
             printf("(row)");
+            break;
+        case VAL_CURSOR:
+            printf("(cursor)");
             break;
         default:
             printf("?");

@@ -951,6 +951,219 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
                 }
                 break;
             }
+            case OP_CURSOR_OPEN: {
+                if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                uint16_t line = read_u16(vm->ip);
+                vm->ip += 2;
+                vm->sql_line = (int)line;
+                Value old_cursor;
+                if (!pop(vm, &old_cursor)) return INTERPRET_RUNTIME_ERROR;
+                if (old_cursor.type != VAL_CURSOR) {
+                    value_release(old_cursor);
+                    set_runtime_error_sql(vm, "OPEN requires a cursor variable");
+                    THROW(vm);
+                }
+                value_release(old_cursor);
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value query_value = vm->chunk->constants[idx];
+                if (query_value.type != VAL_STRING || query_value.as.as_string == NULL) {
+                    set_runtime_error_sql(vm, "Invalid SQL query");
+                    THROW(vm);
+                }
+                CursorObj* cursor = cursor_obj_new(vm->driver);
+                if (cursor == NULL) {
+                    set_runtime_error_sql(vm, "out of memory");
+                    THROW(vm);
+                }
+                if (vm->driver != NULL) {
+                    if (!vm->driver->query(vm->driver, query_value.as.as_string,
+                                           vm->sql_params, vm->sql_param_count, &cursor->result_handle)) {
+                        for (int i = 0; i < vm->sql_param_count; i++) {
+                            value_release(vm->sql_params[i]);
+                        }
+                        vm->sql_param_count = 0;
+                        value_release(value_cursor(cursor));
+                        set_runtime_error_from_driver_sql(vm, "SQL query failed");
+                        THROW(vm);
+                    }
+                    for (int i = 0; i < vm->sql_param_count; i++) {
+                        value_release(vm->sql_params[i]);
+                    }
+                    vm->sql_param_count = 0;
+                } else {
+                    Context* ctx = vm->context;
+                    if (ctx == NULL || ctx->pager == NULL) {
+                        value_release(value_cursor(cursor));
+                        set_runtime_error_sql(vm, "No database context");
+                        THROW(vm);
+                    }
+                    cursor->result_handle = sql_exec(query_value.as.as_string, ctx);
+                    for (int i = 0; i < vm->sql_param_count; i++) {
+                        value_release(vm->sql_params[i]);
+                    }
+                    vm->sql_param_count = 0;
+                    if (cursor->result_handle == NULL) {
+                        value_release(value_cursor(cursor));
+                        set_runtime_error_sql(vm, "SQL query failed");
+                        THROW(vm);
+                    }
+                }
+                cursor->is_open = 1;
+                cursor->row_count = 0;
+                cursor->found = 0;
+                cursor->row_handle = NULL;
+                if (!push(vm, value_cursor(cursor))) {
+                    value_release(value_cursor(cursor));
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_CURSOR_FETCH: {
+                if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
+                uint8_t into_count = *vm->ip++;
+                if (vm->ip + into_count > end) return INTERPRET_RUNTIME_ERROR;
+                uint8_t into_slots[64];
+                for (int i = 0; i < into_count; i++) {
+                    into_slots[i] = *vm->ip++;
+                }
+                Value cursor_value;
+                if (!pop(vm, &cursor_value)) return INTERPRET_RUNTIME_ERROR;
+                if (cursor_value.type != VAL_CURSOR || cursor_value.as.as_cursor == NULL) {
+                    value_release(cursor_value);
+                    set_runtime_error(vm, "FETCH requires a cursor variable");
+                    THROW(vm);
+                }
+                CursorObj* cursor = cursor_value.as.as_cursor;
+                if (cursor == NULL || !cursor->is_open) {
+                    value_release(cursor_value);
+                    set_runtime_error(vm, "FETCH on closed cursor");
+                    THROW(vm);
+                }
+                int has_row = 0;
+                if (vm->driver != NULL) {
+                    void* next = NULL;
+                    has_row = vm->driver->result_next(vm->driver, cursor->result_handle, &next);
+                    cursor->row_handle = has_row ? next : NULL;
+                } else {
+                    Row* next = result_next((Result*)cursor->result_handle);
+                    has_row = next != NULL;
+                    cursor->row_handle = next;
+                }
+                cursor->found = has_row;
+                if (has_row) {
+                    cursor->row_count++;
+                    for (int i = 0; i < into_count; i++) {
+                        Value col_value;
+                        if (vm->driver != NULL) {
+                            if (!vm->driver->row_get_column(vm->driver, cursor->row_handle, i, &col_value)) {
+                                value_release(cursor_value);
+                                set_runtime_error_from_driver_sql(vm, "Column access failed");
+                                THROW(vm);
+                            }
+                        } else {
+                            Row* row = (Row*)cursor->row_handle;
+                            if (row == NULL || i >= row->field_count) {
+                                value_release(cursor_value);
+                                set_runtime_error_sql(vm, "Invalid column index");
+                                THROW(vm);
+                            }
+                            Cell cell = row->fields[i].value;
+                            switch (cell.type) {
+                                case VAL_INT:    col_value = value_int(cell.as.as_int);       break;
+                                case VAL_FLOAT:  col_value = value_float(cell.as.as_float);   break;
+                                case VAL_STRING: col_value = value_string(strdup(cell.as.as_string)); break;
+                                default:         col_value = value_int(0);                    break;
+                            }
+                        }
+                        int slot = into_slots[i];
+                        int depth = (int)(vm->stack_top - vm->frame_base);
+                        if (slot >= depth) {
+                            value_release(col_value);
+                            value_release(cursor_value);
+                            set_runtime_error(vm, "Invalid local variable slot");
+                            THROW(vm);
+                        }
+                        value_retain(col_value);
+                        value_release(vm->frame_base[slot]);
+                        vm->frame_base[slot] = col_value;
+                    }
+                }
+                value_release(cursor_value);
+                break;
+            }
+            case OP_CURSOR_CLOSE: {
+                Value cursor_value;
+                if (!pop(vm, &cursor_value)) return INTERPRET_RUNTIME_ERROR;
+                if (cursor_value.type != VAL_CURSOR || cursor_value.as.as_cursor == NULL) {
+                    value_release(cursor_value);
+                    set_runtime_error(vm, "CLOSE requires a cursor variable");
+                    THROW(vm);
+                }
+                CursorObj* cursor = cursor_value.as.as_cursor;
+                if (cursor == NULL) {
+                    value_release(cursor_value);
+                    break;
+                }
+                cursor->is_open = 0;
+                cursor->found = 0;
+                if (cursor->result_handle != NULL) {
+                    if (cursor->driver != NULL) {
+                        cursor->driver->result_free(cursor->driver, cursor->result_handle);
+                    } else {
+                        result_free((Result*)cursor->result_handle);
+                    }
+                    cursor->result_handle = NULL;
+                }
+                cursor->row_handle = NULL;
+                value_release(cursor_value);
+                break;
+            }
+            case OP_CURSOR_ATTR: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                Value cursor_value;
+                if (!pop(vm, &cursor_value)) return INTERPRET_RUNTIME_ERROR;
+                if (cursor_value.type != VAL_CURSOR) {
+                    value_release(cursor_value);
+                    set_runtime_error(vm, "Cursor attribute requires a cursor variable");
+                    THROW(vm);
+                }
+                CursorObj* cursor = cursor_value.as.as_cursor;
+                if (idx >= (uint16_t)vm->chunk->constants_count) {
+                    value_release(cursor_value);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value attr_value = vm->chunk->constants[idx];
+                if (attr_value.type != VAL_STRING || attr_value.as.as_string == NULL) {
+                    value_release(cursor_value);
+                    set_runtime_error(vm, "Invalid cursor attribute");
+                    THROW(vm);
+                }
+                const char* attr = attr_value.as.as_string;
+                Value result = value_int(0);
+                if (strcmp(attr, "found") == 0) {
+                    result = value_bool(cursor != NULL ? cursor->found : 0);
+                } else if (strcmp(attr, "notfound") == 0) {
+                    result = value_bool(cursor != NULL ? !cursor->found : 1);
+                } else if (strcmp(attr, "rowcount") == 0) {
+                    result = value_int(cursor != NULL ? cursor->row_count : 0);
+                } else if (strcmp(attr, "isopen") == 0) {
+                    result = value_bool(cursor != NULL ? cursor->is_open : 0);
+                } else {
+                    value_release(cursor_value);
+                    set_runtime_error(vm, "Unknown cursor attribute");
+                    THROW(vm);
+                }
+                if (!push(vm, result)) {
+                    value_release(cursor_value);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                value_release(cursor_value);
+                break;
+            }
             case OP_ROW_GET: {
                 if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t idx = read_u16(vm->ip);

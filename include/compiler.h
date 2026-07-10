@@ -6,6 +6,30 @@
 
 typedef struct ArrayObj ArrayObj;
 typedef struct RowObj RowObj;
+typedef struct CursorObj CursorObj;
+typedef struct DBDriver DBDriver;
+
+typedef enum {
+    OBJ_STRING,
+    OBJ_ARRAY,
+    OBJ_ROW,
+    OBJ_CURSOR
+} ObjType;
+
+typedef struct {
+    ObjType type;
+    int ref_count;
+} Obj;
+
+struct CursorObj {
+    Obj obj;
+    DBDriver* driver;
+    void* result_handle;
+    void* row_handle;
+    int is_open;
+    int row_count;
+    int found;
+};
 
 typedef enum {
     OP_CONST,
@@ -49,7 +73,11 @@ typedef enum {
     OP_MAP_BUILD,
     OP_TRY,
     OP_END_TRY,
-    OP_RUNTIME_ERROR
+    OP_RUNTIME_ERROR,
+    OP_CURSOR_OPEN,
+    OP_CURSOR_FETCH,
+    OP_CURSOR_CLOSE,
+    OP_CURSOR_ATTR
 } OpCode;
 
 typedef enum {
@@ -58,7 +86,8 @@ typedef enum {
     VAL_STRING,
     VAL_BOOL,
     VAL_ARRAY,
-    VAL_ROW
+    VAL_ROW,
+    VAL_CURSOR
 } ValueType;
 
 typedef struct {
@@ -69,6 +98,7 @@ typedef struct {
         char*     as_string;
         void*     as_row_handle;
         ArrayObj* as_array;
+        CursorObj* as_cursor;
     } as;
 } Value;
 
@@ -108,6 +138,8 @@ Value value_string(char* s);
 Value value_bool(int v);
 Value value_array(ArrayObj* array);
 Value value_row(RowObj* row);
+Value value_cursor(CursorObj* cursor);
+CursorObj* cursor_obj_new(DBDriver* driver);
 void value_print(Value value);
 
 void value_retain(Value v);

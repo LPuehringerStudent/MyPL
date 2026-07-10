@@ -1,0 +1,66 @@
+// Phase 3 demo: explicit cursor variables with open/fetch/close and attributes.
+// Run with: ./bin/mypl examples/phase3.mypl
+
+proc main() -> int {
+    create table products (id int, name string, price int);
+    insert into products values (1, 'apple', 100);
+    insert into products values (2, 'banana', 200);
+    insert into products values (3, 'cherry', 300);
+
+    // Static cursor: query is bound at declaration time.
+    cursor prod_cur is select id, name, price from products order by id;
+
+    print "Before open:";
+    print concat("  isopen=", cbool(prod_cur%isopen));
+    print concat("  found=", cbool(prod_cur%found));
+    print concat("  rowcount=", int_to_string(prod_cur%rowcount));
+
+    open prod_cur;
+
+    print "After open:";
+    print concat("  isopen=", cbool(prod_cur%isopen));
+
+    int id = 0;
+    string name = "";
+    int price = 0;
+    int total = 0;
+
+    // Fetch loop using %notfound to detect end-of-result.
+    while (prod_cur%isopen) {
+        fetch prod_cur into id, name, price;
+        if (prod_cur%notfound) {
+            close prod_cur;
+            break;
+        }
+        total = total + price;
+        print concat("  row ", concat(int_to_string(id),
+                 concat(": ", concat(name, concat(" = ", int_to_string(price))))));
+    }
+
+    print "After close:";
+    print concat("  isopen=", cbool(prod_cur%isopen));
+    print concat("  rows fetched=", int_to_string(prod_cur%rowcount));
+    print concat("  total price=", int_to_string(total));
+
+    // Dynamic open: query is supplied at open time.
+    cursor dyn_cur;
+    open dyn_cur for select id, name from products where price > 150;
+    int did = 0;
+    string dname = "";
+    while (dyn_cur%isopen) {
+        fetch dyn_cur into did, dname;
+        if (dyn_cur%notfound) {
+            close dyn_cur;
+            break;
+        }
+        print concat("  expensive: ", dname);
+    }
+
+    return 0;
+}
+
+// Helper to print a boolean as "true"/"false".
+func cbool(b bool) -> string {
+    if (b) { return "true"; }
+    return "false";
+}

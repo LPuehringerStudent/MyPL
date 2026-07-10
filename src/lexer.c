@@ -120,6 +120,8 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "commit", 6) == 0) return TOKEN_COMMIT;
             if (length == 6 && memcmp(lexer->start, "create", 6) == 0) return TOKEN_CREATE;
             if (length == 8 && memcmp(lexer->start, "continue", 8) == 0) return TOKEN_CONTINUE;
+            if (length == 5 && memcmp(lexer->start, "close", 5) == 0) return TOKEN_CLOSE;
+            if (length == 6 && memcmp(lexer->start, "cursor", 6) == 0) return TOKEN_CURSOR;
             break;
         case 'd':
             if (length == 2 && memcmp(lexer->start, "do", 2) == 0) return TOKEN_DO;
@@ -135,6 +137,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 4 && memcmp(lexer->start, "from", 4) == 0) return TOKEN_FROM;
             if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
             if (length == 5 && memcmp(lexer->start, "false", 5) == 0) return TOKEN_FALSE;
+            if (length == 5 && memcmp(lexer->start, "fetch", 5) == 0) return TOKEN_FETCH;
             break;
         case 'i':
             if (length == 2 && memcmp(lexer->start, "if", 2) == 0) return TOKEN_IF;
@@ -143,12 +146,14 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 3 && memcmp(lexer->start, "int", 3) == 0) return TOKEN_INT_TYPE;
             if (length == 2 && memcmp(lexer->start, "in", 2) == 0) return TOKEN_IN;
             if (length == 6 && memcmp(lexer->start, "import", 6) == 0) return TOKEN_IMPORT;
+            if (length == 2 && memcmp(lexer->start, "is", 2) == 0) return TOKEN_IS;
             break;
         case 'm':
             if (length == 3 && memcmp(lexer->start, "map", 3) == 0) return TOKEN_MAP_TYPE;
             break;
         case 'o':
             if (length == 3 && memcmp(lexer->start, "out", 3) == 0) return TOKEN_OUT;
+            if (length == 4 && memcmp(lexer->start, "open", 4) == 0) return TOKEN_OPEN;
             break;
         case 'p':
             if (length == 4 && memcmp(lexer->start, "proc", 4) == 0) return TOKEN_PROC;
@@ -290,6 +295,7 @@ Token lexer_next_token(Lexer* lexer) {
             return make_token(lexer, TOKEN_BANG);
         case '?': return make_token(lexer, TOKEN_QUESTION);
         case '.': return make_token(lexer, TOKEN_DOT);
+        case '%': return make_token(lexer, TOKEN_PERCENT);
         case '_':
         case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
         case 'g': case 'h': case 'i': case 'j': case 'k': case 'l':
