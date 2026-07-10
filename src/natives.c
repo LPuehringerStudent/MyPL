@@ -1473,6 +1473,39 @@ static int native_execute_immediate(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_sqlcode(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)argv;
+    *out = value_int(vm_get_sql_code(vm));
+    return 1;
+}
+
+static int native_sqlerrm(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)argv;
+    const char* msg = vm_get_sql_errm(vm);
+    char* copy = strdup(msg != NULL ? msg : "");
+    if (copy == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    *out = value_string(copy);
+    return 1;
+}
+
+static int native_raise_application_error(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)out;
+    if (argv[0].type != VAL_INT || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "raise_application_error expects (int, string)");
+        return 0;
+    }
+    int code = argv[0].as.as_int;
+    const char* msg = argv[1].as.as_string ? argv[1].as.as_string : "";
+    vm_set_error_with_code(vm, msg, code);
+    return 0;
+}
+
 static int native_pad_end(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
@@ -1589,6 +1622,9 @@ static NativeDef natives[] = {
     {"sql_found", 0, native_sql_found},
     {"sql_notfound", 0, native_sql_notfound},
     {"execute_immediate", 1, native_execute_immediate},
+    {"sqlcode", 0, native_sqlcode},
+    {"sqlerrm", 0, native_sqlerrm},
+    {"raise_application_error", 2, native_raise_application_error},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

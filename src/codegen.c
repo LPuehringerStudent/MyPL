@@ -21,6 +21,7 @@
 #define MAX_LOOP_NESTING 64
 #define MAX_BREAK_PATCHES 256
 #define MAX_GLOBALS 256
+#define MAX_EXCEPTIONS 64
 
 typedef struct {
     const char* name;
@@ -60,6 +61,11 @@ typedef struct {
 } CursorQuery;
 
 typedef struct {
+    const char* name;
+    int code;
+} ExceptionEntry;
+
+typedef struct {
     Chunk* chunk;
     Local locals[MAX_LOCALS];
     int local_count;
@@ -89,6 +95,8 @@ typedef struct {
     int global_count;
     const char* current_package;
     int entry_jump_patch;
+    ExceptionEntry exceptions[MAX_EXCEPTIONS];
+    int exception_count;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -146,6 +154,32 @@ static void free_proc_entries(Compiler* compiler) {
         }
         free(compiler->procs[i].param_types);
         free(compiler->procs[i].param_modes);
+    }
+}
+
+static int find_exception_code(Compiler* compiler, const char* name) {
+    for (int i = 0; i < compiler->exception_count; i++) {
+        if (strcmp(compiler->exceptions[i].name, name) == 0) {
+            return compiler->exceptions[i].code;
+        }
+    }
+    return 1;  /* default user-defined exception code */
+}
+
+static int add_exception(Compiler* compiler, const char* name, int code) {
+    if (compiler->exception_count >= MAX_EXCEPTIONS) return 0;
+    char* copy = malloc(strlen(name) + 1);
+    if (copy == NULL) return 0;
+    strcpy(copy, name);
+    compiler->exceptions[compiler->exception_count].name = copy;
+    compiler->exceptions[compiler->exception_count].code = code;
+    compiler->exception_count++;
+    return 1;
+}
+
+static void free_exception_entries(Compiler* compiler) {
+    for (int i = 0; i < compiler->exception_count; i++) {
+        free((void*)compiler->exceptions[i].name);
     }
 }
 
@@ -1123,6 +1157,34 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             patch_jump_to(compiler, end_offset, after_catch);
             break;
         }
+        case STMT_EXCEPTION_DECL: {
+            const char* name = stmt->as.exception_decl.name;
+            int code = find_exception_code(compiler, name);
+            if (!add_exception(compiler, name, code)) {
+                error(compiler, "too many exceptions");
+            }
+            break;
+        }
+        case STMT_RAISE: {
+            const char* name = stmt->as.raise_stmt.name;
+            int code = find_exception_code(compiler, name);
+            char* msg_copy = malloc(strlen(name) + 1);
+            if (msg_copy == NULL) {
+                error(compiler, "out of memory");
+                break;
+            }
+            strcpy(msg_copy, name);
+            int msg_idx = add_constant(compiler->chunk, value_string(msg_copy));
+            if (msg_idx < 0) {
+                free(msg_copy);
+                error(compiler, "too many constants");
+                break;
+            }
+            emit_byte(compiler, OP_RAISE);
+            emit_u16(compiler, (uint16_t)msg_idx);
+            emit_u16(compiler, (uint16_t)(int16_t)code);
+            break;
+        }
         case STMT_CURSOR_DECL: {
             CursorDeclStmt* d = &stmt->as.cursor_decl;
             int slot = add_local(compiler, d->name, (int)strlen(d->name), &type_cursor);
@@ -1373,8 +1435,9 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     error(compiler, "too many constants");
                     return;
                 }
-                emit_byte(compiler, OP_RUNTIME_ERROR);
+                emit_byte(compiler, OP_RAISE);
                 emit_u16(compiler, (uint16_t)msg_idx);
+                emit_u16(compiler, (uint16_t)(int16_t)100);  /* no_data_found */
 
                 patch_jump(compiler, skip_error);
             }
@@ -1813,10 +1876,14 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.current_package = NULL;
     compiler.entry_jump_patch = -1;
     compiler.cursor_query_count = 0;
+    compiler.exception_count = 0;
+    add_exception(&compiler, "no_data_found", 100);
+    add_exception(&compiler, "too_many_rows", -1422);
     for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;
     chunk->source_path = path;
 
     if (!compiler_compile_source(&compiler, source, 1, path, error, error_size)) {
+        free_exception_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -1829,6 +1896,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
             format_error(error, error_size, compiler.source_path, 0, 0,
                          "No main procedure");
         }
+        free_exception_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -1844,6 +1912,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
                 snprintf(msg, sizeof(msg), "Undefined procedure '%s'", compiler.patches[i].name);
                 format_error(error, error_size, compiler.source_path, 0, 0, msg);
             }
+            free_exception_entries(&compiler);
             free_proc_entries(&compiler);
             free_global_names(&compiler);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);
@@ -1853,6 +1922,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
         patch_call(chunk, compiler.patches[i].offset, compiler.procs[idx].offset);
     }
 
+    free_exception_entries(&compiler);
     free_proc_entries(&compiler);
     free_global_names(&compiler);
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);

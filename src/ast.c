@@ -406,6 +406,12 @@ void free_stmt(Stmt* stmt) {
             break;
         case STMT_SQL_TRANSACTION:
             break;
+        case STMT_EXCEPTION_DECL:
+            free(stmt->as.exception_decl.name);
+            break;
+        case STMT_RAISE:
+            free(stmt->as.raise_stmt.name);
+            break;
         case STMT_TRY_CATCH:
             free_block(stmt->as.try_catch.try_block);
             free(stmt->as.try_catch.catch_var);
@@ -856,6 +862,32 @@ Stmt* create_try_catch_stmt(Block* try_block, const char* catch_var, Block* catc
         return NULL;
     }
     stmt->as.try_catch.catch_block = catch_block;
+    return stmt;
+}
+
+Stmt* create_exception_decl_stmt(const char* name) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_EXCEPTION_DECL;
+    stmt->as.exception_decl.name = copy_string(name);
+    if (stmt->as.exception_decl.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
+    return stmt;
+}
+
+Stmt* create_raise_stmt(const char* name) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_RAISE;
+    stmt->as.raise_stmt.name = copy_string(name);
+    if (stmt->as.raise_stmt.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
     return stmt;
 }
 

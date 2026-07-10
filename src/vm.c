@@ -48,6 +48,8 @@ struct VM {
     TryFrame      try_frames[TRY_MAX];
     int           try_count;
     char          error_message[256];
+    int           sql_code;
+    char          sql_errm[256];
     Value         globals[256];
     int           global_count;
 };
@@ -71,6 +73,8 @@ VM* vm_init(void) {
     vm->sql_rowcount = 0;
     vm->try_count = 0;
     vm->error_message[0] = '\0';
+    vm->sql_code = 0;
+    vm->sql_errm[0] = '\0';
     vm->global_count = 0;
     for (int i = 0; i < 256; i++) {
         vm->globals[i].type = VAL_INT;
@@ -93,10 +97,17 @@ static int current_column(VM* vm) {
     return vm->chunk->columns[offset];
 }
 
-static void set_runtime_error(VM* vm, const char* message) {
+static void set_runtime_error_ex(VM* vm, const char* message, int code) {
     format_error(vm->error_message, sizeof(vm->error_message),
                  vm->chunk != NULL ? vm->chunk->source_path : NULL,
                  current_line(vm), current_column(vm), message);
+    vm->sql_code = code;
+    strncpy(vm->sql_errm, vm->error_message, sizeof(vm->sql_errm) - 1);
+    vm->sql_errm[sizeof(vm->sql_errm) - 1] = '\0';
+}
+
+static void set_runtime_error(VM* vm, const char* message) {
+    set_runtime_error_ex(vm, message, 1);
 }
 
 static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
@@ -115,9 +126,7 @@ static void set_runtime_error_from_driver(VM* vm, const char* prefix) {
 static void set_runtime_error_sql(VM* vm, const char* message) {
     char msg[512];
     snprintf(msg, sizeof(msg), "SQL error: %s", message);
-    format_error(vm->error_message, sizeof(vm->error_message),
-                 vm->chunk != NULL ? vm->chunk->source_path : NULL,
-                 vm->sql_line, 0, msg);
+    set_runtime_error_ex(vm, msg, 1);
 }
 
 static void set_runtime_error_from_driver_sql(VM* vm, const char* prefix) {
@@ -138,6 +147,11 @@ const char* vm_get_error(VM* vm) {
 void vm_set_error(VM* vm, const char* message) {
     if (vm == NULL) return;
     set_runtime_error(vm, message);
+}
+
+void vm_set_error_with_code(VM* vm, const char* message, int code) {
+    if (vm == NULL) return;
+    set_runtime_error_ex(vm, message, code);
 }
 
 DBDriver* vm_get_driver(VM* vm) {
@@ -163,6 +177,16 @@ int vm_get_sql_found(VM* vm) {
 int vm_get_sql_notfound(VM* vm) {
     if (vm == NULL) return 0;
     return vm->sql_rowcount == 0;
+}
+
+int vm_get_sql_code(VM* vm) {
+    if (vm == NULL) return 0;
+    return vm->sql_code;
+}
+
+const char* vm_get_sql_errm(VM* vm) {
+    if (vm == NULL) return "";
+    return vm->sql_errm;
 }
 
 static int push(VM* vm, Value value);
@@ -1418,6 +1442,22 @@ dispatch:
                     set_runtime_error(vm, "Runtime error");
                 } else {
                     set_runtime_error(vm, msg_value.as.as_string);
+                }
+                THROW(vm);
+                break;
+            }
+            case OP_RAISE: {
+                if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t msg_idx = read_u16(vm->ip);
+                vm->ip += 2;
+                int16_t code = (int16_t)read_u16(vm->ip);
+                vm->ip += 2;
+                if (msg_idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value msg_value = vm->chunk->constants[msg_idx];
+                if (msg_value.type != VAL_STRING || msg_value.as.as_string == NULL) {
+                    set_runtime_error_ex(vm, "Runtime error", code);
+                } else {
+                    set_runtime_error_ex(vm, msg_value.as.as_string, code);
                 }
                 THROW(vm);
                 break;

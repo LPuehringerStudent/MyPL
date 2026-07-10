@@ -526,6 +526,24 @@ static Expr* variable(Parser* parser) {
     return expr;
 }
 
+static Expr* sqlcode_expr(Parser* parser) {
+    Expr* expr = create_call_expr("sqlcode", NULL, 0);
+    if (expr != NULL) {
+        expr->loc.line = parser->previous.line;
+        expr->loc.column = parser->previous.column;
+    }
+    return expr;
+}
+
+static Expr* sqlerrm_expr(Parser* parser) {
+    Expr* expr = create_call_expr("sqlerrm", NULL, 0);
+    if (expr != NULL) {
+        expr->loc.line = parser->previous.line;
+        expr->loc.column = parser->previous.column;
+    }
+    return expr;
+}
+
 static Expr* field(Parser* parser, Expr* left) {
     advance(parser); /* field name */
     char* field_name = copy_token_lexeme(&parser->previous);
@@ -1027,6 +1045,53 @@ static Stmt* try_statement(Parser* parser) {
         stmt->loc.column = kw.column;
     }
     free(catch_var);
+    return stmt;
+}
+
+static Stmt* exception_decl_statement(Parser* parser) {
+    /* current is IDENT (exception name); caller verified next is 'exception' */
+    advance(parser); /* exception name */
+    int line = parser->previous.line;
+    int column = parser->previous.column;
+    char* name = copy_token_lexeme(&parser->previous);
+    if (name == NULL) return NULL;
+    advance(parser); /* 'exception' keyword */
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after exception declaration");
+        free(name);
+        return NULL;
+    }
+    advance(parser); /* semicolon */
+    Stmt* stmt = create_exception_decl_stmt(name);
+    if (stmt != NULL) {
+        stmt->loc.line = line;
+        stmt->loc.column = column;
+    }
+    free(name);
+    return stmt;
+}
+
+static Stmt* raise_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'raise' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected exception name after 'raise'");
+        return NULL;
+    }
+    advance(parser); /* exception name */
+    char* name = copy_token_lexeme(&parser->previous);
+    if (name == NULL) return NULL;
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after raise");
+        free(name);
+        return NULL;
+    }
+    advance(parser); /* semicolon */
+    Stmt* stmt = create_raise_stmt(name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    free(name);
     return stmt;
 }
 
@@ -1632,6 +1697,9 @@ static Stmt* statement(Parser* parser) {
         if (peek_next(parser).type == TOKEN_IDENT) {
             return var_decl(parser);
         }
+        if (peek_next(parser).type == TOKEN_EXCEPTION) {
+            return exception_decl_statement(parser);
+        }
         return assignment(parser);
     }
     if (match(parser, TOKEN_IF)) return if_statement(parser);
@@ -1641,6 +1709,7 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_BREAK)) return break_statement(parser);
     if (match(parser, TOKEN_CONTINUE)) return continue_statement(parser);
     if (match(parser, TOKEN_TRY)) return try_statement(parser);
+    if (match(parser, TOKEN_RAISE)) return raise_statement(parser);
     if (match(parser, TOKEN_CASE)) return case_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
     if (match(parser, TOKEN_PRINT)) return print_statement(parser);
@@ -2220,6 +2289,8 @@ static ParseRule rules[] = {
     [TOKEN_END]        = {NULL,        NULL,   PREC_NONE},
     [TOKEN_TRUE]       = {literal_bool,NULL,   PREC_NONE},
     [TOKEN_FALSE]      = {literal_bool,NULL,   PREC_NONE},
+    [TOKEN_SQLCODE]    = {sqlcode_expr,NULL,   PREC_NONE},
+    [TOKEN_SQLERRM]    = {sqlerrm_expr,NULL,   PREC_NONE},
     [TOKEN_IDENT]      = {variable,    NULL,   PREC_NONE},
     [TOKEN_INT]        = {number,      NULL,   PREC_NONE},
     [TOKEN_FLOAT]      = {number,      NULL,   PREC_NONE},
