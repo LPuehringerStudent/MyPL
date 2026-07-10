@@ -542,6 +542,24 @@ static Expr* field(Parser* parser, Expr* left) {
     return expr;
 }
 
+static Expr* cursor_attr(Parser* parser, Expr* left) {
+    advance(parser); /* attribute name */
+    char* attr_name = copy_token_lexeme(&parser->previous);
+    Expr* expr = NULL;
+    if (left->kind == EXPR_VARIABLE) {
+        expr = create_cursor_attr_expr(left->as.variable.name, attr_name);
+        free_expr(left);
+    } else {
+        error_at_previous(parser, "cursor attribute requires a cursor variable");
+    }
+    free(attr_name);
+    if (expr != NULL) {
+        expr->loc.line = parser->previous.line;
+        expr->loc.column = parser->previous.column;
+    }
+    return expr;
+}
+
 static Expr* call(Parser* parser, Expr* left) {
     if (left->kind != EXPR_VARIABLE) {
         error_at_current(parser, "can only call named procedures");
@@ -643,6 +661,7 @@ static Type* parse_type(Parser* parser) {
     if (match(parser, TOKEN_FLOAT_TYPE)) return &type_float;
     if (match(parser, TOKEN_STRING_TYPE)) return &type_string;
     if (match(parser, TOKEN_BOOL_TYPE)) return &type_bool;
+    if (match(parser, TOKEN_CURSOR)) return &type_cursor;
     if (check(parser, TOKEN_IDENT) && parser->current.length == 3 &&
         strncmp(parser->current.start, "row", 3) == 0) {
         advance(parser);
@@ -1253,6 +1272,216 @@ static Stmt* print_statement(Parser* parser) {
     return stmt;
 }
 
+static char* copy_sql_token_text(const Token* token) {
+    int len = token->length;
+    while (len > 0) {
+        char c = token->start[len - 1];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+        len--;
+    }
+    char* sql = malloc((size_t)len + 1);
+    if (sql == NULL) return NULL;
+    memcpy(sql, token->start, (size_t)len);
+    sql[len] = '\0';
+    return sql;
+}
+
+static Stmt* cursor_decl_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'cursor' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected cursor name");
+        return NULL;
+    }
+    advance(parser); /* cursor name */
+    char* name = copy_token_lexeme(&parser->previous);
+    char* sql_query = NULL;
+    if (match(parser, TOKEN_IS)) {
+        if (!check(parser, TOKEN_SQL_QUERY)) {
+            error_at_current(parser, "expected SELECT query after 'is'");
+            free(name);
+            return NULL;
+        }
+        Token sql_token = parser->current;
+        advance(parser); /* SQL query */
+        sql_query = copy_sql_token_text(&sql_token);
+        if (sql_query == NULL) {
+            free(name);
+            error_at_current(parser, "out of memory");
+            return NULL;
+        }
+    }
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after cursor declaration");
+        free(name);
+        free(sql_query);
+        return NULL;
+    }
+    advance(parser); /* ; */
+    Stmt* stmt = create_cursor_decl_stmt(name, sql_query);
+    free(name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    return stmt;
+}
+
+static Stmt* cursor_open_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'open' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected cursor name");
+        return NULL;
+    }
+    advance(parser); /* cursor name */
+    char* name = copy_token_lexeme(&parser->previous);
+    char* sql_query = NULL;
+    Expr** params = NULL;
+    int param_count = 0;
+    if (match(parser, TOKEN_FOR)) {
+        if (!check(parser, TOKEN_SQL_QUERY)) {
+            error_at_current(parser, "expected SELECT query after 'for'");
+            free(name);
+            return NULL;
+        }
+        Token sql_token = parser->current;
+        advance(parser); /* SQL query */
+        sql_query = copy_sql_token_text(&sql_token);
+        if (sql_query == NULL) {
+            free(name);
+            error_at_current(parser, "out of memory");
+            return NULL;
+        }
+        /* Collect ?var parameters from the dynamic query. */
+        const char* p = sql_query;
+        while (*p != '\0') {
+            if (*p == '?') {
+                const char* ident = p + 1;
+                const char* q = ident;
+                while (is_ident_char(*q)) q++;
+                if (q > ident) {
+                    int name_len = (int)(q - ident);
+                    char* pname = malloc((size_t)name_len + 1);
+                    if (pname == NULL) {
+                        free(name);
+                        free(sql_query);
+                        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                        free(params);
+                        error_at_current(parser, "out of memory");
+                        return NULL;
+                    }
+                    memcpy(pname, ident, (size_t)name_len);
+                    pname[name_len] = '\0';
+                    Expr** new_params = realloc(params, sizeof(Expr*) * (size_t)(param_count + 1));
+                    if (new_params == NULL) {
+                        free(pname);
+                        free(name);
+                        free(sql_query);
+                        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                        free(params);
+                        error_at_current(parser, "out of memory");
+                        return NULL;
+                    }
+                    params = new_params;
+                    params[param_count++] = create_sql_param_expr(pname);
+                    free(pname);
+                }
+            }
+            p++;
+        }
+    }
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after open statement");
+        free(name);
+        free(sql_query);
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
+        return NULL;
+    }
+    advance(parser); /* ; */
+    Stmt* stmt = create_cursor_open_stmt(name, sql_query, params, param_count);
+    free(name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    return stmt;
+}
+
+static Stmt* cursor_fetch_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'fetch' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected cursor name");
+        return NULL;
+    }
+    advance(parser); /* cursor name */
+    char* name = copy_token_lexeme(&parser->previous);
+    if (!match(parser, TOKEN_INTO)) {
+        error_at_current(parser, "expected 'into' after cursor name in fetch");
+        free(name);
+        return NULL;
+    }
+    char** into_vars = NULL;
+    int into_count = 0;
+    do {
+        if (!check(parser, TOKEN_IDENT)) {
+            error_at_current(parser, "expected variable name after 'into'");
+            for (int i = 0; i < into_count; i++) free(into_vars[i]);
+            free(into_vars);
+            free(name);
+            return NULL;
+        }
+        advance(parser); /* variable name */
+        char** new_vars = realloc(into_vars, sizeof(char*) * (size_t)(into_count + 1));
+        if (new_vars == NULL) {
+            error_at_current(parser, "out of memory");
+            for (int i = 0; i < into_count; i++) free(into_vars[i]);
+            free(into_vars);
+            free(name);
+            return NULL;
+        }
+        into_vars = new_vars;
+        into_vars[into_count++] = copy_token_lexeme(&parser->previous);
+    } while (match(parser, TOKEN_COMMA));
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after fetch statement");
+        for (int i = 0; i < into_count; i++) free(into_vars[i]);
+        free(into_vars);
+        free(name);
+        return NULL;
+    }
+    advance(parser); /* ; */
+    Stmt* stmt = create_cursor_fetch_stmt(name, into_vars, into_count);
+    free(name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    return stmt;
+}
+
+static Stmt* cursor_close_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'close' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected cursor name");
+        return NULL;
+    }
+    advance(parser); /* cursor name */
+    char* name = copy_token_lexeme(&parser->previous);
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after close statement");
+        free(name);
+        return NULL;
+    }
+    advance(parser); /* ; */
+    Stmt* stmt = create_cursor_close_stmt(name);
+    free(name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    return stmt;
+}
+
 static int program_add_import(Program* program, Stmt* import_stmt) {
     if (program->import_count >= MAX_IMPORTS) {
         free_stmt(import_stmt);
@@ -1361,6 +1590,10 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_SQL_QUERY)) {
         return sql_statement(parser, STMT_SQL_QUERY);
     }
+    if (match(parser, TOKEN_CURSOR)) return cursor_decl_statement(parser);
+    if (match(parser, TOKEN_OPEN)) return cursor_open_statement(parser);
+    if (match(parser, TOKEN_FETCH)) return cursor_fetch_statement(parser);
+    if (match(parser, TOKEN_CLOSE)) return cursor_close_statement(parser);
     error_at_current(parser, "expected statement");
     return NULL;
 }
@@ -1521,6 +1754,11 @@ static ParseRule rules[] = {
     [TOKEN_STRING_TYPE]= {NULL,        NULL,   PREC_NONE},
     [TOKEN_BOOL_TYPE]  = {NULL,        NULL,   PREC_NONE},
     [TOKEN_ARRAY_TYPE] = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_CURSOR]     = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_OPEN]       = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_FETCH]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_CLOSE]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_IS]         = {NULL,        NULL,   PREC_NONE},
     [TOKEN_TRUE]       = {literal_bool,NULL,   PREC_NONE},
     [TOKEN_FALSE]      = {literal_bool,NULL,   PREC_NONE},
     [TOKEN_IDENT]      = {variable,    NULL,   PREC_NONE},
@@ -1538,6 +1776,7 @@ static ParseRule rules[] = {
     [TOKEN_LT]         = {NULL,        binary, PREC_COMPARISON},
     [TOKEN_GT]         = {NULL,        binary, PREC_COMPARISON},
     [TOKEN_BANG]       = {unary,       NULL,   PREC_NONE},
+    [TOKEN_PERCENT]    = {NULL,        cursor_attr, PREC_CALL},
 
     [TOKEN_PLUS]       = {NULL,        binary, PREC_TERM},
     [TOKEN_MINUS]      = {unary,       binary, PREC_TERM},

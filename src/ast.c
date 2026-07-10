@@ -10,6 +10,7 @@ Type type_float    = { .kind = TYPE_FLOAT  };
 Type type_string   = { .kind = TYPE_STRING };
 Type type_bool     = { .kind = TYPE_BOOL   };
 Type type_row      = { .kind = TYPE_ROW    };
+Type type_cursor   = { .kind = TYPE_CURSOR };
 Type type_unknown  = { .kind = TYPE_UNKNOWN};
 
 Type* type_new(TypeKind kind, Type* element_type) {
@@ -23,7 +24,8 @@ Type* type_new(TypeKind kind, Type* element_type) {
 Type* type_copy(Type* t) {
     if (t == NULL) return NULL;
     if (t == &type_int || t == &type_float || t == &type_string ||
-        t == &type_bool || t == &type_row || t == &type_unknown) {
+        t == &type_bool || t == &type_row || t == &type_cursor ||
+        t == &type_unknown) {
         return t;
     }
     if (t->kind == TYPE_STRUCT) {
@@ -51,7 +53,8 @@ Type* type_copy(Type* t) {
 void type_free(Type* t) {
     if (t == NULL) return;
     if (t == &type_int || t == &type_float || t == &type_string ||
-        t == &type_bool || t == &type_row || t == &type_unknown) {
+        t == &type_bool || t == &type_row || t == &type_cursor ||
+        t == &type_unknown) {
         return;
     }
     if (t->kind == TYPE_STRUCT) {
@@ -103,6 +106,7 @@ const char* type_name(Type* t) {
         case TYPE_ARRAY:  return "array";
         case TYPE_MAP:    return "map";
         case TYPE_ROW:    return "row";
+        case TYPE_CURSOR: return "cursor";
         case TYPE_STRUCT: return t->struct_name != NULL ? t->struct_name : "struct";
         case TYPE_UNKNOWN: return "unknown";
     }
@@ -191,6 +195,10 @@ void free_expr(Expr* expr) {
             }
             free(expr->as.map_literal.keys);
             free(expr->as.map_literal.values);
+            break;
+        case EXPR_CURSOR_ATTR:
+            free(expr->as.cursor_attr.cursor_name);
+            free(expr->as.cursor_attr.attr_name);
             break;
         default:
             break;
@@ -358,6 +366,28 @@ void free_stmt(Stmt* stmt) {
             free(stmt->as.case_stmt.values);
             free(stmt->as.case_stmt.blocks);
             free_block(stmt->as.case_stmt.else_block);
+            break;
+        case STMT_CURSOR_DECL:
+            free(stmt->as.cursor_decl.name);
+            free(stmt->as.cursor_decl.sql_query);
+            break;
+        case STMT_CURSOR_OPEN:
+            free(stmt->as.cursor_open.name);
+            free(stmt->as.cursor_open.sql_query);
+            for (int i = 0; i < stmt->as.cursor_open.param_count; i++) {
+                free_expr(stmt->as.cursor_open.params[i]);
+            }
+            free(stmt->as.cursor_open.params);
+            break;
+        case STMT_CURSOR_FETCH:
+            free(stmt->as.cursor_fetch.name);
+            for (int i = 0; i < stmt->as.cursor_fetch.into_count; i++) {
+                free(stmt->as.cursor_fetch.into_vars[i]);
+            }
+            free(stmt->as.cursor_fetch.into_vars);
+            break;
+        case STMT_CURSOR_CLOSE:
+            free(stmt->as.cursor_close.name);
             break;
     }
     free(stmt);
@@ -858,5 +888,96 @@ Expr* create_map_literal_expr(Expr** keys, Expr** values, int count) {
     expr->as.map_literal.keys = keys;
     expr->as.map_literal.values = values;
     expr->as.map_literal.count = count;
+    return expr;
+}
+
+Stmt* create_cursor_decl_stmt(const char* name, char* sql_query) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free(sql_query);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_CURSOR_DECL;
+    stmt->as.cursor_decl.name = copy_string(name);
+    if (stmt->as.cursor_decl.name == NULL && name != NULL) {
+        free(sql_query);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.cursor_decl.sql_query = sql_query;
+    return stmt;
+}
+
+Stmt* create_cursor_open_stmt(const char* name, char* sql_query, Expr** params, int param_count) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free(sql_query);
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_CURSOR_OPEN;
+    stmt->as.cursor_open.name = copy_string(name);
+    if (stmt->as.cursor_open.name == NULL && name != NULL) {
+        free(sql_query);
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.cursor_open.sql_query = sql_query;
+    stmt->as.cursor_open.params = params;
+    stmt->as.cursor_open.param_count = param_count;
+    return stmt;
+}
+
+Stmt* create_cursor_fetch_stmt(const char* name, char** into_vars, int into_count) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        for (int i = 0; i < into_count; i++) free(into_vars[i]);
+        free(into_vars);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_CURSOR_FETCH;
+    stmt->as.cursor_fetch.name = copy_string(name);
+    if (stmt->as.cursor_fetch.name == NULL && name != NULL) {
+        for (int i = 0; i < into_count; i++) free(into_vars[i]);
+        free(into_vars);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.cursor_fetch.into_vars = into_vars;
+    stmt->as.cursor_fetch.into_count = into_count;
+    return stmt;
+}
+
+Stmt* create_cursor_close_stmt(const char* name) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_CURSOR_CLOSE;
+    stmt->as.cursor_close.name = copy_string(name);
+    return stmt;
+}
+
+Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name) {
+    Expr* expr = malloc(sizeof(Expr));
+    if (expr == NULL) return NULL;
+    expr->loc = (SourceLoc){0, 0};
+    expr->kind = EXPR_CURSOR_ATTR;
+    expr->as.cursor_attr.cursor_name = copy_string(cursor_name);
+    if (expr->as.cursor_attr.cursor_name == NULL && cursor_name != NULL) {
+        free(expr);
+        return NULL;
+    }
+    expr->as.cursor_attr.attr_name = copy_string(attr_name);
+    if (expr->as.cursor_attr.attr_name == NULL && attr_name != NULL) {
+        free(expr->as.cursor_attr.cursor_name);
+        free(expr);
+        return NULL;
+    }
     return expr;
 }

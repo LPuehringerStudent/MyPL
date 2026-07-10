@@ -31,6 +31,11 @@ typedef struct {
 } RowBinding;
 
 typedef struct {
+    const char* var_name;
+    const char* query;  /* pointer to AST-owned query string */
+} CursorBinding;
+
+typedef struct {
     Local locals[MAX_LOCALS];
     int count;
 } Scope;
@@ -50,6 +55,8 @@ typedef struct {
     int transient_count;
     RowBinding rows[MAX_ROWS];
     int row_count;
+    CursorBinding cursors[MAX_ROWS];
+    int cursor_count;
     StructInfo structs[MAX_STRUCTS];
     int struct_count;
 } TypeChecker;
@@ -121,6 +128,14 @@ static RowBinding* find_row(TypeChecker* tc, const char* var_name) {
         if (strcmp(tc->rows[i].var_name, var_name) == 0) return &tc->rows[i];
     }
     return NULL;
+}
+
+static int bind_cursor(TypeChecker* tc, const char* var_name, const char* query) {
+    if (tc->cursor_count >= MAX_ROWS) return 0;
+    tc->cursors[tc->cursor_count].var_name = var_name;
+    tc->cursors[tc->cursor_count].query = query;
+    tc->cursor_count++;
+    return 1;
 }
 
 static StructInfo* find_struct(TypeChecker* tc, const char* name) {
@@ -1251,6 +1266,31 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
             return t;
         }
 
+        case EXPR_CURSOR_ATTR: {
+            Type* t = resolve_local(tc, expr->as.cursor_attr.cursor_name);
+            if (t == NULL) {
+                type_error(tc, expr->loc, "Undefined variable '%s'",
+                           expr->as.cursor_attr.cursor_name);
+                return &type_unknown;
+            }
+            if (t != &type_unknown && t->kind != TYPE_CURSOR) {
+                type_error(tc, expr->loc, "Cursor attribute '%s' requires a cursor variable",
+                           expr->as.cursor_attr.attr_name);
+                return &type_unknown;
+            }
+            const char* attr = expr->as.cursor_attr.attr_name;
+            if (strcmp(attr, "rowcount") == 0) {
+                return &type_int;
+            }
+            if (strcmp(attr, "found") == 0 ||
+                strcmp(attr, "notfound") == 0 ||
+                strcmp(attr, "isopen") == 0) {
+                return &type_bool;
+            }
+            type_error(tc, expr->loc, "Unknown cursor attribute '%s'", attr);
+            return &type_unknown;
+        }
+
         case EXPR_ROW_FIELD: {
             Type* base = infer_expr(tc, expr->as.row_field.row, NULL);
             if (tc->had_error) return NULL;
@@ -1650,6 +1690,84 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         }
         case STMT_SQL_TRANSACTION: {
             /* no type checking needed */
+            break;
+        }
+
+        case STMT_CURSOR_DECL: {
+            CursorDeclStmt* d = &stmt->as.cursor_decl;
+            if (!add_local(tc, d->name, &type_cursor)) {
+                type_error(tc, stmt->loc, "Too many local variables");
+                return;
+            }
+            if (d->sql_query != NULL) {
+                if (!bind_cursor(tc, d->name, d->sql_query)) {
+                    type_error(tc, stmt->loc, "too many cursor bindings");
+                }
+            }
+            break;
+        }
+
+        case STMT_CURSOR_OPEN: {
+            CursorOpenStmt* o = &stmt->as.cursor_open;
+            Type* t = resolve_local(tc, o->name);
+            if (t == NULL) {
+                type_error(tc, stmt->loc, "Undefined variable '%s'", o->name);
+                return;
+            }
+            if (t != &type_unknown && t->kind != TYPE_CURSOR) {
+                type_error(tc, stmt->loc, "OPEN requires a cursor variable");
+                return;
+            }
+            for (int i = 0; i < o->param_count; i++) {
+                infer_expr(tc, o->params[i], NULL);
+                if (tc->had_error) return;
+            }
+            if (o->sql_query != NULL) {
+                if (!bind_cursor(tc, o->name, o->sql_query)) {
+                    type_error(tc, stmt->loc, "too many cursor bindings");
+                }
+            }
+            break;
+        }
+
+        case STMT_CURSOR_FETCH: {
+            CursorFetchStmt* f = &stmt->as.cursor_fetch;
+            Type* t = resolve_local(tc, f->name);
+            if (t == NULL) {
+                type_error(tc, stmt->loc, "Undefined variable '%s'", f->name);
+                return;
+            }
+            if (t != &type_unknown && t->kind != TYPE_CURSOR) {
+                type_error(tc, stmt->loc, "FETCH requires a cursor variable");
+                return;
+            }
+            for (int i = 0; i < f->into_count; i++) {
+                Type* vt = resolve_local(tc, f->into_vars[i]);
+                if (vt == NULL) {
+                    type_error(tc, stmt->loc, "Undefined variable '%s'", f->into_vars[i]);
+                    return;
+                }
+                if (vt != &type_unknown &&
+                    vt->kind != TYPE_INT && vt->kind != TYPE_FLOAT &&
+                    vt->kind != TYPE_STRING && vt->kind != TYPE_BOOL) {
+                    type_error(tc, stmt->loc, "FETCH target must be a scalar variable");
+                    return;
+                }
+            }
+            break;
+        }
+
+        case STMT_CURSOR_CLOSE: {
+            CursorCloseStmt* c = &stmt->as.cursor_close;
+            Type* t = resolve_local(tc, c->name);
+            if (t == NULL) {
+                type_error(tc, stmt->loc, "Undefined variable '%s'", c->name);
+                return;
+            }
+            if (t != &type_unknown && t->kind != TYPE_CURSOR) {
+                type_error(tc, stmt->loc, "CLOSE requires a cursor variable");
+                return;
+            }
             break;
         }
     }

@@ -12,6 +12,7 @@ typedef enum {
     TYPE_ARRAY,
     TYPE_MAP,
     TYPE_ROW,
+    TYPE_CURSOR,
     TYPE_STRUCT,
     TYPE_UNKNOWN
 } TypeKind;
@@ -31,6 +32,7 @@ extern Type type_float;
 extern Type type_string;
 extern Type type_bool;
 extern Type type_row;
+extern Type type_cursor;
 extern Type type_unknown;
 
 Type* type_new(TypeKind kind, Type* element_type);
@@ -55,7 +57,8 @@ typedef enum {
     EXPR_SQL_PARAM,
     EXPR_ROW_FIELD,
     EXPR_STRUCT_LITERAL,
-    EXPR_MAP_LITERAL
+    EXPR_MAP_LITERAL,
+    EXPR_CURSOR_ATTR
 } ExprKind;
 
 typedef enum {
@@ -78,7 +81,11 @@ typedef enum {
     STMT_SQL_QUERY,
     STMT_SQL_TRANSACTION,
     STMT_TRY_CATCH,
-    STMT_CASE
+    STMT_CASE,
+    STMT_CURSOR_DECL,
+    STMT_CURSOR_OPEN,
+    STMT_CURSOR_FETCH,
+    STMT_CURSOR_CLOSE
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -221,6 +228,28 @@ typedef struct {
 } SqlTransactionStmt;
 
 typedef struct {
+    char* name;
+    char* sql_query;  /* static query for declarations, NULL for uninitialized */
+} CursorDeclStmt;
+
+typedef struct {
+    char* name;
+    char* sql_query;  /* NULL for static open (uses declaration query) */
+    Expr** params;
+    int param_count;
+} CursorOpenStmt;
+
+typedef struct {
+    char* name;
+    char** into_vars;
+    int into_count;
+} CursorFetchStmt;
+
+typedef struct {
+    char* name;
+} CursorCloseStmt;
+
+typedef struct {
     Block* try_block;
     char* catch_var;
     Block* catch_block;
@@ -246,6 +275,10 @@ struct Stmt {
         SqlTransactionStmt sql_transaction;
         TryCatchStmt try_catch;
         CaseStmt case_stmt;
+        CursorDeclStmt cursor_decl;
+        CursorOpenStmt cursor_open;
+        CursorFetchStmt cursor_fetch;
+        CursorCloseStmt cursor_close;
     } as;
 };
 
@@ -311,6 +344,11 @@ typedef struct {
     int count;
 } MapLiteralExpr;
 
+typedef struct {
+    char* cursor_name;
+    char* attr_name;
+} CursorAttrExpr;
+
 struct Expr {
     ExprKind kind;
     SourceLoc loc;
@@ -327,6 +365,7 @@ struct Expr {
         RowFieldExpr row_field;
         StructLiteralExpr struct_literal;
         MapLiteralExpr map_literal;
+        CursorAttrExpr cursor_attr;
     } as;
 };
 
@@ -360,6 +399,11 @@ Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char*
 Stmt* create_sql_transaction_stmt(int kind);
 Stmt* create_try_catch_stmt(Block* try_block, const char* catch_var, Block* catch_block);
 Stmt* create_case_stmt(Expr* selector, Expr** values, Block** blocks, int branch_count, Block* else_block);
+Stmt* create_cursor_decl_stmt(const char* name, char* sql_query);
+Stmt* create_cursor_open_stmt(const char* name, char* sql_query, Expr** params, int param_count);
+Stmt* create_cursor_fetch_stmt(const char* name, char** into_vars, int into_count);
+Stmt* create_cursor_close_stmt(const char* name);
+Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name);
 
 Expr* create_literal_expr(Value value);
 Expr* create_variable_expr(const char* name);

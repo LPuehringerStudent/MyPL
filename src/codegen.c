@@ -53,6 +53,12 @@ typedef struct {
 } CallPatch;
 
 typedef struct {
+    const char* name;
+    int length;
+    const char* query;
+} CursorQuery;
+
+typedef struct {
     Chunk* chunk;
     Local locals[MAX_LOCALS];
     int local_count;
@@ -76,6 +82,8 @@ typedef struct {
     int loop_count;
     int current_line;
     int current_column;
+    CursorQuery cursor_queries[MAX_LOCALS];
+    int cursor_query_count;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -297,6 +305,31 @@ static int find_proc(Compiler* compiler, const char* name) {
         }
     }
     return -1;
+}
+
+static void register_cursor_query(Compiler* compiler, const char* name, int length, const char* query) {
+    for (int i = 0; i < compiler->cursor_query_count; i++) {
+        if (compiler->cursor_queries[i].length == length &&
+            memcmp(compiler->cursor_queries[i].name, name, (size_t)length) == 0) {
+            compiler->cursor_queries[i].query = query;
+            return;
+        }
+    }
+    if (compiler->cursor_query_count >= MAX_LOCALS) return;
+    compiler->cursor_queries[compiler->cursor_query_count].name = name;
+    compiler->cursor_queries[compiler->cursor_query_count].length = length;
+    compiler->cursor_queries[compiler->cursor_query_count].query = query;
+    compiler->cursor_query_count++;
+}
+
+static const char* find_cursor_query(Compiler* compiler, const char* name, int length) {
+    for (int i = 0; i < compiler->cursor_query_count; i++) {
+        if (compiler->cursor_queries[i].length == length &&
+            memcmp(compiler->cursor_queries[i].name, name, (size_t)length) == 0) {
+            return compiler->cursor_queries[i].query;
+        }
+    }
+    return NULL;
 }
 
 static void patch_call(Chunk* chunk, int offset, int target) {
@@ -535,6 +568,33 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             }
             emit_byte(compiler, OP_GET_LOCAL);
             emit_byte(compiler, (uint8_t)slot);
+            break;
+        }
+        case EXPR_CURSOR_ATTR: {
+            const char* cursor_name = expr->as.cursor_attr.cursor_name;
+            int slot = resolve_local(compiler, cursor_name, (int)strlen(cursor_name));
+            if (slot < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", cursor_name);
+                error(compiler, msg);
+                return;
+            }
+            char* attr_name = malloc((size_t)strlen(expr->as.cursor_attr.attr_name) + 1);
+            if (attr_name == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(attr_name, expr->as.cursor_attr.attr_name);
+            int attr_idx = add_constant(compiler->chunk, value_string(attr_name));
+            if (attr_idx < 0) {
+                free(attr_name);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            emit_byte(compiler, OP_CURSOR_ATTR);
+            emit_u16(compiler, (uint16_t)attr_idx);
             break;
         }
         case EXPR_ROW_FIELD: {
@@ -953,6 +1013,123 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
 
             int after_catch = compiler->chunk->count;
             patch_jump_to(compiler, end_offset, after_catch);
+            break;
+        }
+        case STMT_CURSOR_DECL: {
+            CursorDeclStmt* d = &stmt->as.cursor_decl;
+            int slot = add_local(compiler, d->name, (int)strlen(d->name), &type_cursor);
+            if (slot < 0) {
+                error(compiler, "too many locals");
+                return;
+            }
+            /* Initialize cursor slot to a closed cursor object. */
+            emit_constant(compiler, value_cursor(NULL));
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            if (d->sql_query != NULL) {
+                register_cursor_query(compiler, d->name, (int)strlen(d->name), d->sql_query);
+            }
+            break;
+        }
+        case STMT_CURSOR_OPEN: {
+            CursorOpenStmt* o = &stmt->as.cursor_open;
+            int slot = resolve_local(compiler, o->name, (int)strlen(o->name));
+            if (slot < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", o->name);
+                error(compiler, msg);
+                return;
+            }
+            const char* query = o->sql_query;
+            if (query == NULL) {
+                query = find_cursor_query(compiler, o->name, (int)strlen(o->name));
+                if (query == NULL) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Cursor '%s' has no associated query", o->name);
+                    error(compiler, msg);
+                    return;
+                }
+            }
+            for (int i = 0; i < o->param_count; i++) {
+                compile_expr(compiler, o->params[i]);
+                if (compiler->had_error) return;
+                const char* name = o->params[i]->as.sql_param.name;
+                Type* t = resolve_local_type(compiler, name, (int)strlen(name));
+                if (t != NULL && t->kind == TYPE_STRING) {
+                    emit_byte(compiler, OP_SQL_BIND_STRING);
+                } else if (t != NULL && t->kind == TYPE_FLOAT) {
+                    emit_byte(compiler, OP_SQL_BIND_FLOAT);
+                } else {
+                    emit_byte(compiler, OP_SQL_BIND_INT);
+                }
+            }
+            char* query_copy = malloc((size_t)strlen(query) + 1);
+            if (query_copy == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(query_copy, query);
+            int query_idx = add_constant(compiler->chunk, value_string(query_copy));
+            if (query_idx < 0) {
+                free(query_copy);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            emit_byte(compiler, OP_CURSOR_OPEN);
+            emit_u16(compiler, (uint16_t)query_idx);
+            emit_u16(compiler, (uint16_t)stmt->loc.line);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            emit_byte(compiler, OP_POP);
+            break;
+        }
+        case STMT_CURSOR_FETCH: {
+            CursorFetchStmt* f = &stmt->as.cursor_fetch;
+            int slot = resolve_local(compiler, f->name, (int)strlen(f->name));
+            if (slot < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", f->name);
+                error(compiler, msg);
+                return;
+            }
+            uint8_t into_slots[64];
+            if (f->into_count > 64) {
+                error(compiler, "too many fetch targets");
+                return;
+            }
+            for (int i = 0; i < f->into_count; i++) {
+                int var_slot = resolve_local(compiler, f->into_vars[i], (int)strlen(f->into_vars[i]));
+                if (var_slot < 0) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Undefined variable '%s'", f->into_vars[i]);
+                    error(compiler, msg);
+                    return;
+                }
+                into_slots[i] = (uint8_t)var_slot;
+            }
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            emit_byte(compiler, OP_CURSOR_FETCH);
+            emit_byte(compiler, (uint8_t)f->into_count);
+            for (int i = 0; i < f->into_count; i++) {
+                emit_byte(compiler, into_slots[i]);
+            }
+            break;
+        }
+        case STMT_CURSOR_CLOSE: {
+            CursorCloseStmt* c = &stmt->as.cursor_close;
+            int slot = resolve_local(compiler, c->name, (int)strlen(c->name));
+            if (slot < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", c->name);
+                error(compiler, msg);
+                return;
+            }
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)slot);
+            emit_byte(compiler, OP_CURSOR_CLOSE);
             break;
         }
         case STMT_CASE: {
