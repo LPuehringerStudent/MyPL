@@ -6,10 +6,6 @@
 #include "sqlite_driver.h"
 #include "compiler.h"
 
-typedef struct {
-    sqlite3* db;
-} SQLiteImpl;
-
 static int sqlite_open(DBDriver* driver, const char* conn) {
     SQLiteImpl* impl = calloc(1, sizeof(SQLiteImpl));
     if (impl == NULL) {
@@ -314,6 +310,7 @@ static int sqlite_rollback(DBDriver* driver) {
 
 void sqlite_driver_init(DBDriver* driver) {
     driver->impl = NULL;
+    driver->is_sqlite = 1;
     driver->open = sqlite_open;
     driver->close = sqlite_close;
     driver->exec = sqlite_exec;

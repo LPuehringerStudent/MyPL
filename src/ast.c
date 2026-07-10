@@ -130,6 +130,12 @@ Program* create_program(void) {
     program->structs = NULL;
     program->struct_count = 0;
     program->struct_capacity = 0;
+    program->specs = NULL;
+    program->spec_count = 0;
+    program->spec_capacity = 0;
+    program->bodies = NULL;
+    program->body_count = 0;
+    program->body_capacity = 0;
     program->procs = NULL;
     program->proc_count = 0;
     return program;
@@ -157,6 +163,7 @@ void free_expr(Expr* expr) {
             break;
         case EXPR_CALL:
             free(expr->as.call.name);
+            free(expr->as.call.package_name);
             for (int i = 0; i < expr->as.call.arg_count; i++) {
                 free_expr(expr->as.call.args[i]);
             }
@@ -237,6 +244,52 @@ ProcDecl* create_proc_decl(const char* name, Type* return_type) {
     return proc;
 }
 
+void free_proc_decl(ProcDecl* proc) {
+    if (proc == NULL) return;
+    free(proc->name);
+    free_block(proc->body);
+    for (int j = 0; j < proc->param_count; j++) {
+        free(proc->params[j].name);
+        type_free(proc->params[j].type);
+    }
+    free(proc->params);
+    type_free(proc->return_type);
+}
+
+void free_package_spec(PackageSpecDecl* spec) {
+    if (spec == NULL) return;
+    free(spec->name);
+    for (int i = 0; i < spec->var_count; i++) {
+        free_stmt(spec->vars[i]);
+    }
+    free(spec->vars);
+    for (int i = 0; i < spec->proc_count; i++) {
+        free_proc_decl(&spec->procs[i]);
+    }
+    free(spec->procs);
+    for (int i = 0; i < spec->func_count; i++) {
+        free_proc_decl(&spec->funcs[i]);
+    }
+    free(spec->funcs);
+}
+
+void free_package_body(PackageBodyDecl* body) {
+    if (body == NULL) return;
+    free(body->name);
+    for (int i = 0; i < body->var_count; i++) {
+        free_stmt(body->vars[i]);
+    }
+    free(body->vars);
+    for (int i = 0; i < body->proc_count; i++) {
+        free_proc_decl(&body->procs[i]);
+    }
+    free(body->procs);
+    for (int i = 0; i < body->func_count; i++) {
+        free_proc_decl(&body->funcs[i]);
+    }
+    free(body->funcs);
+}
+
 void free_program(Program* program) {
     if (program == NULL) return;
     for (int i = 0; i < program->import_count; i++) {
@@ -254,15 +307,16 @@ void free_program(Program* program) {
         free(s->field_types);
     }
     free(program->structs);
+    for (int i = 0; i < program->spec_count; i++) {
+        free_package_spec(&program->specs[i]);
+    }
+    free(program->specs);
+    for (int i = 0; i < program->body_count; i++) {
+        free_package_body(&program->bodies[i]);
+    }
+    free(program->bodies);
     for (int i = 0; i < program->proc_count; i++) {
-        free(program->procs[i].name);
-        free_block(program->procs[i].body);
-        for (int j = 0; j < program->procs[i].param_count; j++) {
-            free(program->procs[i].params[j].name);
-            type_free(program->procs[i].params[j].type);
-        }
-        free(program->procs[i].params);
-        type_free(program->procs[i].return_type);
+        free_proc_decl(&program->procs[i]);
     }
     free(program->procs);
     free(program);
@@ -673,6 +727,10 @@ Expr* create_field_expr(const char* row, const char* field) {
 }
 
 Expr* create_call_expr(const char* name, Expr** args, int arg_count) {
+    return create_qualified_call_expr(NULL, name, args, arg_count);
+}
+
+Expr* create_qualified_call_expr(const char* package_name, const char* name, Expr** args, int arg_count) {
     Expr* expr = malloc(sizeof(Expr));
     if (expr == NULL) {
         for (int i = 0; i < arg_count; i++) {
@@ -683,8 +741,12 @@ Expr* create_call_expr(const char* name, Expr** args, int arg_count) {
     }
     expr->loc = (SourceLoc){0, 0};
     expr->kind = EXPR_CALL;
+    expr->as.call.package_name = copy_string(package_name);
     expr->as.call.name = copy_string(name);
-    if (expr->as.call.name == NULL && name != NULL) {
+    if ((expr->as.call.name == NULL && name != NULL) ||
+        (expr->as.call.package_name == NULL && package_name != NULL)) {
+        free(expr->as.call.package_name);
+        free(expr->as.call.name);
         for (int i = 0; i < arg_count; i++) {
             free_expr(args[i]);
         }

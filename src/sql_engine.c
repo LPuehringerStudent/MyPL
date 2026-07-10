@@ -2425,6 +2425,7 @@ static int custom_rollback(DBDriver* driver) {
 
 void custom_driver_init(DBDriver* driver) {
     driver->impl = NULL;
+    driver->is_sqlite = 0;
     driver->open = custom_open;
     driver->close = custom_close;
     driver->exec = custom_exec;

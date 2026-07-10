@@ -20,6 +20,7 @@
 #define MAX_LOADING 64
 #define MAX_LOOP_NESTING 64
 #define MAX_BREAK_PATCHES 256
+#define MAX_GLOBALS 256
 
 typedef struct {
     const char* name;
@@ -84,6 +85,10 @@ typedef struct {
     int current_column;
     CursorQuery cursor_queries[MAX_LOCALS];
     int cursor_query_count;
+    const char* global_names[MAX_GLOBALS];
+    int global_count;
+    const char* current_package;
+    int entry_jump_patch;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -307,6 +312,40 @@ static int find_proc(Compiler* compiler, const char* name) {
     return -1;
 }
 
+static int find_global(Compiler* compiler, const char* name) {
+    for (int i = 0; i < compiler->global_count; i++) {
+        if (compiler->global_names[i] != NULL && strcmp(compiler->global_names[i], name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int add_global(Compiler* compiler, const char* name) {
+    int slot = find_global(compiler, name);
+    if (slot >= 0) return slot;
+    if (compiler->global_count >= MAX_GLOBALS) {
+        error(compiler, "too many global variables");
+        return -1;
+    }
+    char* copy = malloc(strlen(name) + 1);
+    if (copy == NULL) {
+        error(compiler, "out of memory");
+        return -1;
+    }
+    strcpy(copy, name);
+    compiler->global_names[compiler->global_count] = copy;
+    return compiler->global_count++;
+}
+
+static char* mangle_package_name(const char* package_name, const char* member_name) {
+    size_t len = strlen(package_name) + 1 + strlen(member_name) + 1;
+    char* mangled = malloc(len);
+    if (mangled == NULL) return NULL;
+    snprintf(mangled, len, "%s.%s", package_name, member_name);
+    return mangled;
+}
+
 static void register_cursor_query(Compiler* compiler, const char* name, int length, const char* query) {
     for (int i = 0; i < compiler->cursor_query_count; i++) {
         if (compiler->cursor_queries[i].length == length &&
@@ -417,6 +456,18 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
             const char* name = expr->as.variable.name;
             int length = (int)strlen(name);
             int slot = resolve_local(compiler, name, length);
+            if (slot < 0 && compiler->current_package != NULL) {
+                char* global_name = mangle_package_name(compiler->current_package, name);
+                if (global_name != NULL) {
+                    slot = find_global(compiler, global_name);
+                    free(global_name);
+                }
+                if (slot >= 0) {
+                    emit_byte(compiler, OP_GET_GLOBAL);
+                    emit_byte(compiler, (uint8_t)slot);
+                    break;
+                }
+            }
             if (slot < 0) {
                 char msg[256];
                 snprintf(msg, sizeof(msg), "Undefined variable '%s'", name);
@@ -447,24 +498,51 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         }
         case EXPR_CALL: {
             CallExpr* c = &expr->as.call;
-            int native_idx = native_find(c->name);
-            if (native_idx >= 0) {
+            char* effective_name = NULL;
+            int is_native = 0;
+            int native_idx = -1;
+
+            if (c->package_name != NULL) {
+                effective_name = mangle_package_name(c->package_name, c->name);
+            } else {
+                native_idx = native_find(c->name);
+                is_native = native_idx >= 0;
+                if (is_native) {
+                    effective_name = strdup(c->name);
+                } else if (compiler->current_package != NULL) {
+                    effective_name = mangle_package_name(compiler->current_package, c->name);
+                    if (find_proc(compiler, effective_name) < 0) {
+                        free(effective_name);
+                        effective_name = strdup(c->name);
+                    }
+                } else {
+                    effective_name = strdup(c->name);
+                }
+            }
+            if (effective_name == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+
+            if (is_native) {
                 int expected_arity = native_arity(native_idx);
                 if (c->arg_count != expected_arity) {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "%s expects %d argument(s)", c->name, expected_arity);
                     error(compiler, msg);
+                    free(effective_name);
                     return;
                 }
                 for (int i = 0; i < c->arg_count; i++) {
                     compile_expr(compiler, c->args[i]);
-                    if (compiler->had_error) return;
+                    if (compiler->had_error) { free(effective_name); return; }
                 }
                 emit_byte(compiler, OP_NATIVE_CALL);
                 emit_u16(compiler, (uint16_t)native_idx);
                 emit_byte(compiler, (uint8_t)c->arg_count);
+                free(effective_name);
             } else {
-                int proc_idx = find_proc(compiler, c->name);
+                int proc_idx = find_proc(compiler, effective_name);
                 ParamMode* modes = NULL;
                 if (proc_idx >= 0) {
                     modes = compiler->procs[proc_idx].param_modes;
@@ -481,15 +559,17 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                         emit_constant(compiler, value_int(0));
                     } else {
                         compile_expr(compiler, c->args[i]);
-                        if (compiler->had_error) return;
+                        if (compiler->had_error) { free(effective_name); return; }
                     }
                     if (mode == PARAM_OUT || mode == PARAM_INOUT) {
                         if (c->args[i]->kind != EXPR_VARIABLE) {
                             error(compiler, "OUT/IN OUT argument must be a variable");
+                            free(effective_name);
                             return;
                         }
                         if (out_count >= 64) {
                             error(compiler, "too many OUT/IN OUT arguments");
+                            free(effective_name);
                             return;
                         }
                         const char* var_name = c->args[i]->as.variable.name;
@@ -498,6 +578,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                             char msg[256];
                             snprintf(msg, sizeof(msg), "Undefined variable '%s'", var_name);
                             error(compiler, msg);
+                            free(effective_name);
                             return;
                         }
                         out_positions[out_count] = i;
@@ -510,8 +591,9 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                     if (proc_idx >= 0 && compiler->procs[proc_idx].offset >= 0) {
                         emit_u16(compiler, (uint16_t)compiler->procs[proc_idx].offset);
                     } else {
-                        if (!add_call_patch(compiler, c->name, compiler->chunk->count)) {
+                        if (!add_call_patch(compiler, effective_name, compiler->chunk->count)) {
                             error(compiler, "too many call patches");
+                            free(effective_name);
                             return;
                         }
                         emit_u16(compiler, 0);
@@ -523,8 +605,9 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                         emit_byte(compiler, out_slots[i]);
                     }
                 } else {
-                    emit_call(compiler, c->name, c->arg_count);
+                    emit_call(compiler, effective_name, c->arg_count);
                 }
+                free(effective_name);
             }
             break;
         }
@@ -664,13 +747,26 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             VarDeclStmt* d = &stmt->as.var_decl;
             compile_expr(compiler, d->initializer);
             if (compiler->had_error) return;
-            int slot = add_local(compiler, d->name, (int)strlen(d->name), d->type);
-            if (slot < 0) {
-                error(compiler, "too many locals");
-                return;
+            if (compiler->current_package != NULL && compiler->scope_depth == 0) {
+                char* global_name = mangle_package_name(compiler->current_package, d->name);
+                if (global_name == NULL) {
+                    error(compiler, "out of memory");
+                    return;
+                }
+                int slot = add_global(compiler, global_name);
+                free(global_name);
+                if (slot < 0) return;
+                emit_byte(compiler, OP_SET_GLOBAL);
+                emit_byte(compiler, (uint8_t)slot);
+            } else {
+                int slot = add_local(compiler, d->name, (int)strlen(d->name), d->type);
+                if (slot < 0) {
+                    error(compiler, "too many locals");
+                    return;
+                }
+                emit_byte(compiler, OP_SET_LOCAL);
+                emit_byte(compiler, (uint8_t)slot);
             }
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
             break;
         }
         case STMT_ASSIGN: {
@@ -678,6 +774,18 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             compile_expr(compiler, a->value);
             if (compiler->had_error) return;
             int slot = resolve_local(compiler, a->name, (int)strlen(a->name));
+            if (slot < 0 && compiler->current_package != NULL) {
+                char* global_name = mangle_package_name(compiler->current_package, a->name);
+                if (global_name != NULL) {
+                    slot = find_global(compiler, global_name);
+                    free(global_name);
+                }
+                if (slot >= 0) {
+                    emit_byte(compiler, OP_SET_GLOBAL);
+                    emit_byte(compiler, (uint8_t)slot);
+                    break;
+                }
+            }
             if (slot < 0) {
                 char msg[256];
                 snprintf(msg, sizeof(msg), "Undefined variable '%s'", a->name);
@@ -1377,6 +1485,134 @@ static int compiler_load_module(Compiler* compiler, const char* import_path, cha
     return ok;
 }
 
+static int register_package_procs(Compiler* compiler, Program* program, char* error_buf, size_t error_size) {
+    for (int s = 0; s < program->spec_count; s++) {
+        PackageSpecDecl* spec = &program->specs[s];
+        for (int i = 0; i < spec->proc_count; i++) {
+            ProcDecl* proc = &spec->procs[i];
+            char* mangled = mangle_package_name(spec->name, proc->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
+                                     proc->params ? &proc->params->type : NULL,
+                                     proc->params ? &proc->params->mode : NULL,
+                                     proc->param_count);
+            free(mangled);
+            if (idx < 0) {
+                compiler_format_error(compiler, error_buf, error_size,
+                                      "Duplicate package member '%s.%s'", spec->name, proc->name);
+                return 0;
+            }
+        }
+        for (int i = 0; i < spec->func_count; i++) {
+            ProcDecl* proc = &spec->funcs[i];
+            char* mangled = mangle_package_name(spec->name, proc->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
+                                     proc->params ? &proc->params->type : NULL,
+                                     proc->params ? &proc->params->mode : NULL,
+                                     proc->param_count);
+            free(mangled);
+            if (idx < 0) {
+                compiler_format_error(compiler, error_buf, error_size,
+                                      "Duplicate package member '%s.%s'", spec->name, proc->name);
+                return 0;
+            }
+        }
+    }
+    for (int b = 0; b < program->body_count; b++) {
+        PackageBodyDecl* body = &program->bodies[b];
+        for (int i = 0; i < body->proc_count; i++) {
+            ProcDecl* proc = &body->procs[i];
+            char* mangled = mangle_package_name(body->name, proc->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
+                                     proc->params ? &proc->params->type : NULL,
+                                     proc->params ? &proc->params->mode : NULL,
+                                     proc->param_count);
+            free(mangled);
+            if (idx < 0 && idx != -2) {
+                compiler_format_error(compiler, error_buf, error_size,
+                                      "Duplicate package member '%s.%s'", body->name, proc->name);
+                return 0;
+            }
+        }
+        for (int i = 0; i < body->func_count; i++) {
+            ProcDecl* proc = &body->funcs[i];
+            char* mangled = mangle_package_name(body->name, proc->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
+                                     proc->params ? &proc->params->type : NULL,
+                                     proc->params ? &proc->params->mode : NULL,
+                                     proc->param_count);
+            free(mangled);
+            if (idx < 0 && idx != -2) {
+                compiler_format_error(compiler, error_buf, error_size,
+                                      "Duplicate package member '%s.%s'", body->name, proc->name);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static void compile_package_initializers(Compiler* compiler, Program* program) {
+    for (int b = 0; b < program->body_count; b++) {
+        PackageBodyDecl* body = &program->bodies[b];
+        const char* saved_package = compiler->current_package;
+        compiler->current_package = body->name;
+        for (int i = 0; i < body->var_count; i++) {
+            compile_stmt(compiler, body->vars[i]);
+        }
+        compiler->current_package = saved_package;
+    }
+}
+
+static void compile_package_members(Compiler* compiler, Program* program) {
+    for (int b = 0; b < program->body_count; b++) {
+        PackageBodyDecl* body = &program->bodies[b];
+        const char* saved_package = compiler->current_package;
+        compiler->current_package = body->name;
+
+        for (int i = 0; i < body->proc_count; i++) {
+            ProcDecl* proc = &body->procs[i];
+            char* mangled = mangle_package_name(body->name, proc->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); compiler->current_package = saved_package; return; }
+            int idx = find_proc(compiler, mangled);
+            free(mangled);
+            if (idx < 0) continue;
+            compiler->procs[idx].offset = compiler->chunk->count;
+            for (int p = 0; p < proc->param_count; p++) {
+                add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name), proc->params[p].type);
+            }
+            compile_block(compiler, proc->body);
+            if (compiler->had_error) { compiler->current_package = saved_package; return; }
+            emit_byte(compiler, OP_RETURN);
+            compiler->local_count = 0;
+            compiler->scope_depth = 0;
+        }
+
+        for (int i = 0; i < body->func_count; i++) {
+            ProcDecl* proc = &body->funcs[i];
+            char* mangled = mangle_package_name(body->name, proc->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); compiler->current_package = saved_package; return; }
+            int idx = find_proc(compiler, mangled);
+            free(mangled);
+            if (idx < 0) continue;
+            compiler->procs[idx].offset = compiler->chunk->count;
+            for (int p = 0; p < proc->param_count; p++) {
+                add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name), proc->params[p].type);
+            }
+            compile_block(compiler, proc->body);
+            if (compiler->had_error) { compiler->current_package = saved_package; return; }
+            emit_byte(compiler, OP_RETURN);
+            compiler->local_count = 0;
+            compiler->scope_depth = 0;
+        }
+
+        compiler->current_package = saved_package;
+    }
+}
+
 static int do_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
     char parse_error[256] = {0};
     Program* program = parse_with_path(source, compiler->source_path, parse_error, sizeof(parse_error));
@@ -1386,6 +1622,10 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
             error[error_size - 1] = '\0';
         }
         return 0;
+    }
+
+    if (is_main) {
+        compiler->entry_jump_patch = emit_jump(compiler, OP_JMP);
     }
 
     for (int i = 0; i < program->import_count; i++) {
@@ -1435,6 +1675,11 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         }
     }
 
+    if (!register_package_procs(compiler, program, error, error_size)) {
+        free_program(program);
+        return 0;
+    }
+
     ProcSignature* sigs = malloc(sizeof(ProcSignature) * (size_t)compiler->proc_count);
     if (sigs == NULL) {
         compiler_format_error(compiler, error, error_size, "out of memory");
@@ -1457,6 +1702,32 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
     free(sigs);
 
+    int init_start = -1;
+    int init_to_main_jump = -1;
+    if (is_main) {
+        init_start = compiler->chunk->count;
+        compile_package_initializers(compiler, program);
+        if (compiler->had_error) {
+            if (error != NULL && error_size > 0) {
+                strncpy(error, compiler->error_message, error_size - 1);
+                error[error_size - 1] = '\0';
+            }
+            free_program(program);
+            return 0;
+        }
+        init_to_main_jump = emit_jump(compiler, OP_JMP);
+    }
+
+    compile_package_members(compiler, program);
+    if (compiler->had_error) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, compiler->error_message, error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        free_program(program);
+        return 0;
+    }
+
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
         int idx = find_proc(compiler, proc->name);
@@ -1476,6 +1747,20 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         emit_byte(compiler, OP_RETURN);
         compiler->local_count = 0;
         compiler->scope_depth = 0;
+    }
+
+    if (is_main) {
+        int main_entry = compiler->chunk->count;
+        if (compiler->entry_index >= 0) {
+            emit_call(compiler, compiler->procs[compiler->entry_index].name, 0);
+            emit_byte(compiler, OP_RETURN);
+        }
+        if (compiler->entry_jump_patch >= 0) {
+            patch_jump_to(compiler, compiler->entry_jump_patch, init_start);
+        }
+        if (init_to_main_jump >= 0) {
+            patch_jump_to(compiler, init_to_main_jump, main_entry);
+        }
     }
 
     free_program(program);
@@ -1498,6 +1783,14 @@ static int compiler_compile_source(Compiler* compiler, const char* source, int i
     return ok;
 }
 
+static void free_global_names(Compiler* compiler) {
+    for (int i = 0; i < compiler->global_count; i++) {
+        free((void*)compiler->global_names[i]);
+        compiler->global_names[i] = NULL;
+    }
+    compiler->global_count = 0;
+}
+
 int compile_with_context_and_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size, struct Context* ctx) {
     Compiler compiler;
     compiler.chunk = chunk;
@@ -1516,20 +1809,16 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.loop_count = 0;
     compiler.current_line = 0;
     compiler.current_column = 0;
+    compiler.global_count = 0;
+    compiler.current_package = NULL;
+    compiler.entry_jump_patch = -1;
+    compiler.cursor_query_count = 0;
+    for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;
     chunk->source_path = path;
-
-    if (chunk->count == 0) {
-        emit_byte(&compiler, OP_CALL);
-        emit_u16(&compiler, 0);
-        emit_byte(&compiler, 0); /* arg count */
-        emit_byte(&compiler, OP_RETURN);
-        compiler.entry_patch = chunk->count - 4;
-    } else {
-        compiler.entry_patch = -1;
-    }
 
     if (!compiler_compile_source(&compiler, source, 1, path, error, error_size)) {
         free_proc_entries(&compiler);
+        free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
         return 0;
@@ -1541,12 +1830,11 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
                          "No main procedure");
         }
         free_proc_entries(&compiler);
+        free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
         return 0;
     }
-
-    patch_call(chunk, compiler.entry_patch, compiler.procs[compiler.entry_index].offset);
 
     for (int i = 0; i < compiler.patch_count; i++) {
         int idx = find_proc(&compiler, compiler.patches[i].name);
@@ -1557,6 +1845,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
                 format_error(error, error_size, compiler.source_path, 0, 0, msg);
             }
             free_proc_entries(&compiler);
+            free_global_names(&compiler);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);
             for (int j = 0; j < compiler.loaded_count; j++) free(compiler.loaded_paths[j]);
             return 0;
@@ -1565,6 +1854,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     }
 
     free_proc_entries(&compiler);
+    free_global_names(&compiler);
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
     for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
     return 1;

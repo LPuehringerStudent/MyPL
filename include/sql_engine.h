@@ -88,6 +88,7 @@ typedef struct DBDriver DBDriver;
 struct DBDriver {
     void* impl;
     char error_message[256];
+    int is_sqlite;
     int (*open)(DBDriver* driver, const char* connection_string);
     void (*close)(DBDriver* driver);
     /* Returns number of rows affected on success (>= 0), or -1 on error. */

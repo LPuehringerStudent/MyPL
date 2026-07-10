@@ -130,12 +130,44 @@ typedef struct {
 } StructDecl;
 
 typedef struct {
+    char* name;
+    Stmt** vars;
+    int var_count;
+    int var_capacity;
+    ProcDecl* procs;
+    int proc_count;
+    int proc_capacity;
+    ProcDecl* funcs;
+    int func_count;
+    int func_capacity;
+} PackageSpecDecl;
+
+typedef struct {
+    char* name;
+    Stmt** vars;
+    int var_count;
+    int var_capacity;
+    ProcDecl* procs;
+    int proc_count;
+    int proc_capacity;
+    ProcDecl* funcs;
+    int func_count;
+    int func_capacity;
+} PackageBodyDecl;
+
+typedef struct {
     Stmt** imports;
     int import_count;
     int import_capacity;
     StructDecl* structs;
     int struct_count;
     int struct_capacity;
+    PackageSpecDecl* specs;
+    int spec_count;
+    int spec_capacity;
+    PackageBodyDecl* bodies;
+    int body_count;
+    int body_capacity;
     ProcDecl* procs;
     int proc_count;
 } Program;
@@ -308,6 +340,7 @@ typedef struct {
 
 typedef struct {
     char* name;
+    char* package_name;  /* non-NULL for qualified calls pkg.name(...) */
     Expr** args;
     int arg_count;
 } CallExpr;
@@ -376,6 +409,8 @@ void free_block(Block* block);
 
 void free_expr(Expr* expr);
 void free_stmt(Stmt* stmt);
+void free_package_spec(PackageSpecDecl* spec);
+void free_package_body(PackageBodyDecl* body);
 
 ProcDecl* create_proc_decl(const char* name, Type* return_type);
 
@@ -411,6 +446,7 @@ Expr* create_binary_expr(TokenType op, Expr* left, Expr* right);
 Expr* create_unary_expr(TokenType op, Expr* operand);
 Expr* create_field_expr(const char* row, const char* field);
 Expr* create_call_expr(const char* name, Expr** args, int arg_count);
+Expr* create_qualified_call_expr(const char* package_name, const char* name, Expr** args, int arg_count);
 Expr* create_array_expr(Expr** elements, int count);
 Expr* create_index_expr(Expr* array, Expr* index);
 Expr* create_sql_param_expr(const char* name);
