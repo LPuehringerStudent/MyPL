@@ -21,6 +21,15 @@ Type* type_new(TypeKind kind, Type* element_type) {
     return t;
 }
 
+Type* type_new_map(Type* key_type, Type* value_type) {
+    Type* t = calloc(1, sizeof(Type));
+    if (t == NULL) return NULL;
+    t->kind = TYPE_MAP;
+    t->map_key_type = key_type;
+    t->element_type = value_type;
+    return t;
+}
+
 Type* type_copy(Type* t) {
     if (t == NULL) return NULL;
     if (t == &type_int || t == &type_float || t == &type_string ||
@@ -47,6 +56,9 @@ Type* type_copy(Type* t) {
         }
         return copy;
     }
+    if (t->kind == TYPE_MAP) {
+        return type_new_map(type_copy(t->map_key_type), type_copy(t->element_type));
+    }
     return type_new(t->kind, type_copy(t->element_type));
 }
 
@@ -68,6 +80,9 @@ void type_free(Type* t) {
         free(t);
         return;
     }
+    if (t->kind == TYPE_MAP) {
+        type_free(t->map_key_type);
+    }
     type_free(t->element_type);
     free(t);
 }
@@ -76,7 +91,11 @@ int type_equals(Type* a, Type* b) {
     if (a == b) return 1;
     if (a == NULL || b == NULL) return 0;
     if (a->kind != b->kind) return 0;
-    if (a->kind == TYPE_ARRAY || a->kind == TYPE_MAP) return type_equals(a->element_type, b->element_type);
+    if (a->kind == TYPE_ARRAY) return type_equals(a->element_type, b->element_type);
+    if (a->kind == TYPE_MAP) {
+        return type_equals(a->map_key_type, b->map_key_type) &&
+               type_equals(a->element_type, b->element_type);
+    }
     if (a->kind == TYPE_STRUCT) {
         if (a->struct_name == NULL || b->struct_name == NULL) return 0;
         return strcmp(a->struct_name, b->struct_name) == 0;

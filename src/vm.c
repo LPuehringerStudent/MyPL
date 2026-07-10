@@ -805,8 +805,8 @@ dispatch:
                     set_runtime_error(vm, "Not enough values for map");
                     THROW(vm);
                 }
-                RowObj* row = row_obj_new((int)count);
-                if (row == NULL) {
+                MapObj* map = map_new();
+                if (map == NULL) {
                     set_runtime_error(vm, "Out of memory");
                     THROW(vm);
                 }
@@ -814,26 +814,32 @@ dispatch:
                     Value key;
                     Value val;
                     if (!pop(vm, &key)) {
-                        row_obj_free(row);
+                        map_free(map);
                         return INTERPRET_RUNTIME_ERROR;
                     }
                     if (!pop(vm, &val)) {
                         value_release(key);
-                        row_obj_free(row);
+                        map_free(map);
                         return INTERPRET_RUNTIME_ERROR;
                     }
-                    if (key.type != VAL_STRING) {
+                    if (key.type != VAL_INT && key.type != VAL_STRING) {
                         value_release(key);
                         value_release(val);
-                        row_obj_free(row);
-                        set_runtime_error(vm, "Map key must be string");
+                        map_free(map);
+                        set_runtime_error(vm, "Map key must be int or string");
                         THROW(vm);
                     }
-                    row_obj_set_column(row, i, key.as.as_string, val);
+                    if (!map_set(map, key, val)) {
+                        value_release(key);
+                        value_release(val);
+                        map_free(map);
+                        set_runtime_error(vm, "Out of memory");
+                        THROW(vm);
+                    }
                     value_release(key);
                     value_release(val);
                 }
-                Value result = value_row(row);
+                Value result = value_map(map);
                 if (!push(vm, result)) {
                     value_release(result);
                     return INTERPRET_RUNTIME_ERROR;
@@ -878,6 +884,31 @@ dispatch:
                     value_release(arr_val);
                     break;
                 }
+                if (arr_val.type == VAL_MAP) {
+                    if (idx_val.type != VAL_INT && idx_val.type != VAL_STRING) {
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Map key must be int or string");
+                        THROW(vm);
+                    }
+                    Value result;
+                    if (!map_get(arr_val.as.as_map, idx_val, &result)) {
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Key not found in map");
+                        THROW(vm);
+                    }
+                    if (!push(vm, result)) {
+                        value_release(result);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    value_release(result);
+                    value_release(idx_val);
+                    value_release(arr_val);
+                    break;
+                }
                 value_release(idx_val);
                 value_release(arr_val);
                 set_runtime_error(vm, "Invalid index");
@@ -913,6 +944,26 @@ dispatch:
                         value_release(idx_val);
                         value_release(arr_val);
                         set_runtime_error(vm, "Map key not found");
+                        THROW(vm);
+                    }
+                    value_release(val);
+                    value_release(idx_val);
+                    value_release(arr_val);
+                    break;
+                }
+                if (arr_val.type == VAL_MAP) {
+                    if (idx_val.type != VAL_INT && idx_val.type != VAL_STRING) {
+                        value_release(val);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Map key must be int or string");
+                        THROW(vm);
+                    }
+                    if (!map_set(arr_val.as.as_map, idx_val, val)) {
+                        value_release(val);
+                        value_release(idx_val);
+                        value_release(arr_val);
+                        set_runtime_error(vm, "Out of memory");
                         THROW(vm);
                     }
                     value_release(val);

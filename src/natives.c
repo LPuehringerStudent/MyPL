@@ -156,6 +156,9 @@ static int value_equal_values(Value a, Value b) {
             return strcmp(as, bs) == 0;
         }
         case VAL_ARRAY:  return a.as.as_array == b.as.as_array;
+        case VAL_MAP:    return a.as.as_map == b.as.as_map;
+        case VAL_ROW:    return a.as.as_row_handle == b.as.as_row_handle;
+        case VAL_CURSOR: return a.as.as_cursor == b.as.as_cursor;
     }
     return 0;
 }

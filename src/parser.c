@@ -737,11 +737,12 @@ static Type* parse_type(Parser* parser) {
         return type_new(TYPE_ARRAY, NULL);  /* generic array */
     }
     if (match(parser, TOKEN_MAP_TYPE)) {
+        Type* key_type = &type_string;
         Type* value_type = &type_unknown;
         if (match(parser, TOKEN_LT)) {
-            Type* key_type = parse_type(parser);
-            if (key_type == NULL || key_type->kind != TYPE_STRING) {
-                error_at_current(parser, "map key type must be string");
+            key_type = parse_type(parser);
+            if (key_type == NULL || (key_type->kind != TYPE_STRING && key_type->kind != TYPE_INT)) {
+                error_at_current(parser, "map key type must be int or string");
             }
             if (!match(parser, TOKEN_COMMA)) {
                 error_at_current(parser, "expected ',' between map key and value types");
@@ -751,7 +752,7 @@ static Type* parse_type(Parser* parser) {
                 error_at_current(parser, "expected '>' after map value type");
             }
         }
-        return type_new(TYPE_MAP, value_type);
+        return type_new_map(type_copy(key_type), type_copy(value_type));
     }
     error_at_current(parser, "expected type");
     return &type_int;
