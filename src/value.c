@@ -92,6 +92,50 @@ Value value_bool(int v) {
     return value;
 }
 
+Value value_date(char* s) {
+    Value value;
+    value.type = VAL_DATE;
+    if (s == NULL) {
+        value.as.as_string = NULL;
+        return value;
+    }
+    size_t len = strlen(s);
+    StringObj* obj = malloc(sizeof(StringObj) + len + 1);
+    if (obj == NULL) {
+        value.as.as_string = NULL;
+        free(s);
+        return value;
+    }
+    obj->obj.type = OBJ_STRING;
+    obj->obj.ref_count = 1;
+    memcpy(obj->chars, s, len + 1);
+    free(s);
+    value.as.as_string = obj->chars;
+    return value;
+}
+
+Value value_timestamp(char* s) {
+    Value value;
+    value.type = VAL_TIMESTAMP;
+    if (s == NULL) {
+        value.as.as_string = NULL;
+        return value;
+    }
+    size_t len = strlen(s);
+    StringObj* obj = malloc(sizeof(StringObj) + len + 1);
+    if (obj == NULL) {
+        value.as.as_string = NULL;
+        free(s);
+        return value;
+    }
+    obj->obj.type = OBJ_STRING;
+    obj->obj.ref_count = 1;
+    memcpy(obj->chars, s, len + 1);
+    free(s);
+    value.as.as_string = obj->chars;
+    return value;
+}
+
 Value value_array(ArrayObj* array) {
     Value value;
     value.type = VAL_ARRAY;
@@ -121,7 +165,7 @@ Value value_cursor(CursorObj* cursor) {
 }
 
 void value_retain(Value v) {
-    if (v.type == VAL_STRING && v.as.as_string != NULL) {
+    if ((v.type == VAL_STRING || v.type == VAL_DATE || v.type == VAL_TIMESTAMP) && v.as.as_string != NULL) {
         string_obj_from_chars(v.as.as_string)->obj.ref_count++;
     } else if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
         v.as.as_array->obj.ref_count++;
@@ -143,7 +187,7 @@ static void cursor_obj_free(CursorObj* cursor) {
 }
 
 void value_release(Value v) {
-    if (v.type == VAL_STRING && v.as.as_string != NULL) {
+    if ((v.type == VAL_STRING || v.type == VAL_DATE || v.type == VAL_TIMESTAMP) && v.as.as_string != NULL) {
         StringObj* obj = string_obj_from_chars(v.as.as_string);
         if (--obj->obj.ref_count <= 0) {
             free(obj);
@@ -172,7 +216,7 @@ void value_release(Value v) {
 }
 
 int value_ref_count(Value v) {
-    if (v.type == VAL_STRING && v.as.as_string != NULL) {
+    if ((v.type == VAL_STRING || v.type == VAL_DATE || v.type == VAL_TIMESTAMP) && v.as.as_string != NULL) {
         return string_obj_from_chars(v.as.as_string)->obj.ref_count;
     }
     if (v.type == VAL_ARRAY && v.as.as_array != NULL) {
@@ -324,6 +368,8 @@ int value_is_truthy(Value value) {
         case VAL_FLOAT:
             return value.as.as_float != 0.0;
         case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP:
             return value.as.as_string != NULL;
         case VAL_BOOL:
             return value.as.as_int != 0;
@@ -334,7 +380,7 @@ int value_is_truthy(Value value) {
         case VAL_CURSOR:
             return value.as.as_cursor != NULL;
         default:
-            /* VAL_ROW_HANDLE and any future types: treat non-NULL as truthy. */
+            /* VAL_ROW and any future types: treat non-NULL as truthy. */
             return value.as.as_row_handle != NULL;
     }
 }
@@ -348,6 +394,12 @@ void value_print(Value value) {
             printf("%g", value.as.as_float);
             break;
         case VAL_STRING:
+            printf("%s", value.as.as_string ? value.as.as_string : "");
+            break;
+        case VAL_DATE:
+            printf("%s", value.as.as_string ? value.as.as_string : "");
+            break;
+        case VAL_TIMESTAMP:
             printf("%s", value.as.as_string ? value.as.as_string : "");
             break;
         case VAL_BOOL:
@@ -489,7 +541,24 @@ int row_obj_set_field(RowObj* row, const char* name, Value value) {
             return 1;
         }
     }
-    return 0;
+    /* Field not present: grow the row and add it. */
+    int new_index = row->column_count;
+    char** new_names = realloc(row->column_names,
+                               sizeof(char*) * (size_t)(new_index + 1));
+    Value* new_values = realloc(row->column_values,
+                                sizeof(Value) * (size_t)(new_index + 1));
+    if (new_names == NULL || new_values == NULL) {
+        if (new_names != NULL) free(new_names);
+        if (new_values != NULL) free(new_values);
+        return 0;
+    }
+    row->column_names = new_names;
+    row->column_values = new_values;
+    row->column_count = new_index + 1;
+    row->column_names[new_index] = strdup(name);
+    row->column_values[new_index] = value;
+    value_retain(value);
+    return 1;
 }
 
 int array_append(ArrayObj* array, Value value) {
@@ -548,7 +617,9 @@ static int values_equal_values(Value a, Value b) {
         case VAL_INT:    return a.as.as_int == b.as.as_int;
         case VAL_FLOAT:  return a.as.as_float == b.as.as_float;
         case VAL_BOOL:   return a.as.as_int == b.as.as_int;
-        case VAL_STRING: {
+        case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP: {
             const char* as = a.as.as_string ? a.as.as_string : "";
             const char* bs = b.as.as_string ? b.as.as_string : "";
             return strcmp(as, bs) == 0;

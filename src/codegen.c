@@ -788,6 +788,19 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 } else if (d->type != NULL && type_is_map(d->type)) {
                     emit_byte(compiler, OP_MAP_BUILD);
                     emit_u16(compiler, 0);
+                } else if (d->type != NULL &&
+                           (d->type->kind == TYPE_STRUCT ||
+                            d->type->kind == TYPE_ROW ||
+                            d->type->kind == TYPE_PERCENT_ROWTYPE)) {
+                    int schema_idx = add_constant(compiler->chunk, value_string(strdup("")));
+                    if (schema_idx < 0) {
+                        error(compiler, "too many constants");
+                        return;
+                    }
+                    emit_byte(compiler, OP_CONST);
+                    emit_u16(compiler, (uint16_t)schema_idx);
+                    emit_byte(compiler, OP_STRUCT_BUILD);
+                    emit_u16(compiler, (uint16_t)schema_idx);
                 } else {
                     emit_constant(compiler, value_int(0));
                 }
@@ -840,6 +853,29 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             emit_byte(compiler, OP_SET_LOCAL);
             emit_byte(compiler, (uint8_t)slot);
+            break;
+        }
+        case STMT_FIELD_ASSIGN: {
+            FieldAssignStmt* fa = &stmt->as.field_assign;
+            compile_expr(compiler, fa->object);
+            if (compiler->had_error) return;
+            char* field_name = malloc((size_t)strlen(fa->field) + 1);
+            if (field_name == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(field_name, fa->field);
+            int field_idx = add_constant(compiler->chunk, value_string(field_name));
+            if (field_idx < 0) {
+                free(field_name);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_CONST);
+            emit_u16(compiler, (uint16_t)field_idx);
+            compile_expr(compiler, fa->value);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_INDEX_SET);
             break;
         }
         case STMT_RETURN:
@@ -1516,6 +1552,9 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             break;
         }
+        case STMT_SUBTYPE_DECL:
+            /* No runtime code; subtype information is resolved during type checking. */
+            break;
         default:
             error(compiler, "unsupported statement");
             break;

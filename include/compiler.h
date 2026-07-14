@@ -90,6 +90,8 @@ typedef enum {
     VAL_FLOAT,
     VAL_STRING,
     VAL_BOOL,
+    VAL_DATE,
+    VAL_TIMESTAMP,
     VAL_ARRAY,
     VAL_MAP,
     VAL_ROW,
@@ -151,6 +153,8 @@ Value value_int(int v);
 Value value_float(double v);
 Value value_string(char* s);
 Value value_bool(int v);
+Value value_date(char* s);
+Value value_timestamp(char* s);
 Value value_array(ArrayObj* array);
 Value value_map(MapObj* map);
 Value value_row(RowObj* row);

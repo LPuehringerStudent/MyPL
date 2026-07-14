@@ -125,6 +125,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "cursor", 6) == 0) return TOKEN_CURSOR;
             break;
         case 'd':
+            if (length == 4 && memcmp(lexer->start, "date", 4) == 0) return TOKEN_DATE_TYPE;
             if (length == 2 && memcmp(lexer->start, "do", 2) == 0) return TOKEN_DO;
             if (length == 6 && memcmp(lexer->start, "delete", 6) == 0) return TOKEN_DELETE;
             if (length == 4 && memcmp(lexer->start, "drop", 4) == 0) return TOKEN_DROP;
@@ -168,6 +169,7 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 8 && memcmp(lexer->start, "rollback", 8) == 0) return TOKEN_ROLLBACK;
             if (length == 6 && memcmp(lexer->start, "return", 6) == 0) return TOKEN_RETURN;
             if (length == 5 && memcmp(lexer->start, "raise", 5) == 0) return TOKEN_RAISE;
+            if (length == 7 && memcmp(lexer->start, "rowtype", 7) == 0) return TOKEN_ROWTYPE;
             break;
         case 'S':
             if (length == 6 && memcmp(lexer->start, "SELECT", 6) == 0) return TOKEN_SQL_QUERY;
@@ -177,13 +179,16 @@ static TokenType identifier_type(Lexer* lexer) {
             if (length == 6 && memcmp(lexer->start, "select", 6) == 0) return TOKEN_SQL_QUERY;
             if (length == 3 && memcmp(lexer->start, "set", 3) == 0) return TOKEN_SET;
             if (length == 6 && memcmp(lexer->start, "string", 6) == 0) return TOKEN_STRING_TYPE;
+            if (length == 7 && memcmp(lexer->start, "subtype", 7) == 0) return TOKEN_SUBTYPE;
             if (length == 7 && memcmp(lexer->start, "sqlcode", 7) == 0) return TOKEN_SQLCODE;
             if (length == 7 && memcmp(lexer->start, "sqlerrm", 7) == 0) return TOKEN_SQLERRM;
             break;
         case 't':
             if (length == 5 && memcmp(lexer->start, "table", 5) == 0) return TOKEN_TABLE;
+            if (length == 4 && memcmp(lexer->start, "type", 4) == 0) return TOKEN_TYPE;
             if (length == 3 && memcmp(lexer->start, "try", 3) == 0) return TOKEN_TRY;
             if (length == 4 && memcmp(lexer->start, "true", 4) == 0) return TOKEN_TRUE;
+            if (length == 9 && memcmp(lexer->start, "timestamp", 9) == 0) return TOKEN_TIMESTAMP_TYPE;
             break;
         case 'u':
             if (length == 6 && memcmp(lexer->start, "update", 6) == 0) return TOKEN_UPDATE;

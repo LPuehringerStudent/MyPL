@@ -277,7 +277,9 @@ static int value_equal_values(Value a, Value b) {
         case VAL_INT:    return a.as.as_int == b.as.as_int;
         case VAL_FLOAT:  return a.as.as_float == b.as.as_float;
         case VAL_BOOL:   return a.as.as_int == b.as.as_int;
-        case VAL_STRING: {
+        case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP: {
             const char* as = a.as.as_string ? a.as.as_string : "";
             const char* bs = b.as.as_string ? b.as.as_string : "";
             return strcmp(as, bs) == 0;
@@ -1687,6 +1689,158 @@ static int native_pad_end(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int parse_datetime(const char* s, int* year, int* month, int* day,
+                          int* hour, int* minute, int* second) {
+    *hour = 0;
+    *minute = 0;
+    *second = 0;
+    return sscanf(s, "%d-%d-%d %d:%d:%d", year, month, day, hour, minute, second) >= 3;
+}
+
+static int native_to_date(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "to_date expects (string, string)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    (void)argv[1];
+    int year, month, day, hour, minute, second;
+    if (!parse_datetime(s, &year, &month, &day, &hour, &minute, &second)) {
+        vm_set_error(vm, "to_date: invalid date string");
+        return 0;
+    }
+    char* buf = malloc(128);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    snprintf(buf, 128, "%04d-%02d-%02d", year, month, day);
+    *out = value_date(buf);
+    return 1;
+}
+
+static void append_token(char** out, size_t* cap, size_t* len, const char* token, size_t token_len) {
+    if (*len + token_len + 1 > *cap) {
+        size_t new_cap = *cap == 0 ? 64 : *cap * 2;
+        while (new_cap < *len + token_len + 1) new_cap *= 2;
+        char* new_out = realloc(*out, new_cap);
+        if (new_out == NULL) return;
+        *out = new_out;
+        *cap = new_cap;
+    }
+    memcpy(*out + *len, token, token_len);
+    *len += token_len;
+    (*out)[*len] = '\0';
+}
+
+static int native_to_char(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if ((argv[0].type != VAL_DATE && argv[0].type != VAL_TIMESTAMP) || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "to_char expects (date/timestamp, string)");
+        return 0;
+    }
+    const char* s = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* fmt = argv[1].as.as_string ? argv[1].as.as_string : "";
+    int year, month, day, hour, minute, second;
+    if (!parse_datetime(s, &year, &month, &day, &hour, &minute, &second)) {
+        vm_set_error(vm, "to_char: invalid date/timestamp");
+        return 0;
+    }
+
+    char* result = malloc(1);
+    if (result == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    result[0] = '\0';
+    size_t cap = 1;
+    size_t len = 0;
+
+    const char* p = fmt;
+    while (*p != '\0') {
+        if (strncmp(p, "YYYY", 4) == 0) {
+            char token[5];
+            snprintf(token, sizeof(token), "%04d", year);
+            append_token(&result, &cap, &len, token, strlen(token));
+            p += 4;
+        } else if (strncmp(p, "MM", 2) == 0) {
+            char token[3];
+            snprintf(token, sizeof(token), "%02d", month);
+            append_token(&result, &cap, &len, token, strlen(token));
+            p += 2;
+        } else if (strncmp(p, "DD", 2) == 0) {
+            char token[3];
+            snprintf(token, sizeof(token), "%02d", day);
+            append_token(&result, &cap, &len, token, strlen(token));
+            p += 2;
+        } else if (strncmp(p, "HH24", 4) == 0) {
+            char token[3];
+            snprintf(token, sizeof(token), "%02d", hour);
+            append_token(&result, &cap, &len, token, strlen(token));
+            p += 4;
+        } else if (strncmp(p, "MI", 2) == 0) {
+            char token[3];
+            snprintf(token, sizeof(token), "%02d", minute);
+            append_token(&result, &cap, &len, token, strlen(token));
+            p += 2;
+        } else if (strncmp(p, "SS", 2) == 0) {
+            char token[3];
+            snprintf(token, sizeof(token), "%02d", second);
+            append_token(&result, &cap, &len, token, strlen(token));
+            p += 2;
+        } else {
+            append_token(&result, &cap, &len, p, 1);
+            p++;
+        }
+    }
+
+    *out = value_string(result);
+    return 1;
+}
+
+static int native_current_date(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    (void)argv;
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    if (tm_info == NULL) {
+        vm_set_error(vm, "current_date: could not get local time");
+        return 0;
+    }
+    char* buf = malloc(128);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    snprintf(buf, 128, "%04d-%02d-%02d", tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday);
+    *out = value_date(buf);
+    return 1;
+}
+
+static int native_current_timestamp(VM* vm, int argc, Value* argv, Value* out) {
+    (void)vm;
+    (void)argc;
+    (void)argv;
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    if (tm_info == NULL) {
+        vm_set_error(vm, "current_timestamp: could not get local time");
+        return 0;
+    }
+    char* buf = malloc(128);
+    if (buf == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    snprintf(buf, 128, "%04d-%02d-%02d %02d:%02d:%02d",
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+    *out = value_timestamp(buf);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -1755,6 +1909,10 @@ static NativeDef natives[] = {
     {"random_int", 2, native_random_int},
     {"pad_start", 3, native_pad_start},
     {"pad_end", 3, native_pad_end},
+    {"to_date", 2, native_to_date},
+    {"to_char", 2, native_to_char},
+    {"current_date", 0, native_current_date},
+    {"current_timestamp", 0, native_current_timestamp},
     {"sql_rowcount", 0, native_sql_rowcount},
     {"sql_found", 0, native_sql_found},
     {"sql_notfound", 0, native_sql_notfound},

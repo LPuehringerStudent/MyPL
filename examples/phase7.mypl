@@ -1,0 +1,24 @@
+proc main() -> int {
+    // column %TYPE and table %ROWTYPE
+    employees.id%type emp_id;
+    employees%rowtype emp;
+
+    emp_id = 2;
+    emp.id = emp_id;
+    emp.name = "Bob";
+
+    // date type and formatting natives
+    date d = to_date("2024-03-15", "YYYY-MM-DD");
+    string ds = to_char(d, "YYYY-MM-DD");
+
+    // user-defined subtype
+    subtype score is int;
+    score s = 99;
+
+    print int_to_string(emp.id);
+    print emp.name;
+    print ds;
+    print int_to_string(s);
+
+    return 0;
+}

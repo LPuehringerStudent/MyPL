@@ -5,13 +5,15 @@
 
 static char* copy_string(const char* source);
 
-Type type_int      = { .kind = TYPE_INT    };
-Type type_float    = { .kind = TYPE_FLOAT  };
-Type type_string   = { .kind = TYPE_STRING };
-Type type_bool     = { .kind = TYPE_BOOL   };
-Type type_row      = { .kind = TYPE_ROW    };
-Type type_cursor   = { .kind = TYPE_CURSOR };
-Type type_unknown  = { .kind = TYPE_UNKNOWN};
+Type type_int       = { .kind = TYPE_INT       };
+Type type_float     = { .kind = TYPE_FLOAT     };
+Type type_string    = { .kind = TYPE_STRING    };
+Type type_bool      = { .kind = TYPE_BOOL      };
+Type type_date      = { .kind = TYPE_DATE      };
+Type type_timestamp = { .kind = TYPE_TIMESTAMP };
+Type type_row       = { .kind = TYPE_ROW       };
+Type type_cursor    = { .kind = TYPE_CURSOR    };
+Type type_unknown   = { .kind = TYPE_UNKNOWN   };
 
 Type* type_new(TypeKind kind, Type* element_type) {
     Type* t = calloc(1, sizeof(Type));
@@ -33,7 +35,8 @@ Type* type_new_map(Type* key_type, Type* value_type) {
 Type* type_copy(Type* t) {
     if (t == NULL) return NULL;
     if (t == &type_int || t == &type_float || t == &type_string ||
-        t == &type_bool || t == &type_row || t == &type_cursor ||
+        t == &type_bool || t == &type_date || t == &type_timestamp ||
+        t == &type_row || t == &type_cursor ||
         t == &type_unknown) {
         return t;
     }
@@ -59,17 +62,27 @@ Type* type_copy(Type* t) {
     if (t->kind == TYPE_MAP) {
         return type_new_map(type_copy(t->map_key_type), type_copy(t->element_type));
     }
+    if (t->kind == TYPE_PERCENT_TYPE) {
+        if (t->field_count > 0 && t->field_names != NULL) {
+            return type_percent_type_column(t->struct_name, t->field_names[0]);
+        }
+        return type_percent_type_var(t->struct_name);
+    }
+    if (t->kind == TYPE_PERCENT_ROWTYPE) {
+        return type_percent_rowtype(t->struct_name);
+    }
     return type_new(t->kind, type_copy(t->element_type));
 }
 
 void type_free(Type* t) {
     if (t == NULL) return;
     if (t == &type_int || t == &type_float || t == &type_string ||
-        t == &type_bool || t == &type_row || t == &type_cursor ||
+        t == &type_bool || t == &type_date || t == &type_timestamp ||
+        t == &type_row || t == &type_cursor ||
         t == &type_unknown) {
         return;
     }
-    if (t->kind == TYPE_STRUCT) {
+    if (t->kind == TYPE_STRUCT || t->kind == TYPE_PERCENT_ROWTYPE) {
         free(t->struct_name);
         for (int i = 0; i < t->field_count; i++) {
             free(t->field_names[i]);
@@ -77,6 +90,15 @@ void type_free(Type* t) {
         }
         free(t->field_names);
         free(t->field_types);
+        free(t);
+        return;
+    }
+    if (t->kind == TYPE_PERCENT_TYPE) {
+        free(t->struct_name);
+        if (t->field_count > 0 && t->field_names != NULL) {
+            free(t->field_names[0]);
+            free(t->field_names);
+        }
         free(t);
         return;
     }
@@ -100,6 +122,19 @@ int type_equals(Type* a, Type* b) {
         if (a->struct_name == NULL || b->struct_name == NULL) return 0;
         return strcmp(a->struct_name, b->struct_name) == 0;
     }
+    if (a->kind == TYPE_PERCENT_TYPE) {
+        if (a->struct_name == NULL || b->struct_name == NULL) return 0;
+        if (strcmp(a->struct_name, b->struct_name) != 0) return 0;
+        int a_col = (a->field_count > 0 && a->field_names != NULL) ? 1 : 0;
+        int b_col = (b->field_count > 0 && b->field_names != NULL) ? 1 : 0;
+        if (a_col != b_col) return 0;
+        if (a_col) return strcmp(a->field_names[0], b->field_names[0]) == 0;
+        return 1;
+    }
+    if (a->kind == TYPE_PERCENT_ROWTYPE) {
+        if (a->struct_name == NULL || b->struct_name == NULL) return 0;
+        return strcmp(a->struct_name, b->struct_name) == 0;
+    }
     return 1;
 }
 
@@ -118,18 +153,70 @@ int type_is_unknown(Type* t) { return t == &type_unknown; }
 const char* type_name(Type* t) {
     if (t == NULL || t == &type_unknown) return "unknown";
     switch (t->kind) {
-        case TYPE_INT:    return "int";
-        case TYPE_FLOAT:  return "float";
-        case TYPE_STRING: return "string";
-        case TYPE_BOOL:   return "bool";
-        case TYPE_ARRAY:  return "array";
-        case TYPE_MAP:    return "map";
-        case TYPE_ROW:    return "row";
-        case TYPE_CURSOR: return "cursor";
-        case TYPE_STRUCT: return t->struct_name != NULL ? t->struct_name : "struct";
-        case TYPE_UNKNOWN: return "unknown";
+        case TYPE_INT:        return "int";
+        case TYPE_FLOAT:      return "float";
+        case TYPE_STRING:     return "string";
+        case TYPE_BOOL:       return "bool";
+        case TYPE_DATE:       return "date";
+        case TYPE_TIMESTAMP:  return "timestamp";
+        case TYPE_ARRAY:      return "array";
+        case TYPE_MAP:        return "map";
+        case TYPE_ROW:        return "row";
+        case TYPE_CURSOR:     return "cursor";
+        case TYPE_STRUCT:     return t->struct_name != NULL ? t->struct_name : "struct";
+        case TYPE_PERCENT_TYPE: return "<percent type>";
+        case TYPE_PERCENT_ROWTYPE: return "<percent rowtype>";
+        case TYPE_SUBTYPE:    return t->struct_name != NULL ? t->struct_name : "subtype";
+        case TYPE_UNKNOWN:    return "unknown";
     }
     return "unknown";
+}
+
+Type* type_percent_type_var(const char* var_name) {
+    Type* t = type_new(TYPE_PERCENT_TYPE, NULL);
+    if (t == NULL) return NULL;
+    t->struct_name = copy_string(var_name);
+    if (t->struct_name == NULL && var_name != NULL) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+Type* type_percent_type_column(const char* table_name, const char* column_name) {
+    Type* t = type_new(TYPE_PERCENT_TYPE, NULL);
+    if (t == NULL) return NULL;
+    t->struct_name = copy_string(table_name);
+    if (t->struct_name == NULL && table_name != NULL) {
+        free(t);
+        return NULL;
+    }
+    t->field_count = 1;
+    t->field_names = malloc(sizeof(char*));
+    if (t->field_names == NULL) {
+        free(t->struct_name);
+        free(t);
+        return NULL;
+    }
+    t->field_names[0] = copy_string(column_name);
+    if (t->field_names[0] == NULL && column_name != NULL) {
+        free(t->field_names);
+        free(t->struct_name);
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+Type* type_percent_rowtype(const char* table_name) {
+    Type* t = type_new(TYPE_PERCENT_ROWTYPE, NULL);
+    if (t == NULL) return NULL;
+    t->struct_name = copy_string(table_name);
+    if (t->struct_name == NULL && table_name != NULL) {
+        free(t);
+        return NULL;
+    }
+    return t;
 }
 
 static char* copy_string(const char* source) {
@@ -361,6 +448,11 @@ void free_stmt(Stmt* stmt) {
             free(stmt->as.assign.name);
             free_expr(stmt->as.assign.value);
             break;
+        case STMT_FIELD_ASSIGN:
+            free_expr(stmt->as.field_assign.object);
+            free(stmt->as.field_assign.field);
+            free_expr(stmt->as.field_assign.value);
+            break;
         case STMT_IF:
             free_expr(stmt->as.if_stmt.condition);
             free_block(stmt->as.if_stmt.then_block);
@@ -430,6 +522,10 @@ void free_stmt(Stmt* stmt) {
             break;
         case STMT_RAISE:
             free(stmt->as.raise_stmt.name);
+            break;
+        case STMT_SUBTYPE_DECL:
+            free(stmt->as.subtype_decl.name);
+            type_free(stmt->as.subtype_decl.base_type);
             break;
         case STMT_TRY_CATCH:
             free_block(stmt->as.try_catch.try_block);
@@ -509,6 +605,27 @@ Stmt* create_assign_stmt(const char* name, Expr* value) {
         return NULL;
     }
     stmt->as.assign.value = value;
+    return stmt;
+}
+
+Stmt* create_field_assign_stmt(Expr* object, const char* field, Expr* value) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_expr(object);
+        free_expr(value);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_FIELD_ASSIGN;
+    stmt->as.field_assign.object = object;
+    stmt->as.field_assign.field = copy_string(field);
+    if (stmt->as.field_assign.field == NULL && field != NULL) {
+        free_expr(object);
+        free_expr(value);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.field_assign.value = value;
     return stmt;
 }
 
@@ -913,6 +1030,20 @@ Stmt* create_raise_stmt(const char* name) {
         free(stmt);
         return NULL;
     }
+    return stmt;
+}
+
+Stmt* create_subtype_decl_stmt(const char* name, Type* base_type) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_SUBTYPE_DECL;
+    stmt->as.subtype_decl.name = copy_string(name);
+    if (stmt->as.subtype_decl.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.subtype_decl.base_type = base_type;
     return stmt;
 }
 
