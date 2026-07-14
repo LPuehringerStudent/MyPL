@@ -85,12 +85,16 @@ make clean && make USE_SQLITE=0 && make USE_SQLITE=0 test
 
 ## Language tour
 
-### Procedures
+### Procedures and functions
 
 ```mypl
 proc greet(name string) -> int {
     print concat("Hello, ", name);
     return 0;
+}
+
+func square(x int) -> int {
+    return x * x;
 }
 ```
 
@@ -101,7 +105,21 @@ int count = 42;
 float pi = 3.14;
 string message = "hello";
 bool active = true;
+date today = current_date();
+timestamp now = current_timestamp();
 array<int> nums = [1, 2, 3];
+map<string, int> ages = {"alice": 30, "bob": 25};
+```
+
+### Parameter modes
+
+```mypl
+proc swap(in out a int, in out b int) -> int {
+    int tmp = a;
+    a = b;
+    b = tmp;
+    return 0;
+}
 ```
 
 ### Control flow
@@ -152,6 +170,83 @@ print length(users);
 print users[0].name;
 ```
 
+### Cursors
+
+```mypl
+cursor c is select id, name from users where age > 25;
+open c;
+while c%found {
+    int id;
+    string name;
+    fetch c into id, name;
+    print concat(int_to_string(id), concat(" ", name));
+}
+close c;
+```
+
+### Collections
+
+```mypl
+array<int> nums;
+nums.extend(3);
+nums[0] = 10;
+nums[1] = 20;
+nums[2] = 30;
+nums.sort();
+print int_to_string(nums[0]);  // 10
+
+map<string, int> scores;
+scores["ada"] = 95;
+print int_to_string(scores["ada"]);
+```
+
+### Type attributes and subtypes
+
+```mypl
+// %TYPE copies a variable or column type
+int x = 42;
+x%type y = 7;
+
+// Subtypes create aliases
+subtype score is int;
+score s = 100;
+
+// %ROWTYPE creates a row/record matching a table
+// (the table must already exist when the program is compiled)
+users%rowtype u;
+u.id = 2;
+u.name = "bob";
+print u.name;
+```
+
+### Exceptions
+
+```mypl
+proc maybe_fetch() -> int {
+    int id;
+    begin
+        select id into id from users where name = "nobody";
+    catch (err) {
+        print concat("SQL error: ", err);
+    }
+    return 0;
+}
+```
+
+### Packages
+
+```mypl
+package math_utils is
+    func add(a int, b int) -> int;
+end math_utils;
+
+package body math_utils is
+    func add(a int, b int) -> int {
+        return a + b;
+    }
+end math_utils;
+```
+
 ## Examples
 
 The `examples/` directory contains runnable programs that show what MyPL looks
@@ -164,6 +259,11 @@ A minimal CRUD example.
 ```bash
 ./bin/mypl examples/todo.mypl --db todos.db
 ```
+
+### Phase feature walkthroughs (`examples/phase1.mypl` … `examples/phase7.mypl`)
+
+Each phase file demonstrates a completed milestone (exceptions, cursors,
+packages, collections, type attributes, dates, subtypes, etc.).
 
 ### Data migration (`examples/migration.mypl`)
 
@@ -224,33 +324,49 @@ Useful commands:
 
 ## Features
 
-- C-like syntax.
-- Procedures with parameters and return values.
-- `int`, `float`, `string`, `bool`, and typed `array<T>`.
-- `while`, numeric `for`, `for ... in`, `break`, `continue`.
+- C-like syntax with procedures and functions.
+- `in`, `out`, and `in out` parameter modes.
+- Scalar types: `int`, `float`, `string`, `bool`, `date`, `timestamp`.
+- Typed collections: `array<T>`, `map<string, T>`, plus methods like `extend`,
+  `trim`, `sort`, `reverse`, `first`, `last`, etc.
+- `struct` records and table-driven `%ROWTYPE` records.
+- Control flow: `if`/`else`, `while`, `do ... while`, numeric `for`,
+  `for ... in`, `case`, `break`, `continue`, `return`.
+- Anonymous `declare ... begin ... end` blocks.
 - Embedded SQL with `?var` parameter binding.
-- `SELECT ... INTO` for scalar and array assignment.
-- SQLite backend via `--db <path>`.
-- Custom SQL engine fallback when no `--db` is supplied.
+- `SELECT ... INTO` for scalar, multi-value, and `array<row>` assignment.
+- `BULK COLLECT INTO` and `FORALL` for set-based operations.
+- Explicit cursor variables with `open`, `fetch`, `close`, and attributes
+  `%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`.
+- Exception handling with named predefined/user-defined exceptions,
+  `raise`, `raise_application_error`, `sqlcode`, and `sqlerrm`.
+- Packages with spec/body, state, and sidecar/catalog persistence.
+- User-defined subtypes (`subtype name is base;`).
+- `%TYPE` and `%ROWTYPE` type attributes.
 - Import system for splitting code across files.
-- Growing standard library: `length`, `append`, `concat`, `split`, `join`,
-  `replace`, `trim`, `to_upper`, `to_lower`, `parse_int`, `split_lines`,
-  `range`, `assert`, file I/O, and more.
+- SQLite backend via `--db <path>` or `.connect <path>`.
+- Custom SQL engine fallback when no `--db` is supplied.
+- Standard library: `length`, `append`, `concat`, `split`, `join`, `replace`,
+  `trim`, `to_upper`, `to_lower`, `parse_int`, `split_lines`, `range`,
+  `assert`, `format`, `sort`, `reverse`, `clamp`, `to_date`, `to_char`,
+  `current_date`, `current_timestamp`, file I/O, and more.
 
 ## Roadmap / Next Steps
 
 MyPL is intentionally small today, but the goal is to become a credible
-open-source alternative to PL/SQL for lightweight database scripting. See
-[`NEXT_STEPS.md`](NEXT_STEPS.md) for a concrete, phased comparison with Oracle
-PL/SQL and the prioritized goals that will close the gap.
+open-source alternative to PL/SQL for lightweight database scripting. Phases
+1–7 are complete; see [`NEXT_STEPS.md`](NEXT_STEPS.md) for a concrete, phased
+comparison with Oracle PL/SQL and the remaining goals that will close the gap.
 
 High-level direction:
 
-- Stabilize exception handling, SQL DML feedback, and dynamic SQL (Phase 1).
-- Add functions, parameter modes, `case`, and anonymous blocks (Phase 2).
-- Introduce explicit cursors, cursor attributes, and richer collections (Phase 3).
-- Build packages, stored program units, triggers, and `AUTHID` support (Phase 4).
-- Expand the type system (`%TYPE`, `%ROWTYPE`, dates) and standard library (Phase 5).
+- Persist procedures/functions/packages in the database catalog (Phase 8).
+- Add `AUTHID CURRENT_USER` / `AUTHID DEFINER` and transaction control
+  improvements (Phase 8).
+- Grow the standard library into named packages (`dbms_output`, `utl_file`,
+  `dbms_sql`, regex, sequences) (Phase 9).
+- Add triggers, pipelined/table functions, object types with methods, and
+  conditional compilation (Phase 10).
 
 Contributions and ideas are welcome.
 
