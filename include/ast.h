@@ -9,11 +9,16 @@ typedef enum {
     TYPE_FLOAT,
     TYPE_STRING,
     TYPE_BOOL,
+    TYPE_DATE,
+    TYPE_TIMESTAMP,
     TYPE_ARRAY,
     TYPE_MAP,
     TYPE_ROW,
     TYPE_CURSOR,
     TYPE_STRUCT,
+    TYPE_PERCENT_TYPE,
+    TYPE_PERCENT_ROWTYPE,
+    TYPE_SUBTYPE,
     TYPE_UNKNOWN
 } TypeKind;
 
@@ -32,6 +37,8 @@ extern Type type_int;
 extern Type type_float;
 extern Type type_string;
 extern Type type_bool;
+extern Type type_date;
+extern Type type_timestamp;
 extern Type type_row;
 extern Type type_cursor;
 extern Type type_unknown;
@@ -43,6 +50,9 @@ void  type_free(Type* type);
 int   type_equals(Type* a, Type* b);
 int   type_is_numeric(Type* t);
 int   type_is_array(Type* t);
+Type* type_percent_type_var(const char* var_name);
+Type* type_percent_type_column(const char* table_name, const char* column_name);
+Type* type_percent_rowtype(const char* table_name);
 int   type_is_map(Type* t);
 int   type_is_unknown(Type* t);
 const char* type_name(Type* t);
@@ -66,6 +76,7 @@ typedef enum {
 typedef enum {
     STMT_VAR_DECL,
     STMT_ASSIGN,
+    STMT_FIELD_ASSIGN,
     STMT_IF,
     STMT_FOR,
     STMT_FOREACH,
@@ -90,6 +101,7 @@ typedef enum {
     STMT_CURSOR_CLOSE,
     STMT_EXCEPTION_DECL,
     STMT_RAISE,
+    STMT_SUBTYPE_DECL,
     STMT_FORALL
 } StmtKind;
 
@@ -194,6 +206,12 @@ typedef struct {
 } AssignStmt;
 
 typedef struct {
+    Expr* object;
+    char* field;
+    Expr* value;
+} FieldAssignStmt;
+
+typedef struct {
     Expr* condition;
     Block* then_block;
     Block* else_block;
@@ -296,6 +314,11 @@ typedef struct {
 } RaiseStmt;
 
 typedef struct {
+    char* name;
+    Type* base_type;
+} SubtypeDeclStmt;
+
+typedef struct {
     char* var_name;
     char* array_name;
     Stmt* sql_stmt;
@@ -313,6 +336,7 @@ struct Stmt {
     union {
         VarDeclStmt var_decl;
         AssignStmt assign;
+        FieldAssignStmt field_assign;
         IfStmt if_stmt;
         ForStmt for_stmt;
         ForeachStmt foreach_stmt;
@@ -333,6 +357,7 @@ struct Stmt {
         CursorCloseStmt cursor_close;
         ExceptionDeclStmt exception_decl;
         RaiseStmt raise_stmt;
+        SubtypeDeclStmt subtype_decl;
         ForallStmt forall_stmt;
     } as;
 };
@@ -441,6 +466,7 @@ Block* create_block(void);
 
 Stmt* create_var_decl_stmt(Type* type, const char* name, Expr* init);
 Stmt* create_assign_stmt(const char* name, Expr* value);
+Stmt* create_field_assign_stmt(Expr* object, const char* field, Expr* value);
 Stmt* create_if_stmt(Expr* cond, Block* then_block, Block* else_block);
 Stmt* create_for_stmt(const char* var_name, const char* sql_query, Expr** params, int param_count, Block* body);
 Stmt* create_foreach_stmt(const char* var_name, Expr* iterable, Block* body);
@@ -463,6 +489,7 @@ Stmt* create_cursor_fetch_stmt(const char* name, char** into_vars, int into_coun
 Stmt* create_cursor_close_stmt(const char* name);
 Stmt* create_exception_decl_stmt(const char* name);
 Stmt* create_raise_stmt(const char* name);
+Stmt* create_subtype_decl_stmt(const char* name, Type* base_type);
 Stmt* create_forall_stmt(const char* var_name, const char* array_name, Stmt* sql_stmt);
 Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name);
 

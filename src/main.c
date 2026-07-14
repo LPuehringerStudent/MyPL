@@ -63,7 +63,7 @@ static int run_file(const char* path, DBDriver* driver) {
     Chunk chunk;
     init_chunk(&chunk);
     char error[256];
-    if (!compile_with_context_and_path(compile_source, &chunk, path, error, sizeof(error), NULL)) {
+    if (!compile_with_context_and_path(compile_source, &chunk, path, error, sizeof(error), ctx)) {
         fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
         free(source);
         free(combined);

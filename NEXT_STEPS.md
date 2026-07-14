@@ -86,10 +86,10 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 - [x] `BULK COLLECT INTO`
 - [x] `FORALL`
 
-### Phase 7 — Type System Enhancements
-- [ ] `%TYPE` and `%ROWTYPE`
-- [ ] `date` / `timestamp` type and formatting natives
-- [ ] User-defined subtypes
+### Phase 7 — Type System Enhancements ✅
+- [x] `%TYPE` and `%ROWTYPE`
+- [x] `date` / `timestamp` type and formatting natives
+- [x] User-defined subtypes
 
 ### Phase 8 — Stored Code & Security
 - [ ] Persist procedures/functions/packages in the database catalog

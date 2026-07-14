@@ -12,6 +12,7 @@
 #define MAX_TRANSIENTS 256
 #define MAX_ROWS 16
 #define MAX_STRUCTS 64
+#define MAX_SUBTYPES 64
 #define MAX_EXCEPTIONS 64
 
 typedef struct {
@@ -60,6 +61,8 @@ typedef struct {
     int cursor_count;
     StructInfo structs[MAX_STRUCTS];
     int struct_count;
+    struct { const char* name; Type* base; } subtypes[MAX_SUBTYPES];
+    int subtype_count;
     const char* current_package;
     Program* program;
     const char* exceptions[MAX_EXCEPTIONS];
@@ -292,6 +295,184 @@ static Type* transient_map_type(TypeChecker* tc, Type* key_type, Type* value_typ
     return t;
 }
 
+static Type* transient_struct_type(TypeChecker* tc, const char* name, char** field_names, Type** field_types, int field_count) {
+    if (tc->transient_count >= MAX_TRANSIENTS) {
+        type_error(tc, (SourceLoc){0,0}, "too many inferred types");
+        return &type_unknown;
+    }
+    Type* t = type_new(TYPE_STRUCT, NULL);
+    if (t == NULL) {
+        type_error(tc, (SourceLoc){0,0}, "out of memory");
+        return &type_unknown;
+    }
+    t->struct_name = malloc(strlen(name) + 1);
+    if (t->struct_name == NULL) {
+        free(t);
+        type_error(tc, (SourceLoc){0,0}, "out of memory");
+        return &type_unknown;
+    }
+    strcpy(t->struct_name, name);
+    t->field_count = field_count;
+    if (field_count > 0) {
+        t->field_names = malloc(sizeof(char*) * (size_t)field_count);
+        t->field_types = malloc(sizeof(Type*) * (size_t)field_count);
+        if (t->field_names == NULL || t->field_types == NULL) {
+            free(t->struct_name);
+            free(t->field_names);
+            free(t->field_types);
+            free(t);
+            type_error(tc, (SourceLoc){0,0}, "out of memory");
+            return &type_unknown;
+        }
+        for (int i = 0; i < field_count; i++) {
+            t->field_names[i] = malloc(strlen(field_names[i]) + 1);
+            if (t->field_names[i] != NULL) strcpy(t->field_names[i], field_names[i]);
+            t->field_types[i] = field_types[i];
+        }
+    }
+    tc->transient_types[tc->transient_count++] = t;
+    return t;
+}
+
+static Type* resolve_percent_type(TypeChecker* tc, Type* t, SourceLoc loc) {
+    if (t == NULL) return &type_unknown;
+    if (t->kind == TYPE_PERCENT_TYPE) {
+        if (t->field_count > 0 && t->field_names != NULL) {
+            /* table.column%type */
+            if (tc->ctx == NULL) {
+                type_error(tc, loc, "Cannot resolve column type without a database context");
+                return &type_unknown;
+            }
+            const char* table_name = t->struct_name;
+            const char* column_name = t->field_names[0];
+            char query[512];
+            snprintf(query, sizeof(query), "select %s from %s", column_name, table_name);
+            int sql_type;
+            if (sql_query_column_type(tc->ctx, query, column_name, &sql_type)) {
+                return sql_type_to_type(sql_type);
+            }
+            type_error(tc, loc, "Could not resolve type of %s.%s", table_name, column_name);
+            return &type_unknown;
+        }
+        /* var%type */
+        const char* var_name = t->struct_name;
+        Type* resolved = resolve_local(tc, var_name);
+        if (resolved == NULL) {
+            type_error(tc, loc, "Undefined variable '%s' in %TYPE", var_name);
+            return &type_unknown;
+        }
+        return resolved;
+    }
+    if (t->kind == TYPE_PERCENT_ROWTYPE) {
+        if (tc->ctx == NULL) {
+            type_error(tc, loc, "Cannot resolve row type without a database context");
+            return &type_unknown;
+        }
+        const char* table_name = t->struct_name;
+        Table* table = catalog_find_table(tc->ctx, table_name);
+        if (table == NULL) {
+            type_error(tc, loc, "Unknown table '%s' in %ROWTYPE", table_name);
+            return &type_unknown;
+        }
+        char** names = malloc(sizeof(char*) * (size_t)table->column_count);
+        Type** types = malloc(sizeof(Type*) * (size_t)table->column_count);
+        if (names == NULL || types == NULL) {
+            free(names);
+            free(types);
+            type_error(tc, loc, "out of memory");
+            return &type_unknown;
+        }
+        for (int i = 0; i < table->column_count; i++) {
+            names[i] = table->columns[i].name;
+            types[i] = sql_type_to_type(table->columns[i].type);
+        }
+        Type* resolved = transient_struct_type(tc, table_name, names, types, table->column_count);
+        free(names);
+        free(types);
+        return resolved;
+    }
+    return t;
+}
+
+static Type* resolve_field_type(TypeChecker* tc, Type* base, const char* field_name,
+                                SourceLoc loc) {
+    if (base == NULL || field_name == NULL) return NULL;
+    if (base->kind == TYPE_PERCENT_ROWTYPE) {
+        if (tc->ctx == NULL) {
+            type_error(tc, loc, "Cannot resolve row type without a database context");
+            return NULL;
+        }
+        const char* table_name = base->struct_name;
+        Table* table = catalog_find_table(tc->ctx, table_name);
+        if (table == NULL) {
+            type_error(tc, loc, "Unknown table '%s' in %ROWTYPE", table_name);
+            return NULL;
+        }
+        for (int i = 0; i < table->column_count; i++) {
+            if (strcmp(table->columns[i].name, field_name) == 0) {
+                return sql_type_to_type(table->columns[i].type);
+            }
+        }
+        type_error(tc, loc, "Unknown column '%s' in table '%s'", field_name, table_name);
+        return NULL;
+    }
+    if (base->kind == TYPE_STRUCT) {
+        if (base->field_count > 0 && base->field_names != NULL) {
+            for (int i = 0; i < base->field_count; i++) {
+                if (strcmp(base->field_names[i], field_name) == 0) {
+                    return base->field_types[i];
+                }
+            }
+        }
+        StructInfo* info = find_struct(tc, base->struct_name);
+        if (info != NULL) {
+            for (int i = 0; i < info->field_count; i++) {
+                if (strcmp(info->field_names[i], field_name) == 0) {
+                    return info->field_types[i];
+                }
+            }
+        }
+        return NULL;
+    }
+    if (base->kind == TYPE_ROW) {
+        return &type_unknown;
+    }
+    return NULL;
+}
+
+static Type* resolve_named_type(TypeChecker* tc, Type* t) {
+    if (t == NULL) return NULL;
+    if (t->kind == TYPE_STRUCT && t->struct_name != NULL) {
+        for (int i = 0; i < tc->subtype_count; i++) {
+            if (strcmp(tc->subtypes[i].name, t->struct_name) == 0) {
+                return tc->subtypes[i].base;
+            }
+        }
+    }
+    if (t->kind == TYPE_ARRAY && t->element_type != NULL) {
+        Type* elem = resolve_named_type(tc, t->element_type);
+        if (elem != t->element_type) {
+            return transient_array_type(tc, elem);
+        }
+    }
+    if (t->kind == TYPE_MAP && t->map_key_type != NULL) {
+        Type* key = resolve_named_type(tc, t->map_key_type);
+        Type* val = resolve_named_type(tc, t->element_type);
+        if (key != t->map_key_type || val != t->element_type) {
+            return transient_map_type(tc, key, val);
+        }
+    }
+    return t;
+}
+
+static int add_subtype(TypeChecker* tc, const char* name, Type* base) {
+    if (tc->subtype_count >= MAX_SUBTYPES) return 0;
+    tc->subtypes[tc->subtype_count].name = name;
+    tc->subtypes[tc->subtype_count].base = base;
+    tc->subtype_count++;
+    return 1;
+}
+
 static void check_stmt(TypeChecker* tc, Stmt* stmt);
 static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint);
 
@@ -373,7 +554,11 @@ static int is_native(const char* name) {
            strcmp(name, "is_alpha") == 0 ||
            strcmp(name, "sqlcode") == 0 ||
            strcmp(name, "sqlerrm") == 0 ||
-           strcmp(name, "raise_application_error") == 0;
+           strcmp(name, "raise_application_error") == 0 ||
+           strcmp(name, "to_date") == 0 ||
+           strcmp(name, "to_char") == 0 ||
+           strcmp(name, "current_date") == 0 ||
+           strcmp(name, "current_timestamp") == 0;
 }
 
 static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, int arg_count, SourceLoc loc) {
@@ -1159,6 +1344,50 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return &type_int;
     }
+    if (strcmp(name, "to_date") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "to_date expects 2 arguments");
+            return NULL;
+        }
+        Type* s = infer_expr(tc, args[0], NULL);
+        Type* fmt = infer_expr(tc, args[1], NULL);
+        if (s != &type_unknown && s != NULL && s->kind != TYPE_STRING) {
+            type_error(tc, loc, "to_date expects a string date");
+        }
+        if (fmt != &type_unknown && fmt != NULL && fmt->kind != TYPE_STRING) {
+            type_error(tc, loc, "to_date expects a string format");
+        }
+        return &type_date;
+    }
+    if (strcmp(name, "to_char") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "to_char expects 2 arguments");
+            return NULL;
+        }
+        Type* v = infer_expr(tc, args[0], NULL);
+        Type* fmt = infer_expr(tc, args[1], NULL);
+        if (v != &type_unknown && v != NULL && v->kind != TYPE_DATE && v->kind != TYPE_TIMESTAMP) {
+            type_error(tc, loc, "to_char expects a date or timestamp");
+        }
+        if (fmt != &type_unknown && fmt != NULL && fmt->kind != TYPE_STRING) {
+            type_error(tc, loc, "to_char expects a string format");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "current_date") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "current_date expects 0 arguments");
+            return NULL;
+        }
+        return &type_date;
+    }
+    if (strcmp(name, "current_timestamp") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "current_timestamp expects 0 arguments");
+            return NULL;
+        }
+        return &type_timestamp;
+    }
     return NULL;
 }
 
@@ -1182,11 +1411,13 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
         case EXPR_LITERAL: {
             Value v = expr->as.literal.value;
             switch (v.type) {
-                case VAL_INT:    return &type_int;
-                case VAL_FLOAT:  return &type_float;
-                case VAL_STRING: return &type_string;
-                case VAL_BOOL:   return &type_bool;
-                case VAL_ARRAY:  return &type_int; /* unreachable for literals */
+                case VAL_INT:       return &type_int;
+                case VAL_FLOAT:     return &type_float;
+                case VAL_STRING:    return &type_string;
+                case VAL_BOOL:      return &type_bool;
+                case VAL_DATE:      return &type_date;
+                case VAL_TIMESTAMP: return &type_timestamp;
+                case VAL_ARRAY:     return &type_int; /* unreachable for literals */
             }
             return NULL;
         }
@@ -1455,19 +1686,14 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
         case EXPR_ROW_FIELD: {
             Type* base = infer_expr(tc, expr->as.row_field.row, NULL);
             if (tc->had_error) return NULL;
-            if (base != NULL && base->kind == TYPE_STRUCT) {
-                Type* ft = struct_field_type(tc, base->struct_name, expr->as.row_field.field);
-                if (ft == NULL) {
-                    type_error(tc, expr->loc, "Unknown field '%s' on struct '%s'",
-                               expr->as.row_field.field,
-                               base->struct_name != NULL ? base->struct_name : "?");
-                    return &type_unknown;
-                }
-                return ft;
-            }
-            if (base == NULL || base->kind != TYPE_ROW) {
+            Type* ft = resolve_field_type(tc, base, expr->as.row_field.field, expr->loc);
+            if (tc->had_error) return &type_unknown;
+            if (ft != NULL) return ft;
+            if (base == NULL || (base->kind != TYPE_STRUCT && base->kind != TYPE_ROW &&
+                                 base->kind != TYPE_PERCENT_ROWTYPE)) {
                 type_error(tc, expr->loc, "Cannot access field on non-row expression");
-                return &type_unknown;
+            } else {
+                type_error(tc, expr->loc, "Unknown field '%s'", expr->as.row_field.field);
             }
             return &type_unknown;
         }
@@ -1551,25 +1777,25 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
 static void check_stmt(TypeChecker* tc, Stmt* stmt) {
     switch (stmt->kind) {
         case STMT_VAR_DECL: {
-            Type* declared = stmt->as.var_decl.type;
-            Type* final_type = declared;
+            Type* declared = resolve_percent_type(tc, stmt->as.var_decl.type, stmt->loc);
+            Type* final_type = resolve_named_type(tc, declared);
 
             if (stmt->as.var_decl.initializer != NULL) {
-                Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer, declared);
+                Type* init_type = infer_expr(tc, stmt->as.var_decl.initializer, final_type);
                 if (tc->had_error) return;
                 if (init_type == NULL) {
                     type_error(tc, stmt->loc, "Cannot infer type of initializer");
                     return;
                 }
 
-                if (declared != NULL && declared->kind == TYPE_ARRAY &&
-                    declared->element_type == NULL &&
+                if (final_type != NULL && final_type->kind == TYPE_ARRAY &&
+                    final_type->element_type == NULL &&
                     init_type->kind == TYPE_ARRAY) {
                     final_type = init_type;
-                } else if (!types_assignable(declared, init_type)) {
+                } else if (!types_assignable(final_type, init_type)) {
                     type_error(tc, stmt->loc,
                                "Cannot assign value of type '%s' to variable of type '%s'",
-                               type_name(init_type), type_name(declared));
+                               type_name(init_type), type_name(final_type));
                     return;
                 }
             }
@@ -1593,6 +1819,26 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 type_error(tc, stmt->loc,
                            "Cannot assign value of type '%s' to variable of type '%s'",
                            type_name(rhs), type_name(target));
+            }
+            break;
+        }
+
+        case STMT_FIELD_ASSIGN: {
+            FieldAssignStmt* fa = &stmt->as.field_assign;
+            Type* base = infer_expr(tc, fa->object, NULL);
+            if (tc->had_error) return;
+            Type* ft = resolve_field_type(tc, base, fa->field, stmt->loc);
+            if (tc->had_error) return;
+            if (ft == NULL) {
+                type_error(tc, stmt->loc, "Cannot assign to field '%s'", fa->field);
+                return;
+            }
+            Type* rhs = infer_expr(tc, fa->value, ft);
+            if (tc->had_error) return;
+            if (!types_assignable(ft, rhs)) {
+                type_error(tc, stmt->loc,
+                           "Cannot assign value of type '%s' to field of type '%s'",
+                           type_name(rhs), type_name(ft));
             }
             break;
         }
@@ -1880,6 +2126,18 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             }
             break;
         }
+        case STMT_SUBTYPE_DECL: {
+            SubtypeDeclStmt* d = &stmt->as.subtype_decl;
+            Type* base = resolve_named_type(tc, d->base_type);
+            if (base == NULL) {
+                type_error(tc, stmt->loc, "Unknown base type for subtype '%s'", d->name);
+                return;
+            }
+            if (!add_subtype(tc, d->name, base)) {
+                type_error(tc, stmt->loc, "Too many subtype declarations");
+            }
+            break;
+        }
         case STMT_CASE: {
             CaseStmt* cs = &stmt->as.case_stmt;
             Type* selector_type = infer_expr(tc, cs->selector, NULL);
@@ -2064,11 +2322,11 @@ int typecheck_program(Program* program,
                 }
             }
             for (int p = 0; p < proc->param_count; p++) {
-                param_types[p] = proc->params[p].type;
+                param_types[p] = resolve_named_type(&tc, proc->params[p].type);
                 param_modes[p] = proc->params[p].mode;
             }
             combined_procs[i].name = proc->name;
-            combined_procs[i].return_type = proc->return_type;
+            combined_procs[i].return_type = resolve_named_type(&tc, proc->return_type);
             combined_procs[i].param_types = param_types;
             combined_procs[i].param_modes = param_modes;
             combined_procs[i].param_count = proc->param_count;
@@ -2091,7 +2349,7 @@ int typecheck_program(Program* program,
             break;
         }
         for (int p = 0; p < proc->param_count; p++) {
-            if (!add_local(&tc, proc->params[p].name, proc->params[p].type)) {
+            if (!add_local(&tc, proc->params[p].name, resolve_named_type(&tc, proc->params[p].type))) {
                 type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
                 break;
             }
@@ -2100,7 +2358,7 @@ int typecheck_program(Program* program,
             pop_scope(&tc);
             break;
         }
-        tc.return_type = proc->return_type;
+        tc.return_type = resolve_named_type(&tc, proc->return_type);
         check_block(&tc, proc->body);
         pop_scope(&tc);
         if (tc.had_error) break;
@@ -2115,7 +2373,7 @@ int typecheck_program(Program* program,
         }
         for (int v = 0; v < body->var_count; v++) {
             VarDeclStmt* var = &body->vars[v]->as.var_decl;
-            if (!add_local(&tc, var->name, var->type)) {
+            if (!add_local(&tc, var->name, resolve_named_type(&tc, var->type))) {
                 type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
                 break;
             }
@@ -2139,7 +2397,7 @@ int typecheck_program(Program* program,
                 break;
             }
             for (int p = 0; p < proc->param_count; p++) {
-                if (!add_local(&tc, proc->params[p].name, proc->params[p].type)) {
+                if (!add_local(&tc, proc->params[p].name, resolve_named_type(&tc, proc->params[p].type))) {
                     type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
                     break;
                 }
@@ -2148,7 +2406,7 @@ int typecheck_program(Program* program,
                 pop_scope(&tc);
                 break;
             }
-            tc.return_type = proc->return_type;
+            tc.return_type = resolve_named_type(&tc, proc->return_type);
             check_block(&tc, proc->body);
             pop_scope(&tc);
         }

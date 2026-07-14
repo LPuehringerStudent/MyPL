@@ -1,0 +1,5 @@
+proc main() -> int {
+    create table employees (id int, name string);
+    insert into employees values (1, 'Ada');
+    return 0;
+}

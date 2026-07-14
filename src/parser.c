@@ -790,6 +790,8 @@ static Type* parse_type(Parser* parser) {
     if (match(parser, TOKEN_FLOAT_TYPE)) return &type_float;
     if (match(parser, TOKEN_STRING_TYPE)) return &type_string;
     if (match(parser, TOKEN_BOOL_TYPE)) return &type_bool;
+    if (match(parser, TOKEN_DATE_TYPE)) return &type_date;
+    if (match(parser, TOKEN_TIMESTAMP_TYPE)) return &type_timestamp;
     if (match(parser, TOKEN_CURSOR)) return &type_cursor;
     if (check(parser, TOKEN_IDENT) && parser->current.length == 3 &&
         strncmp(parser->current.start, "row", 3) == 0) {
@@ -797,13 +799,55 @@ static Type* parse_type(Parser* parser) {
         return &type_row;
     }
     if (check(parser, TOKEN_IDENT)) {
+        char* name = copy_token_lexeme(&parser->current);
+        advance(parser);
+        if (match(parser, TOKEN_DOT)) {
+            if (!check(parser, TOKEN_IDENT)) {
+                error_at_current(parser, "expected column name after '.'");
+                free(name);
+                return &type_int;
+            }
+            char* column = copy_token_lexeme(&parser->current);
+            advance(parser);
+            if (!match(parser, TOKEN_PERCENT)) {
+                error_at_current(parser, "expected '%' after 'table.column'");
+                free(name);
+                free(column);
+                return &type_int;
+            }
+            if (!match(parser, TOKEN_TYPE)) {
+                error_at_current(parser, "expected 'type' after 'table.column%'");
+                free(name);
+                free(column);
+                return &type_int;
+            }
+            Type* t = type_percent_type_column(name, column);
+            free(name);
+            free(column);
+            return t != NULL ? t : &type_int;
+        }
+        if (match(parser, TOKEN_PERCENT)) {
+            if (match(parser, TOKEN_TYPE)) {
+                Type* t = type_percent_type_var(name);
+                free(name);
+                return t != NULL ? t : &type_int;
+            }
+            if (match(parser, TOKEN_ROWTYPE)) {
+                Type* t = type_percent_rowtype(name);
+                free(name);
+                return t != NULL ? t : &type_int;
+            }
+            error_at_current(parser, "expected 'type' or 'rowtype' after '%'");
+            free(name);
+            return &type_int;
+        }
         Type* t = type_new(TYPE_STRUCT, NULL);
         if (t == NULL) {
             error_at_current(parser, "out of memory");
+            free(name);
             return &type_int;
         }
-        t->struct_name = copy_token_lexeme(&parser->current);
-        advance(parser);
+        t->struct_name = name;
         return t;
     }
     if (match(parser, TOKEN_ARRAY_TYPE)) {
@@ -949,9 +993,15 @@ static Stmt* assignment(Parser* parser) {
             }
         } else {
             Expr* left = create_variable_expr(name);
-            Expr* field_expr = create_row_field_expr(left, field_name);
-            free(field_name);
-            stmt = create_expr_stmt(field_expr);
+            if (match(parser, TOKEN_ASSIGN)) {
+                Expr* value = expression(parser);
+                stmt = create_field_assign_stmt(left, field_name, value);
+                free(field_name);
+            } else {
+                Expr* field_expr = create_row_field_expr(left, field_name);
+                free(field_name);
+                stmt = create_expr_stmt(field_expr);
+            }
         }
         if (stmt == NULL) {
             free(name);
@@ -1204,6 +1254,39 @@ static Stmt* raise_statement(Parser* parser) {
     }
     advance(parser); /* semicolon */
     Stmt* stmt = create_raise_stmt(name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    free(name);
+    return stmt;
+}
+
+static Stmt* subtype_decl_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'subtype' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected subtype name after 'subtype'");
+        return NULL;
+    }
+    advance(parser); /* name */
+    char* name = copy_token_lexeme(&parser->previous);
+    if (!match(parser, TOKEN_IS)) {
+        error_at_current(parser, "expected 'is' after subtype name");
+        free(name);
+        return NULL;
+    }
+    Type* base_type = parse_type(parser);
+    if (parser->had_error) {
+        free(name);
+        return NULL;
+    }
+    if (!match(parser, TOKEN_SEMICOLON)) {
+        error_at_current(parser, "expected ';' after subtype declaration");
+        free(name);
+        type_free(base_type);
+        return NULL;
+    }
+    Stmt* stmt = create_subtype_decl_stmt(name, base_type);
     if (stmt != NULL) {
         stmt->loc.line = kw.line;
         stmt->loc.column = kw.column;
@@ -1847,23 +1930,37 @@ static Token peek_next(Parser* parser) {
     return lexer_next_token(&copy);
 }
 
+static int is_column_percent_type_start(Parser* parser) {
+    if (!check(parser, TOKEN_IDENT)) return 0;
+    Lexer copy = parser->lexer;
+    Token t1 = lexer_next_token(&copy);
+    if (t1.type != TOKEN_DOT) return 0;
+    Token t2 = lexer_next_token(&copy);
+    if (t2.type != TOKEN_IDENT) return 0;
+    Token t3 = lexer_next_token(&copy);
+    return t3.type == TOKEN_PERCENT;
+}
+
 static Stmt* statement(Parser* parser) {
     if (check(parser, TOKEN_INT_TYPE) ||
         check(parser, TOKEN_FLOAT_TYPE) ||
         check(parser, TOKEN_STRING_TYPE) ||
         check(parser, TOKEN_BOOL_TYPE) ||
+        check(parser, TOKEN_DATE_TYPE) ||
+        check(parser, TOKEN_TIMESTAMP_TYPE) ||
         check(parser, TOKEN_ARRAY_TYPE) ||
         check(parser, TOKEN_MAP_TYPE)) {
         return var_decl(parser);
     }
     if (check(parser, TOKEN_IDENT)) {
-        /* Ambiguity between struct-typed variable declarations
-           (Type name identifier followed by variable name identifier)
-           and other identifier-started statements. */
-        if (peek_next(parser).type == TOKEN_IDENT) {
+        /* Ambiguity between struct-typed or percent-typed variable
+           declarations and other identifier-started statements. */
+        Token next = peek_next(parser);
+        if (next.type == TOKEN_IDENT || next.type == TOKEN_PERCENT ||
+            is_column_percent_type_start(parser)) {
             return var_decl(parser);
         }
-        if (peek_next(parser).type == TOKEN_EXCEPTION) {
+        if (next.type == TOKEN_EXCEPTION) {
             return exception_decl_statement(parser);
         }
         return assignment(parser);
@@ -1877,6 +1974,7 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_CONTINUE)) return continue_statement(parser);
     if (match(parser, TOKEN_TRY)) return try_statement(parser);
     if (match(parser, TOKEN_RAISE)) return raise_statement(parser);
+    if (match(parser, TOKEN_SUBTYPE)) return subtype_decl_statement(parser);
     if (match(parser, TOKEN_CASE)) return case_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
     if (match(parser, TOKEN_PRINT)) return print_statement(parser);
@@ -2065,6 +2163,8 @@ static int token_is_type_after(Parser* parser) {
            next.type == TOKEN_FLOAT_TYPE ||
            next.type == TOKEN_STRING_TYPE ||
            next.type == TOKEN_BOOL_TYPE ||
+           next.type == TOKEN_DATE_TYPE ||
+           next.type == TOKEN_TIMESTAMP_TYPE ||
            next.type == TOKEN_ARRAY_TYPE ||
            next.type == TOKEN_MAP_TYPE ||
            next.type == TOKEN_CURSOR ||
@@ -2072,15 +2172,25 @@ static int token_is_type_after(Parser* parser) {
 }
 
 static int token_starts_type(Parser* parser) {
-    return check(parser, TOKEN_INT_TYPE) ||
-           check(parser, TOKEN_FLOAT_TYPE) ||
-           check(parser, TOKEN_STRING_TYPE) ||
-           check(parser, TOKEN_BOOL_TYPE) ||
-           check(parser, TOKEN_ARRAY_TYPE) ||
-           check(parser, TOKEN_MAP_TYPE) ||
-           check(parser, TOKEN_CURSOR) ||
-           (check(parser, TOKEN_IDENT) &&
-            peek_next(parser).type == TOKEN_IDENT);
+    if (check(parser, TOKEN_INT_TYPE) ||
+        check(parser, TOKEN_FLOAT_TYPE) ||
+        check(parser, TOKEN_STRING_TYPE) ||
+        check(parser, TOKEN_BOOL_TYPE) ||
+        check(parser, TOKEN_DATE_TYPE) ||
+        check(parser, TOKEN_TIMESTAMP_TYPE) ||
+        check(parser, TOKEN_ARRAY_TYPE) ||
+        check(parser, TOKEN_MAP_TYPE) ||
+        check(parser, TOKEN_CURSOR)) {
+        return 1;
+    }
+    if (check(parser, TOKEN_IDENT)) {
+        Token next = peek_next(parser);
+        if (next.type == TOKEN_IDENT || next.type == TOKEN_PERCENT ||
+            is_column_percent_type_start(parser)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static Stmt* parse_package_var(Parser* parser) {
