@@ -779,7 +779,19 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
     switch (stmt->kind) {
         case STMT_VAR_DECL: {
             VarDeclStmt* d = &stmt->as.var_decl;
-            compile_expr(compiler, d->initializer);
+            if (d->initializer != NULL) {
+                compile_expr(compiler, d->initializer);
+            } else {
+                if (d->type != NULL && type_is_array(d->type)) {
+                    emit_byte(compiler, OP_ARRAY_BUILD);
+                    emit_u16(compiler, 0);
+                } else if (d->type != NULL && type_is_map(d->type)) {
+                    emit_byte(compiler, OP_MAP_BUILD);
+                    emit_u16(compiler, 0);
+                } else {
+                    emit_constant(compiler, value_int(0));
+                }
+            }
             if (compiler->had_error) return;
             if (compiler->current_package != NULL && compiler->scope_depth == 0) {
                 char* global_name = mangle_package_name(compiler->current_package, d->name);
@@ -919,6 +931,67 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_byte(compiler, (uint8_t)var_slot);
             emit_byte(compiler, OP_POP);
             compile_block(compiler, f->body);
+            if (compiler->had_error) return;
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_constant(compiler, value_int(1));
+            emit_byte(compiler, OP_ADD);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_byte(compiler, OP_POP);
+            int back = emit_jump(compiler, OP_JMP);
+            patch_jump_to(compiler, back, loop_start);
+            patch_jump(compiler, exit_jump);
+            pop_loop(compiler);
+            for (int i = 0; i < 3; i++) emit_byte(compiler, OP_POP);
+            compiler->local_count = start_count;
+            break;
+        }
+        case STMT_FORALL: {
+            ForallStmt* f = &stmt->as.forall_stmt;
+            int start_count = compiler->local_count;
+            int array_slot = resolve_local(compiler, f->array_name, (int)strlen(f->array_name));
+            if (array_slot < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined variable '%s'", f->array_name);
+                error(compiler, msg);
+                return;
+            }
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)array_slot);
+            int tmp_array_slot = add_local(compiler, "__fa_array", 11, &type_unknown);
+            if (tmp_array_slot < 0) { error(compiler, "too many locals"); return; }
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)tmp_array_slot);
+            emit_constant(compiler, value_int(0));
+            int idx_slot = add_local(compiler, "__fa_idx", 9, &type_int);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_constant(compiler, value_int(0));
+            int var_slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)var_slot);
+            int loop_start = compiler->chunk->count;
+            if (!push_loop(compiler, loop_start, start_count, start_count + 3)) return;
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)tmp_array_slot);
+            int len_native = native_find("length");
+            emit_byte(compiler, OP_NATIVE_CALL);
+            emit_u16(compiler, (uint16_t)len_native);
+            emit_byte(compiler, 1);
+            emit_byte(compiler, OP_LT);
+            int exit_jump = emit_jump(compiler, OP_JZ);
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)tmp_array_slot);
+            emit_byte(compiler, OP_GET_LOCAL);
+            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_byte(compiler, OP_INDEX_GET);
+            emit_byte(compiler, OP_SET_LOCAL);
+            emit_byte(compiler, (uint8_t)var_slot);
+            emit_byte(compiler, OP_POP);
+            compile_stmt(compiler, f->sql_stmt);
             if (compiler->had_error) return;
             emit_byte(compiler, OP_GET_LOCAL);
             emit_byte(compiler, (uint8_t)idx_slot);
@@ -1365,8 +1438,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     return;
                 }
             }
-            int into_array = 0;
-            if (s->into_count == 1) {
+            int into_array = s->bulk_collect;
+            if (s->into_count == 1 && !into_array) {
                 Type* t = resolve_local_type(compiler, s->into_vars[0], (int)strlen(s->into_vars[0]));
                 if (t != NULL && t->kind == TYPE_ARRAY && t->element_type != NULL && t->element_type->kind == TYPE_ROW) {
                     into_array = 1;

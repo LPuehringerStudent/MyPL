@@ -298,6 +298,13 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint);
 static int is_native(const char* name) {
     return strcmp(name, "length") == 0 ||
            strcmp(name, "append") == 0 ||
+           strcmp(name, "delete") == 0 ||
+           strcmp(name, "first") == 0 ||
+           strcmp(name, "last") == 0 ||
+           strcmp(name, "next") == 0 ||
+           strcmp(name, "prior") == 0 ||
+           strcmp(name, "extend") == 0 ||
+           strcmp(name, "array_trim") == 0 ||
            strcmp(name, "println") == 0 ||
            strcmp(name, "print") == 0 ||
            strcmp(name, "read_line") == 0 ||
@@ -377,8 +384,8 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         Type* a = infer_expr(tc, args[0], NULL);
         if (a != &type_unknown && a != NULL &&
-            a->kind != TYPE_STRING && !type_is_array(a)) {
-            type_error(tc, loc, "length expects a string or array");
+            a->kind != TYPE_STRING && !type_is_array(a) && !type_is_map(a)) {
+            type_error(tc, loc, "length expects a string, array, or map");
         }
         return &type_int;
     }
@@ -395,6 +402,56 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* v = infer_expr(tc, args[1], a != NULL && type_is_array(a) ? a->element_type : NULL);
         if (a->element_type != NULL && v != NULL && !type_equals(a->element_type, v) && v != &type_unknown) {
             type_error(tc, loc, "append value type does not match array element type");
+        }
+        return a;
+    }
+    if (strcmp(name, "delete") == 0 ||
+        strcmp(name, "first") == 0 ||
+        strcmp(name, "last") == 0 ||
+        strcmp(name, "next") == 0 ||
+        strcmp(name, "prior") == 0) {
+        if (strcmp(name, "delete") == 0 || strcmp(name, "next") == 0 || strcmp(name, "prior") == 0) {
+            if (arg_count != 2) {
+                type_error(tc, loc, "%s expects 2 arguments", name);
+                return NULL;
+            }
+        } else {
+            if (arg_count != 1) {
+                type_error(tc, loc, "%s expects 1 argument", name);
+                return NULL;
+            }
+        }
+        Type* m = infer_expr(tc, args[0], NULL);
+        if (m != &type_unknown && m != NULL && !type_is_map(m)) {
+            type_error(tc, loc, "%s expects a map", name);
+            return &type_unknown;
+        }
+        if (arg_count == 2) {
+            Type* key_type = (m != NULL && type_is_map(m) && m->map_key_type != NULL) ? m->map_key_type : &type_unknown;
+            Type* k = infer_expr(tc, args[1], key_type);
+            if (m != NULL && type_is_map(m) && m->map_key_type != NULL &&
+                k != NULL && k != &type_unknown && !type_equals(m->map_key_type, k)) {
+                type_error(tc, loc, "%s key type does not match map key type", name);
+            }
+        }
+        if (m != NULL && type_is_map(m) && m->map_key_type != NULL) {
+            return m->map_key_type;
+        }
+        return &type_unknown;
+    }
+    if (strcmp(name, "extend") == 0 || strcmp(name, "array_trim") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "%s expects 2 arguments", name);
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && !type_is_array(a)) {
+            type_error(tc, loc, "%s expects an array", name);
+            return a;
+        }
+        Type* n = infer_expr(tc, args[1], NULL);
+        if (n != &type_unknown && n != NULL && n->kind != TYPE_INT) {
+            type_error(tc, loc, "%s expects an int count", name);
         }
         return a;
     }
@@ -1732,6 +1789,33 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 infer_expr(tc, s->params[i], NULL);
                 if (tc->had_error) return;
             }
+            break;
+        }
+        case STMT_FORALL: {
+            ForallStmt* f = &stmt->as.forall_stmt;
+            Type* array_type = resolve_local(tc, f->array_name);
+            if (array_type == NULL) {
+                type_error(tc, stmt->loc, "Undefined variable '%s'", f->array_name);
+                return;
+            }
+            if (array_type != &type_unknown && !type_is_array(array_type)) {
+                type_error(tc, stmt->loc, "FORALL requires an array variable");
+                return;
+            }
+            Type* element_type = (array_type != NULL && type_is_array(array_type))
+                                     ? array_type->element_type
+                                     : &type_unknown;
+            if (!push_scope(tc)) {
+                type_error(tc, stmt->loc, "too many nested scopes");
+                return;
+            }
+            if (!add_local(tc, f->var_name, element_type)) {
+                type_error(tc, stmt->loc, "too many local variables");
+                pop_scope(tc);
+                return;
+            }
+            check_stmt(tc, f->sql_stmt);
+            pop_scope(tc);
             break;
         }
         case STMT_SQL_QUERY: {

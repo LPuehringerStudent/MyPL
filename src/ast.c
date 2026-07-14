@@ -468,6 +468,11 @@ void free_stmt(Stmt* stmt) {
         case STMT_CURSOR_CLOSE:
             free(stmt->as.cursor_close.name);
             break;
+        case STMT_FORALL:
+            free(stmt->as.forall_stmt.var_name);
+            free(stmt->as.forall_stmt.array_name);
+            free_stmt(stmt->as.forall_stmt.sql_stmt);
+            break;
     }
     free(stmt);
 }
@@ -851,6 +856,7 @@ Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char*
     stmt->as.sql_stmt.param_count = param_count;
     stmt->as.sql_stmt.into_vars = into_vars;
     stmt->as.sql_stmt.into_count = into_count;
+    stmt->as.sql_stmt.bulk_collect = 0;
     return stmt;
 }
 
@@ -1093,4 +1099,29 @@ Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name) {
         return NULL;
     }
     return expr;
+}
+
+Stmt* create_forall_stmt(const char* var_name, const char* array_name, Stmt* sql_stmt) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) {
+        free_stmt(sql_stmt);
+        return NULL;
+    }
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_FORALL;
+    stmt->as.forall_stmt.var_name = copy_string(var_name);
+    if (stmt->as.forall_stmt.var_name == NULL && var_name != NULL) {
+        free_stmt(sql_stmt);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.forall_stmt.array_name = copy_string(array_name);
+    if (stmt->as.forall_stmt.array_name == NULL && array_name != NULL) {
+        free(stmt->as.forall_stmt.var_name);
+        free_stmt(sql_stmt);
+        free(stmt);
+        return NULL;
+    }
+    stmt->as.forall_stmt.sql_stmt = sql_stmt;
+    return stmt;
 }

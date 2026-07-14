@@ -1,0 +1,43 @@
+// Phase 6: Collections & Bulk Binds
+// Run with: ./bin/mypl --db :memory: examples/phase6.mypl
+
+proc main() -> int {
+    // Associative array (map) with string keys
+    map<string,int> scores;
+    scores["alice"] = 42;
+    scores["bob"] = 37;
+    scores["carol"] = 51;
+
+    print scores.first();
+    print scores.last();
+    print scores.next("alice");
+    scores.delete("bob");
+    print int_to_string(length(scores));
+
+    // Array with collection methods
+    array<int> ids;
+    ids.extend(4);
+    ids[0] = 10;
+    ids[1] = 20;
+    ids[2] = 30;
+    ids[3] = 40;
+    ids.trim(1);
+    print int_to_string(length(ids));
+
+    // Bulk bind setup
+    create table tasks (id int, worker string);
+
+    // FORALL: set-based insert driven by an array
+    forall i in ids insert into tasks (id, worker) values (?i, "team");
+
+    int total = 0;
+    select sum(id) into total from tasks;
+    print int_to_string(total);
+
+    // BULK COLLECT INTO: fetch many rows into an array<row>
+    array<row> rows;
+    select id, worker bulk collect into rows from tasks;
+    print int_to_string(length(rows));
+
+    return 0;
+}

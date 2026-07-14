@@ -137,6 +137,7 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'f':
             if (length == 4 && memcmp(lexer->start, "func", 4) == 0) return TOKEN_FUNC;
             if (length == 3 && memcmp(lexer->start, "for", 3) == 0) return TOKEN_FOR;
+            if (length == 6 && memcmp(lexer->start, "forall", 6) == 0) return TOKEN_FORALL;
             if (length == 4 && memcmp(lexer->start, "from", 4) == 0) return TOKEN_FROM;
             if (length == 5 && memcmp(lexer->start, "float", 5) == 0) return TOKEN_FLOAT_TYPE;
             if (length == 5 && memcmp(lexer->start, "false", 5) == 0) return TOKEN_FALSE;

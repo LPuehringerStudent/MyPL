@@ -89,7 +89,8 @@ typedef enum {
     STMT_CURSOR_FETCH,
     STMT_CURSOR_CLOSE,
     STMT_EXCEPTION_DECL,
-    STMT_RAISE
+    STMT_RAISE,
+    STMT_FORALL
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -257,6 +258,7 @@ typedef struct {
     int param_count;
     char** into_vars;
     int into_count;
+    int bulk_collect;
 } SqlStmt;
 
 typedef struct {
@@ -294,6 +296,12 @@ typedef struct {
 } RaiseStmt;
 
 typedef struct {
+    char* var_name;
+    char* array_name;
+    Stmt* sql_stmt;
+} ForallStmt;
+
+typedef struct {
     Block* try_block;
     char* catch_var;
     Block* catch_block;
@@ -325,6 +333,7 @@ struct Stmt {
         CursorCloseStmt cursor_close;
         ExceptionDeclStmt exception_decl;
         RaiseStmt raise_stmt;
+        ForallStmt forall_stmt;
     } as;
 };
 
@@ -454,6 +463,7 @@ Stmt* create_cursor_fetch_stmt(const char* name, char** into_vars, int into_coun
 Stmt* create_cursor_close_stmt(const char* name);
 Stmt* create_exception_decl_stmt(const char* name);
 Stmt* create_raise_stmt(const char* name);
+Stmt* create_forall_stmt(const char* var_name, const char* array_name, Stmt* sql_stmt);
 Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name);
 
 Expr* create_literal_expr(Value value);

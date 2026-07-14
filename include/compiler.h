@@ -168,6 +168,8 @@ int       array_append(ArrayObj* array, Value value);
 Value     array_get(ArrayObj* array, int index);
 void      array_set(ArrayObj* array, int index, Value value);
 int       array_length(ArrayObj* array);
+int       array_extend(ArrayObj* array, int count);
+int       array_trim(ArrayObj* array, int count);
 void      array_pool_free_all(void);
 
 MapObj*   map_new(void);

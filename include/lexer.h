@@ -33,6 +33,7 @@ typedef enum {
     TOKEN_END,
     TOKEN_EXCEPTION,
     TOKEN_RAISE,
+    TOKEN_FORALL,
     TOKEN_SQLCODE,
     TOKEN_SQLERRM,
 
