@@ -78,6 +78,16 @@ static int match(Parser* parser, TokenType type) {
     return 1;
 }
 
+static int is_collection_method_name(const char* name) {
+    return strcmp(name, "delete") == 0 ||
+           strcmp(name, "first") == 0 ||
+           strcmp(name, "last") == 0 ||
+           strcmp(name, "next") == 0 ||
+           strcmp(name, "prior") == 0 ||
+           strcmp(name, "extend") == 0 ||
+           strcmp(name, "trim") == 0;
+}
+
 static char* copy_token_lexeme(const Token* token) {
     char* lexeme = malloc((size_t)token->length + 1);
     memcpy(lexeme, token->start, (size_t)token->length);
@@ -128,7 +138,9 @@ static int ascii_case_eq(char a, char b) {
 
 static const char* find_word(const char* s, const char* word) {
     size_t len = strlen(word);
-    for (const char* p = s; *p != '\0'; p++) {
+    size_t s_len = strlen(s);
+    if (len == 0 || len > s_len) return NULL;
+    for (const char* p = s; p <= s + s_len - len; p++) {
         if ((p == s || !is_word_char(p[-1])) && !is_word_char(p[len])) {
             int match = 1;
             for (size_t i = 0; i < len; i++) {
@@ -277,7 +289,23 @@ static Stmt* sql_statement(Parser* parser, int kind) {
                 if (p < list_end) p++; /* skip comma */
             }
 
+            int bulk_collect = 0;
+            const char* bulk_pos = find_word(sql, "bulk");
+            if (bulk_pos != NULL && bulk_pos < into_pos) {
+                const char* collect_pos = bulk_pos + 4;
+                while (*collect_pos != '\0' && isspace((unsigned char)*collect_pos)) collect_pos++;
+                if (strncmp(collect_pos, "collect", 7) == 0 || strncmp(collect_pos, "COLLECT", 7) == 0) {
+                    bulk_collect = 1;
+                }
+            }
+
             int prefix_len = (int)(into_pos - sql);
+            if (bulk_collect) {
+                /* Trim "bulk collect" and trailing whitespace from prefix. */
+                const char* prefix_end = bulk_pos;
+                while (prefix_end > sql && isspace((unsigned char)prefix_end[-1])) prefix_end--;
+                prefix_len = (int)(prefix_end - sql);
+            }
             int suffix_len = (int)strlen(from_pos);
             int new_len = prefix_len + 5 + suffix_len; /* " FROM " + suffix, but keep one space before FROM */
             final_sql = malloc((size_t)new_len + 1);
@@ -296,6 +324,24 @@ static Stmt* sql_statement(Parser* parser, int kind) {
             final_sql[prefix_len] = ' ';
             memcpy(final_sql + prefix_len + 1, from_pos, (size_t)suffix_len);
             final_sql[prefix_len + 1 + suffix_len] = '\0';
+
+            Stmt* stmt = create_sql_stmt(kind, final_sql, params, param_count, into_vars, into_count);
+            if (stmt != NULL) {
+                stmt->as.sql_stmt.bulk_collect = bulk_collect;
+                stmt->loc.line = start_token.line;
+                stmt->loc.column = start_token.column;
+            }
+            if (final_sql != sql) free(final_sql);
+            free(sql);
+            if (stmt == NULL) {
+                for (int i = 0; i < param_count; i++) free_expr(params[i]);
+                free(params);
+                for (int i = 0; i < into_count; i++) free(into_vars[i]);
+                free(into_vars);
+                return NULL;
+            }
+            advance(parser); /* consume ; */
+            return stmt;
         }
     }
 
@@ -548,34 +594,68 @@ static Expr* field(Parser* parser, Expr* left) {
     advance(parser); /* field name */
     char* field_name = copy_token_lexeme(&parser->previous);
 
-    if (check(parser, TOKEN_LPAREN) && left->kind == EXPR_VARIABLE) {
-        /* Qualified package call: pkg.member(...) */
-        advance(parser); /* ( */
-        Expr** args = NULL;
-        int arg_count = 0;
-        if (!check(parser, TOKEN_RPAREN)) {
-            do {
-                Expr** new_args = realloc(args, sizeof(Expr*) * (size_t)(arg_count + 1));
-                if (new_args == NULL) {
-                    for (int i = 0; i < arg_count; i++) free_expr(args[i]);
-                    free(args);
-                    free(field_name);
-                    free_expr(left);
-                    return NULL;
-                }
-                args = new_args;
-                args[arg_count++] = expression(parser);
-            } while (match(parser, TOKEN_COMMA));
-        }
-        advance(parser); /* ) */
-        Expr* expr = create_qualified_call_expr(left->as.variable.name, field_name, args, arg_count);
-        free(field_name);
-        free_expr(left);
-        if (expr != NULL) {
+    if (check(parser, TOKEN_LPAREN)) {
+        if (is_collection_method_name(field_name)) {
+            /* Collection method call: receiver.method(args) -> method(receiver, args) */
+            advance(parser); /* ( */
+            Expr** args = malloc(sizeof(Expr*));
+            int arg_count = 0;
+            if (args == NULL) {
+                free(field_name);
+                free_expr(left);
+                return NULL;
+            }
+            args[arg_count++] = left;
+            if (!check(parser, TOKEN_RPAREN)) {
+                do {
+                    Expr** new_args = realloc(args, sizeof(Expr*) * (size_t)(arg_count + 1));
+                    if (new_args == NULL) {
+                        for (int i = 0; i < arg_count; i++) free_expr(args[i]);
+                        free(args);
+                        free(field_name);
+                        return NULL;
+                    }
+                    args = new_args;
+                    args[arg_count++] = expression(parser);
+                } while (match(parser, TOKEN_COMMA));
+            }
+            advance(parser); /* ) */
+            const char* call_name = strcmp(field_name, "trim") == 0 ? "array_trim" : field_name;
+            Expr* expr = create_call_expr(call_name, args, arg_count);
+            free(field_name);
             expr->loc.line = parser->previous.line;
             expr->loc.column = parser->previous.column;
+            return expr;
         }
-        return expr;
+        if (left->kind == EXPR_VARIABLE) {
+            /* Qualified package call: pkg.member(...) */
+            advance(parser); /* ( */
+            Expr** args = NULL;
+            int arg_count = 0;
+            if (!check(parser, TOKEN_RPAREN)) {
+                do {
+                    Expr** new_args = realloc(args, sizeof(Expr*) * (size_t)(arg_count + 1));
+                    if (new_args == NULL) {
+                        for (int i = 0; i < arg_count; i++) free_expr(args[i]);
+                        free(args);
+                        free(field_name);
+                        free_expr(left);
+                        return NULL;
+                    }
+                    args = new_args;
+                    args[arg_count++] = expression(parser);
+                } while (match(parser, TOKEN_COMMA));
+            }
+            advance(parser); /* ) */
+            Expr* expr = create_qualified_call_expr(left->as.variable.name, field_name, args, arg_count);
+            free(field_name);
+            free_expr(left);
+            if (expr != NULL) {
+                expr->loc.line = parser->previous.line;
+                expr->loc.column = parser->previous.column;
+            }
+            return expr;
+        }
     }
 
     Expr* expr;
@@ -810,7 +890,8 @@ static Stmt* assignment(Parser* parser) {
 
     if (check(parser, TOKEN_DOT)) {
         advance(parser); /* . */
-        if (!check(parser, TOKEN_IDENT)) {
+        int method_name_token = parser->current.type;
+        if (method_name_token != TOKEN_IDENT && method_name_token != TOKEN_DELETE) {
             error_at_current(parser, "expected field or member name after '.'");
             free(name);
             return NULL;
@@ -819,17 +900,52 @@ static Stmt* assignment(Parser* parser) {
         char* field_name = copy_token_lexeme(&parser->previous);
         Stmt* stmt = NULL;
         if (check(parser, TOKEN_LPAREN)) {
-            advance(parser); /* ( */
-            Expr* left = create_variable_expr(name);
-            Expr* call_expr = call(parser, left);
-            if (call_expr != NULL && call_expr->kind == EXPR_CALL) {
-                free(call_expr->as.call.package_name);
-                call_expr->as.call.package_name = name;
-                call_expr->as.call.name = field_name;
-                stmt = create_expr_stmt(call_expr);
-            } else {
-                free_expr(call_expr);
+            if (is_collection_method_name(field_name)) {
+                /* Collection method statement: receiver.method(args); */
+                advance(parser); /* ( */
+                Expr** args = malloc(sizeof(Expr*));
+                int arg_count = 0;
+                if (args == NULL) {
+                    free(field_name);
+                    free(name);
+                    return NULL;
+                }
+                args[arg_count++] = create_variable_expr(name);
+                if (!check(parser, TOKEN_RPAREN)) {
+                    do {
+                        Expr** new_args = realloc(args, sizeof(Expr*) * (size_t)(arg_count + 1));
+                        if (new_args == NULL) {
+                            for (int i = 0; i < arg_count; i++) free_expr(args[i]);
+                            free(args);
+                            free(field_name);
+                            free(name);
+                            return NULL;
+                        }
+                        args = new_args;
+                        args[arg_count++] = expression(parser);
+                    } while (match(parser, TOKEN_COMMA));
+                }
+                advance(parser); /* ) */
+                const char* call_name = strcmp(field_name, "trim") == 0 ? "array_trim" : field_name;
+                Expr* call_expr = create_call_expr(call_name, args, arg_count);
                 free(field_name);
+                call_expr->loc.line = parser->previous.line;
+                call_expr->loc.column = parser->previous.column;
+                stmt = create_expr_stmt(call_expr);
+                free(name);
+            } else {
+                advance(parser); /* ( */
+                Expr* left = create_variable_expr(name);
+                Expr* call_expr = call(parser, left);
+                if (call_expr != NULL && call_expr->kind == EXPR_CALL) {
+                    free(call_expr->as.call.package_name);
+                    call_expr->as.call.package_name = name;
+                    call_expr->as.call.name = field_name;
+                    stmt = create_expr_stmt(call_expr);
+                } else {
+                    free_expr(call_expr);
+                    free(field_name);
+                }
             }
         } else {
             Expr* left = create_variable_expr(name);
@@ -1389,6 +1505,55 @@ static Stmt* for_statement(Parser* parser) {
     return stmt;
 }
 
+static Stmt* forall_statement(Parser* parser) {
+    Token kw = parser->previous;  /* 'forall' was just consumed */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected iterator variable after 'forall'");
+        return NULL;
+    }
+    advance(parser); /* iterator name */
+    char* var_name = copy_token_lexeme(&parser->previous);
+    if (!match(parser, TOKEN_IN)) {
+        free(var_name);
+        error_at_current(parser, "expected 'in' after iterator variable");
+        return NULL;
+    }
+    if (!check(parser, TOKEN_IDENT)) {
+        free(var_name);
+        error_at_current(parser, "expected array variable after 'in'");
+        return NULL;
+    }
+    advance(parser); /* array name */
+    char* array_name = copy_token_lexeme(&parser->previous);
+
+    Stmt* sql_stmt = NULL;
+    if (match(parser, TOKEN_INSERT)) {
+        sql_stmt = sql_statement(parser, STMT_SQL_DML);
+    } else if (match(parser, TOKEN_UPDATE)) {
+        sql_stmt = sql_statement(parser, STMT_SQL_DML);
+    } else if (match(parser, TOKEN_DELETE)) {
+        sql_stmt = sql_statement(parser, STMT_SQL_DML);
+    } else {
+        free(var_name);
+        free(array_name);
+        error_at_current(parser, "expected INSERT, UPDATE, or DELETE after 'forall ... in ...'");
+        return NULL;
+    }
+    if (sql_stmt == NULL) {
+        free(var_name);
+        free(array_name);
+        return NULL;
+    }
+    Stmt* stmt = create_forall_stmt(var_name, array_name, sql_stmt);
+    free(var_name);
+    free(array_name);
+    if (stmt != NULL) {
+        stmt->loc.line = kw.line;
+        stmt->loc.column = kw.column;
+    }
+    return stmt;
+}
+
 static Stmt* return_statement(Parser* parser) {
     /* 'return' was already consumed by the statement dispatcher */
     int kw_line = parser->previous.line;
@@ -1707,6 +1872,7 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_WHILE)) return while_statement(parser);
     if (match(parser, TOKEN_DO)) return do_while_statement(parser);
     if (match(parser, TOKEN_FOR)) return for_statement(parser);
+    if (match(parser, TOKEN_FORALL)) return forall_statement(parser);
     if (match(parser, TOKEN_BREAK)) return break_statement(parser);
     if (match(parser, TOKEN_CONTINUE)) return continue_statement(parser);
     if (match(parser, TOKEN_TRY)) return try_statement(parser);

@@ -524,6 +524,24 @@ int array_length(ArrayObj* array) {
     return array->count;
 }
 
+int array_extend(ArrayObj* array, int count) {
+    if (array == NULL || count < 0) return 0;
+    for (int i = 0; i < count; i++) {
+        if (!array_append(array, value_int(0))) return 0;
+    }
+    return 1;
+}
+
+int array_trim(ArrayObj* array, int count) {
+    if (array == NULL || count < 0) return 0;
+    if (count > array->count) count = array->count;
+    for (int i = array->count - count; i < array->count; i++) {
+        value_release(array->items[i]);
+    }
+    array->count -= count;
+    return 1;
+}
+
 static int values_equal_values(Value a, Value b) {
     if (a.type != b.type) return 0;
     switch (a.type) {

@@ -33,12 +33,12 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 | **Packages** | Spec/body with sidecar persistence | Full schema-stored packages, overloading, `AUTHID` | Persist package source and state in the database catalog; add `AUTHID CURRENT_USER`/`DEFINER` | ✅ Spec/body/state done; catalog persistence next |
 | **Parameter modes** | `IN`, `OUT`, `IN OUT` | Same set plus `NOCOPY` | Add `NOCOPY` hint for large parameters | ✅ IN/OUT/IN OUT done |
 | **Cursors** | Explicit cursor variables | `REF CURSOR`, cursor variables as parameters, dynamic `OPEN FOR` | Add `REF CURSOR`-like cursor variables and `OPEN cursor FOR query` | ✅ Explicit cursors done; REF CURSOR next |
-| **Collections** | `array<T>`, `map<string,T>` | Associative arrays, nested tables, `VARRAY`s, collection methods | Add associative arrays and standard collection methods (`EXTEND`, `TRIM`, `DELETE`, `FIRST`/`LAST`/`NEXT`/`PRIOR`) | 🔲 Not started |
+| **Collections** | `array<T>`, `map<string,T>` | Associative arrays, nested tables, `VARRAY`s, collection methods | Add associative arrays and standard collection methods (`EXTEND`, `TRIM`, `DELETE`, `FIRST`/`LAST`/`NEXT`/`PRIOR`) | ✅ Done |
 | **Types** | Basic types and structs | `%TYPE`, `%ROWTYPE`, records, subtypes, `DATE`/`TIMESTAMP` | Add `%TYPE`/`%ROWTYPE`, a `date`/`timestamp` type, and user-defined subtypes | 🔲 Not started |
 | **Control flow** | `case` statement/expression | Labeled blocks, `GOTO` | Add labeled blocks and `GOTO` for parity with legacy PL/SQL | ✅ `case` done; labeled blocks/GOTO next |
 | **Blocks** | Anonymous blocks supported | Same | — | ✅ Done |
-| **Exceptions** | Generic `try/catch` with message string | Named predefined/user-defined exceptions, `RAISE`, `RAISE_APPLICATION_ERROR`, `SQLCODE`/`SQLERRM` | Add named exceptions, `raise`, `raise_application_error`, and `sqlcode`/`sqlerrm` | 🔲 Not started |
-| **Bulk binds** | Row-by-row loops | `BULK COLLECT INTO`, `FORALL` for set-based DML | Implement bulk-bind opcodes for performance | 🔲 Not started |
+| **Exceptions** | Generic `try/catch` with message string | Named predefined/user-defined exceptions, `RAISE`, `RAISE_APPLICATION_ERROR`, `SQLCODE`/`SQLERRM` | Add named exceptions, `raise`, `raise_application_error`, and `sqlcode`/`sqlerrm` | ✅ Done |
+| **Bulk binds** | Row-by-row loops | `BULK COLLECT INTO`, `FORALL` for set-based DML | Implement bulk-bind opcodes for performance | ✅ Done |
 | **Triggers** | None | DML/DDL/system triggers, row/statement level, `BEFORE`/`AFTER`/`INSTEAD OF` | Add database triggers | 🔲 Not started |
 | **Stored code** | Source files compiled at runtime | Schema-stored procedures/functions/packages compiled into the DB | Persist MyPL program units in the database catalog | 🔲 Not started |
 | **Built-in packages** | Custom natives | `DBMS_OUTPUT`, `UTL_FILE`, `DBMS_SQL`, `DBMS_SCHEDULER`, etc. | Grow MyPL's standard library into named packages (`dbms_output`, `utl_file`, etc.) | 🔲 Not started |
@@ -74,17 +74,17 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 - [x] Package state and sidecar persistence
 - [x] `tests/test_phase4.c` and `examples/phase4.mypl`
 
-### Phase 5 — Exception Model & Named Errors
+### Phase 5 — Exception Model & Named Errors ✅
 - [x] Named predefined exceptions
 - [x] User-defined exceptions
 - [x] `raise` and `raise_application_error`
 - [x] `sqlcode` and `sqlerrm`
 
-### Phase 6 — Collections & Bulk Binds
-- [ ] Associative arrays
-- [ ] Collection methods: `EXTEND`, `TRIM`, `DELETE`, `FIRST`, `LAST`, `NEXT`, `PRIOR`
-- [ ] `BULK COLLECT INTO`
-- [ ] `FORALL`
+### Phase 6 — Collections & Bulk Binds ✅
+- [x] Associative arrays
+- [x] Collection methods: `EXTEND`, `TRIM`, `DELETE`, `FIRST`, `LAST`, `NEXT`, `PRIOR`
+- [x] `BULK COLLECT INTO`
+- [x] `FORALL`
 
 ### Phase 7 — Type System Enhancements
 - [ ] `%TYPE` and `%ROWTYPE`

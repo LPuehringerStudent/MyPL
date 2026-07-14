@@ -30,7 +30,11 @@ static int native_length(VM* vm, int argc, Value* argv, Value* out) {
         *out = value_int((int)strlen(s));
         return 1;
     }
-    vm_set_error(vm, "length expects a string or array");
+    if (argv[0].type == VAL_MAP) {
+        *out = value_int(map_count(argv[0].as.as_map));
+        return 1;
+    }
+    vm_set_error(vm, "length expects a string, array, or map");
     return 0;
 }
 
@@ -44,6 +48,129 @@ static int native_append(VM* vm, int argc, Value* argv, Value* out) {
         vm_set_error(vm, "Out of memory");
         return 0;
     }
+    value_retain(argv[0]);
+    *out = argv[0];
+    return 1;
+}
+
+static int native_delete(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_MAP) {
+        vm_set_error(vm, "delete expects a map");
+        return 0;
+    }
+    if (argv[1].type != VAL_INT && argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "delete expects an int or string key");
+        return 0;
+    }
+    map_delete(argv[0].as.as_map, argv[1]);
+    value_retain(argv[0]);
+    *out = argv[0];
+    return 1;
+}
+
+static int native_first(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_MAP) {
+        vm_set_error(vm, "first expects a map");
+        return 0;
+    }
+    MapObj* map = argv[0].as.as_map;
+    Value key;
+    if (map_first_key(map, &key)) {
+        *out = key;
+        return 1;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_last(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_MAP) {
+        vm_set_error(vm, "last expects a map");
+        return 0;
+    }
+    MapObj* map = argv[0].as.as_map;
+    Value key;
+    if (map_last_key(map, &key)) {
+        *out = key;
+        return 1;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_next(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_MAP) {
+        vm_set_error(vm, "next expects a map");
+        return 0;
+    }
+    if (argv[1].type != VAL_INT && argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "next expects an int or string key");
+        return 0;
+    }
+    MapObj* map = argv[0].as.as_map;
+    Value key;
+    if (map_next_key(map, argv[1], &key)) {
+        *out = key;
+        return 1;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_prior(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_MAP) {
+        vm_set_error(vm, "prior expects a map");
+        return 0;
+    }
+    if (argv[1].type != VAL_INT && argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "prior expects an int or string key");
+        return 0;
+    }
+    MapObj* map = argv[0].as.as_map;
+    Value key;
+    if (map_prior_key(map, argv[1], &key)) {
+        *out = key;
+        return 1;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_extend(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY) {
+        vm_set_error(vm, "extend expects an array");
+        return 0;
+    }
+    if (argv[1].type != VAL_INT) {
+        vm_set_error(vm, "extend expects an int count");
+        return 0;
+    }
+    if (!array_extend(argv[0].as.as_array, argv[1].as.as_int)) {
+        vm_set_error(vm, "Out of memory");
+        return 0;
+    }
+    value_retain(argv[0]);
+    *out = argv[0];
+    return 1;
+}
+
+static int native_array_trim(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    if (argv[0].type != VAL_ARRAY) {
+        vm_set_error(vm, "array_trim expects an array");
+        return 0;
+    }
+    if (argv[1].type != VAL_INT) {
+        vm_set_error(vm, "array_trim expects an int count");
+        return 0;
+    }
+    array_trim(argv[0].as.as_array, argv[1].as.as_int);
     value_retain(argv[0]);
     *out = argv[0];
     return 1;
@@ -1563,6 +1690,13 @@ static int native_pad_end(VM* vm, int argc, Value* argv, Value* out) {
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
+    {"delete",  2, native_delete},
+    {"first",   1, native_first},
+    {"last",    1, native_last},
+    {"next",    2, native_next},
+    {"prior",   2, native_prior},
+    {"extend",  2, native_extend},
+    {"array_trim", 2, native_array_trim},
     {"println", 1, native_println},
     {"print",   1, native_print},
     {"read_line", 0, native_read_line},
