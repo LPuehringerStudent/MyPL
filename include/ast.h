@@ -102,7 +102,8 @@ typedef enum {
     STMT_EXCEPTION_DECL,
     STMT_RAISE,
     STMT_SUBTYPE_DECL,
-    STMT_FORALL
+    STMT_FORALL,
+    STMT_PRAGMA
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -133,6 +134,8 @@ typedef struct {
     Type* return_type;
     Block* body;
     int is_function;  /* 1 = function (may be used in SQL expressions), 0 = procedure */
+    char* authid;
+    int autonomous_transaction;
 } ProcDecl;
 
 typedef struct {
@@ -148,6 +151,7 @@ typedef struct {
 
 typedef struct {
     char* name;
+    char* authid;
     Stmt** vars;
     int var_count;
     int var_capacity;
@@ -161,6 +165,7 @@ typedef struct {
 
 typedef struct {
     char* name;
+    char* authid;
     Stmt** vars;
     int var_count;
     int var_capacity;
@@ -280,7 +285,8 @@ typedef struct {
 } SqlStmt;
 
 typedef struct {
-    int kind; /* 0=begin, 1=commit, 2=rollback */
+    int kind; /* 0=begin, 1=commit, 2=rollback, 3=savepoint, 4=rollback_to, 5=release */
+    char* name;
 } SqlTransactionStmt;
 
 typedef struct {
@@ -325,6 +331,10 @@ typedef struct {
 } ForallStmt;
 
 typedef struct {
+    char* name;
+} PragmaStmt;
+
+typedef struct {
     Block* try_block;
     char* catch_var;
     Block* catch_block;
@@ -359,6 +369,7 @@ struct Stmt {
         RaiseStmt raise_stmt;
         SubtypeDeclStmt subtype_decl;
         ForallStmt forall_stmt;
+        PragmaStmt pragma;
     } as;
 };
 
@@ -459,6 +470,7 @@ void free_expr(Expr* expr);
 void free_stmt(Stmt* stmt);
 void free_package_spec(PackageSpecDecl* spec);
 void free_package_body(PackageBodyDecl* body);
+void free_proc_decl(ProcDecl* proc);
 
 ProcDecl* create_proc_decl(const char* name, Type* return_type);
 
@@ -480,7 +492,7 @@ Stmt* create_expr_stmt(Expr* value);
 Stmt* create_cfor_stmt(Stmt* init, Expr* condition, Stmt* step, Block* body);
 Stmt* create_import_stmt(const char* path);
 Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char** into_vars, int into_count);
-Stmt* create_sql_transaction_stmt(int kind);
+Stmt* create_sql_transaction_stmt(int kind, const char* name);
 Stmt* create_try_catch_stmt(Block* try_block, const char* catch_var, Block* catch_block);
 Stmt* create_case_stmt(Expr* selector, Expr** values, Block** blocks, int branch_count, Block* else_block);
 Stmt* create_cursor_decl_stmt(const char* name, char* sql_query);
@@ -491,6 +503,7 @@ Stmt* create_exception_decl_stmt(const char* name);
 Stmt* create_raise_stmt(const char* name);
 Stmt* create_subtype_decl_stmt(const char* name, Type* base_type);
 Stmt* create_forall_stmt(const char* var_name, const char* array_name, Stmt* sql_stmt);
+Stmt* create_pragma_stmt(const char* name);
 Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name);
 
 Expr* create_literal_expr(Value value);

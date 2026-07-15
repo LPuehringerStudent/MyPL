@@ -47,6 +47,7 @@ typedef struct {
     Type** param_types;
     ParamMode* param_modes;
     int param_count;
+    int autonomous_transaction;
 } ProcEntry;
 
 typedef struct {
@@ -95,6 +96,7 @@ typedef struct {
     int global_count;
     const char* current_package;
     int entry_jump_patch;
+    int current_proc_autonomous;
     ExceptionEntry exceptions[MAX_EXCEPTIONS];
     int exception_count;
 } Compiler;
@@ -142,6 +144,7 @@ static int add_proc_entry(Compiler* compiler, const char* name, int offset,
     compiler->procs[compiler->proc_count].param_types = pt_copy;
     compiler->procs[compiler->proc_count].param_modes = pm_copy;
     compiler->procs[compiler->proc_count].param_count = param_count;
+    compiler->procs[compiler->proc_count].autonomous_transaction = 0;
     return compiler->proc_count++;
 }
 
@@ -411,8 +414,9 @@ static void patch_call(Chunk* chunk, int offset, int target) {
 }
 
 static void emit_call(Compiler* compiler, const char* name, int arg_count) {
-    emit_byte(compiler, OP_CALL);
     int idx = find_proc(compiler, name);
+    int autonomous = (idx >= 0 && compiler->procs[idx].autonomous_transaction);
+    emit_byte(compiler, autonomous ? OP_CALL_AUTONOMOUS : OP_CALL);
     if (idx >= 0 && compiler->procs[idx].offset >= 0) {
         emit_u16(compiler, (uint16_t)compiler->procs[idx].offset);
     } else {
@@ -621,7 +625,8 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 }
 
                 if (out_count > 0) {
-                    emit_byte(compiler, OP_CALL_OUT);
+                    int autonomous = (proc_idx >= 0 && compiler->procs[proc_idx].autonomous_transaction);
+                    emit_byte(compiler, autonomous ? OP_CALL_OUT_AUTONOMOUS : OP_CALL_OUT);
                     if (proc_idx >= 0 && compiler->procs[proc_idx].offset >= 0) {
                         emit_u16(compiler, (uint16_t)compiler->procs[proc_idx].offset);
                     } else {
@@ -1217,8 +1222,29 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 emit_byte(compiler, OP_SQL_BEGIN);
             } else if (kind == 1) {
                 emit_byte(compiler, OP_SQL_COMMIT);
-            } else {
+            } else if (kind == 2) {
                 emit_byte(compiler, OP_SQL_ROLLBACK);
+            } else {
+                char* name = malloc(strlen(stmt->as.sql_transaction.name) + 1);
+                if (name == NULL) {
+                    error(compiler, "out of memory");
+                    return;
+                }
+                strcpy(name, stmt->as.sql_transaction.name);
+                int idx = add_constant(compiler->chunk, value_string(name));
+                if (idx < 0) {
+                    free(name);
+                    error(compiler, "too many constants");
+                    return;
+                }
+                if (kind == 3) {
+                    emit_byte(compiler, OP_SQL_SAVEPOINT);
+                } else if (kind == 4) {
+                    emit_byte(compiler, OP_SQL_ROLLBACK_TO);
+                } else {
+                    emit_byte(compiler, OP_SQL_RELEASE_SAVEPOINT);
+                }
+                emit_u16(compiler, (uint16_t)idx);
             }
             break;
         }
@@ -1555,6 +1581,12 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_SUBTYPE_DECL:
             /* No runtime code; subtype information is resolved during type checking. */
             break;
+        case STMT_PRAGMA:
+            if (stmt->as.pragma.name != NULL &&
+                strcmp(stmt->as.pragma.name, "autonomous_transaction") == 0) {
+                compiler->current_proc_autonomous = 1;
+            }
+            break;
         default:
             error(compiler, "unsupported statement");
             break;
@@ -1755,11 +1787,13 @@ static void compile_package_members(Compiler* compiler, Program* program) {
             int idx = find_proc(compiler, mangled);
             free(mangled);
             if (idx < 0) continue;
+            compiler->current_proc_autonomous = 0;
             compiler->procs[idx].offset = compiler->chunk->count;
             for (int p = 0; p < proc->param_count; p++) {
                 add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name), proc->params[p].type);
             }
             compile_block(compiler, proc->body);
+            compiler->procs[idx].autonomous_transaction = compiler->current_proc_autonomous;
             if (compiler->had_error) { compiler->current_package = saved_package; return; }
             emit_byte(compiler, OP_RETURN);
             compiler->local_count = 0;
@@ -1773,11 +1807,13 @@ static void compile_package_members(Compiler* compiler, Program* program) {
             int idx = find_proc(compiler, mangled);
             free(mangled);
             if (idx < 0) continue;
+            compiler->current_proc_autonomous = 0;
             compiler->procs[idx].offset = compiler->chunk->count;
             for (int p = 0; p < proc->param_count; p++) {
                 add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name), proc->params[p].type);
             }
             compile_block(compiler, proc->body);
+            compiler->procs[idx].autonomous_transaction = compiler->current_proc_autonomous;
             if (compiler->had_error) { compiler->current_package = saved_package; return; }
             emit_byte(compiler, OP_RETURN);
             compiler->local_count = 0;
@@ -1906,11 +1942,13 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
         int idx = find_proc(compiler, proc->name);
+        compiler->current_proc_autonomous = 0;
         compiler->procs[idx].offset = compiler->chunk->count;
         for (int p = 0; p < proc->param_count; p++) {
             add_local(compiler, proc->params[p].name, (int)strlen(proc->params[p].name), proc->params[p].type);
         }
         compile_block(compiler, proc->body);
+        compiler->procs[idx].autonomous_transaction = compiler->current_proc_autonomous;
         if (compiler->had_error) {
             if (error != NULL && error_size > 0) {
                 strncpy(error, compiler->error_message, error_size - 1);
@@ -1987,6 +2025,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.global_count = 0;
     compiler.current_package = NULL;
     compiler.entry_jump_patch = -1;
+    compiler.current_proc_autonomous = 0;
     compiler.cursor_query_count = 0;
     compiler.exception_count = 0;
     add_exception(&compiler, "no_data_found", 100);
@@ -2032,6 +2071,16 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
             return 0;
         }
         patch_call(chunk, compiler.patches[i].offset, compiler.procs[idx].offset);
+        if (compiler.procs[idx].autonomous_transaction) {
+            int op_offset = compiler.patches[i].offset - 1;
+            if (op_offset >= 0 && op_offset < chunk->count) {
+                if (chunk->code[op_offset] == OP_CALL) {
+                    chunk->code[op_offset] = OP_CALL_AUTONOMOUS;
+                } else if (chunk->code[op_offset] == OP_CALL_OUT) {
+                    chunk->code[op_offset] = OP_CALL_OUT_AUTONOMOUS;
+                }
+            }
+        }
     }
 
     free_exception_entries(&compiler);

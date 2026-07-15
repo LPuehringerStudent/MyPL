@@ -312,16 +312,11 @@ void vm_set_driver(VM* vm, DBDriver* driver) {
     vm->driver = driver;
 }
 
-InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
-    vm->chunk = chunk;
-    vm->ip = chunk->code;
-    vm->error_message[0] = '\0';
-    vm->sql_rowcount = 0;
-    vm->try_count = 0;
-    vm->local_count = 0;
-    vm->repl_local_count = 0;
-    uint8_t* end = chunk->code + chunk->count;
+static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
+                              int out_count, int* out_positions, int* out_slots,
+                              Value* out_result);
 
+static InterpretResult vm_run(VM* vm, uint8_t* end) {
     for (;;) {
 dispatch:
         if (vm->ip >= end) {
@@ -639,6 +634,40 @@ dispatch:
                 vm->ip = vm->chunk->code + target;
                 break;
             }
+            case OP_CALL_AUTONOMOUS: {
+                if (vm->ip + 3 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t target = read_u16(vm->ip);
+                vm->ip += 2;
+                uint8_t arg_count = *vm->ip++;
+                if (arg_count > (size_t)(vm->stack_top - vm->frame_base)) {
+                    set_runtime_error(vm, "Invalid argument count");
+                    THROW(vm);
+                }
+                Value result;
+                int auto_result = vm_call_autonomous(vm, target, arg_count, 0, NULL, NULL, &result);
+                if (auto_result == 1) {
+                    for (int i = 0; i < arg_count; i++) {
+                        Value dummy;
+                        pop(vm, &dummy);
+                        value_release(dummy);
+                    }
+                    if (!push(vm, result)) {
+                        value_release(result);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                } else if (auto_result == -1) {
+                    if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                    vm->out_frames[vm->frame_count].out_count = 0;
+                    vm->return_ips[vm->frame_count] = vm->ip;
+                    vm->frames[vm->frame_count] = vm->frame_base;
+                    vm->frame_count++;
+                    vm->frame_base = vm->stack_top - arg_count;
+                    vm->ip = vm->chunk->code + target;
+                } else {
+                    THROW(vm);
+                }
+                break;
+            }
             case OP_CALL_OUT: {
                 if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t target = read_u16(vm->ip);
@@ -667,6 +696,60 @@ dispatch:
                 vm->frame_count++;
                 vm->frame_base = vm->stack_top - arg_count;
                 vm->ip = vm->chunk->code + target;
+                break;
+            }
+            case OP_CALL_OUT_AUTONOMOUS: {
+                if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t target = read_u16(vm->ip);
+                vm->ip += 2;
+                uint8_t arg_count = *vm->ip++;
+                uint8_t out_count = *vm->ip++;
+                if (target > (uint16_t)vm->chunk->count) return INTERPRET_RUNTIME_ERROR;
+                if (arg_count > (size_t)(vm->stack_top - vm->frame_base)) {
+                    set_runtime_error(vm, "Invalid argument count");
+                    THROW(vm);
+                }
+                if (out_count > MAX_OUT_PARAMS) {
+                    set_runtime_error(vm, "Too many OUT/IN OUT parameters");
+                    THROW(vm);
+                }
+                if (vm->ip + out_count * 2 > end) return INTERPRET_RUNTIME_ERROR;
+                int out_positions[MAX_OUT_PARAMS];
+                int out_slots[MAX_OUT_PARAMS];
+                for (int i = 0; i < out_count; i++) {
+                    out_positions[i] = *vm->ip++;
+                    out_slots[i] = *vm->ip++;
+                }
+                Value result;
+                int auto_result = vm_call_autonomous(vm, target, arg_count,
+                                                     (int)out_count, out_positions, out_slots,
+                                                     &result);
+                if (auto_result == 1) {
+                    for (int i = 0; i < arg_count; i++) {
+                        Value dummy;
+                        pop(vm, &dummy);
+                        value_release(dummy);
+                    }
+                    if (!push(vm, result)) {
+                        value_release(result);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                } else if (auto_result == -1) {
+                    if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                    OutParamFrame* out_frame = &vm->out_frames[vm->frame_count];
+                    out_frame->out_count = (int)out_count;
+                    for (int i = 0; i < out_count; i++) {
+                        out_frame->out_positions[i] = out_positions[i];
+                        out_frame->out_slots[i] = out_slots[i];
+                    }
+                    vm->return_ips[vm->frame_count] = vm->ip;
+                    vm->frames[vm->frame_count] = vm->frame_base;
+                    vm->frame_count++;
+                    vm->frame_base = vm->stack_top - arg_count;
+                    vm->ip = vm->chunk->code + target;
+                } else {
+                    THROW(vm);
+                }
                 break;
             }
             case OP_RETURN: {
@@ -1055,6 +1138,42 @@ dispatch:
                 }
                 if (!vm->driver->rollback(vm->driver)) {
                     set_runtime_error_from_driver(vm, "ROLLBACK failed");
+                    THROW(vm);
+                }
+                break;
+            }
+            case OP_SQL_SAVEPOINT:
+            case OP_SQL_ROLLBACK_TO:
+            case OP_SQL_RELEASE_SAVEPOINT: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) {
+                    set_runtime_error(vm, "Invalid constant index");
+                    THROW(vm);
+                }
+                Value name_value = vm->chunk->constants[idx];
+                if (name_value.type != VAL_STRING || name_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid savepoint name");
+                    THROW(vm);
+                }
+                if (vm->driver == NULL) {
+                    set_runtime_error(vm, "No database driver");
+                    THROW(vm);
+                }
+                int ok = 0;
+                if (op == OP_SQL_SAVEPOINT) {
+                    ok = vm->driver->savepoint(vm->driver, name_value.as.as_string);
+                } else if (op == OP_SQL_ROLLBACK_TO) {
+                    ok = vm->driver->rollback_to_savepoint(vm->driver, name_value.as.as_string);
+                } else {
+                    ok = vm->driver->release_savepoint(vm->driver, name_value.as.as_string);
+                }
+                if (!ok) {
+                    const char* op_name = (op == OP_SQL_SAVEPOINT) ? "SAVEPOINT" :
+                                          (op == OP_SQL_ROLLBACK_TO) ? "ROLLBACK TO SAVEPOINT" :
+                                          "RELEASE SAVEPOINT";
+                    set_runtime_error_from_driver(vm, op_name);
                     THROW(vm);
                 }
                 break;
@@ -1567,4 +1686,128 @@ dispatch:
                 THROW(vm);
         }
     }
+}
+
+static void vm_free_child(VM* vm) {
+    if (vm == NULL) return;
+    for (Value* p = vm->stack; p < vm->stack_top; p++) {
+        value_release(*p);
+    }
+    for (int i = 0; i < vm->repl_local_count; i++) {
+        value_release(vm->repl_locals[i]);
+    }
+    for (int i = 0; i < vm->global_count; i++) {
+        value_release(vm->globals[i]);
+    }
+    if (vm->driver != NULL && vm->result_handle != NULL) {
+        vm->driver->result_free(vm->driver, vm->result_handle);
+    } else if (vm->driver == NULL) {
+        result_free((Result*)vm->result_handle);
+    }
+    free(vm);
+}
+
+static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
+                              int out_count, int* out_positions, int* out_slots,
+                              Value* out_result) {
+    if (parent->driver == NULL || !parent->driver->is_sqlite) {
+        return -1; /* fall back to normal call path */
+    }
+    VM* child = vm_init();
+    if (child == NULL) {
+        set_runtime_error(parent, "Out of memory");
+        return 0;
+    }
+    DBDriver auto_driver;
+    parent->driver->init(&auto_driver);
+    if (!auto_driver.open(&auto_driver, parent->driver->connection_string)) {
+        snprintf(parent->error_message, sizeof(parent->error_message), "%s", auto_driver.error_message);
+        vm_free_child(child);
+        return 0;
+    }
+    if (!auto_driver.begin(&auto_driver)) {
+        set_runtime_error_from_driver(parent, "Autonomous BEGIN failed");
+        auto_driver.close(&auto_driver);
+        vm_free_child(child);
+        return 0;
+    }
+    child->global_count = parent->global_count;
+    for (int i = 0; i < parent->global_count; i++) {
+        child->globals[i] = parent->globals[i];
+        value_retain(child->globals[i]);
+    }
+    for (int i = 0; i < arg_count; i++) {
+        Value arg = parent->stack_top[-arg_count + i];
+        value_retain(arg);
+        if (!push(child, arg)) {
+            value_release(arg);
+            set_runtime_error(parent, "Stack overflow");
+            auto_driver.close(&auto_driver);
+            vm_free_child(child);
+            return 0;
+        }
+    }
+    child->chunk = parent->chunk;
+    child->ip = child->chunk->code + target;
+    child->frame_base = child->stack;
+    child->frame_count = 0;
+    child->driver = &auto_driver;
+    child->context = parent->context;
+    InterpretResult run_result = vm_run(child, child->chunk->code + child->chunk->count);
+    if (run_result == INTERPRET_OK) {
+        Value result;
+        if (!pop(child, &result)) {
+            set_runtime_error(parent, "Autonomous call returned no value");
+            auto_driver.close(&auto_driver);
+            vm_free_child(child);
+            return 0;
+        }
+        if (!auto_driver.commit(&auto_driver)) {
+            set_runtime_error_from_driver(parent, "Autonomous commit failed");
+            auto_driver.close(&auto_driver);
+            vm_free_child(child);
+            return 0;
+        }
+        for (int i = 0; i < out_count; i++) {
+            int pos = out_positions[i];
+            int slot = out_slots[i];
+            if (pos < 0 || pos >= arg_count) {
+                value_release(result);
+                auto_driver.close(&auto_driver);
+                vm_free_child(child);
+                set_runtime_error(parent, "Invalid OUT parameter position");
+                return 0;
+            }
+            if (slot < 0 || slot >= (parent->stack_top - parent->frame_base - arg_count)) {
+                value_release(result);
+                auto_driver.close(&auto_driver);
+                vm_free_child(child);
+                set_runtime_error(parent, "Invalid OUT parameter slot");
+                return 0;
+            }
+            value_release(parent->frame_base[slot]);
+            parent->frame_base[slot] = child->frame_base[pos];
+            value_retain(parent->frame_base[slot]);
+        }
+        *out_result = result;
+        auto_driver.close(&auto_driver);
+        vm_free_child(child);
+        return 1;
+    }
+    snprintf(parent->error_message, sizeof(parent->error_message), "%s", child->error_message);
+    auto_driver.rollback(&auto_driver);
+    auto_driver.close(&auto_driver);
+    vm_free_child(child);
+    return 0;
+}
+
+InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
+    vm->chunk = chunk;
+    vm->ip = chunk->code;
+    vm->error_message[0] = '\0';
+    vm->sql_rowcount = 0;
+    vm->try_count = 0;
+    vm->local_count = 0;
+    vm->repl_local_count = 0;
+    return vm_run(vm, chunk->code + chunk->count);
 }

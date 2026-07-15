@@ -87,6 +87,8 @@ struct DBDriver {
     void* impl;
     char error_message[256];
     int is_sqlite;
+    void (*init)(DBDriver* driver);
+    char connection_string[256];
     int (*open)(DBDriver* driver, const char* connection_string);
     void (*close)(DBDriver* driver);
     /* Returns number of rows affected on success (>= 0), or -1 on error. */
@@ -101,6 +103,9 @@ struct DBDriver {
     int (*begin)(DBDriver* driver);
     int (*commit)(DBDriver* driver);
     int (*rollback)(DBDriver* driver);
+    int (*savepoint)(DBDriver* driver, const char* name);
+    int (*rollback_to_savepoint)(DBDriver* driver, const char* name);
+    int (*release_savepoint)(DBDriver* driver, const char* name);
 };
 
 void custom_driver_init(DBDriver* driver);

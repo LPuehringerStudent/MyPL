@@ -8,6 +8,7 @@
 #include "compiler.h"
 #include "os.h"
 #include "packages.h"
+#include "stored_programs.h"
 #include "sql_engine.h"
 #ifdef USE_SQLITE
 #include "sqlite_driver.h"
@@ -45,19 +46,39 @@ static int run_file(const char* path, DBDriver* driver) {
         ctx = &custom_ctx;
     }
 
-    char* persisted = driver != NULL ? packages_load_source(driver, ctx) : NULL;
+    char* package_source = driver != NULL ? packages_load_source(driver, ctx) : NULL;
+    char* program_source = driver != NULL ? stored_programs_load_source(driver, ctx) : NULL;
+    if (program_source != NULL && source != NULL) {
+        char* filtered = stored_programs_filter_redefined(program_source, source);
+        free(program_source);
+        program_source = filtered;
+    }
+
+    size_t pkg_len = (package_source != NULL && *package_source != '\0') ? strlen(package_source) : 0;
+    size_t prg_len = (program_source != NULL && *program_source != '\0') ? strlen(program_source) : 0;
+    size_t src_len = strlen(source);
+
     char* combined = NULL;
-    if (persisted != NULL && *persisted != '\0') {
-        size_t plen = strlen(persisted);
-        size_t slen = strlen(source);
-        combined = malloc(plen + slen + 2);
+    if (pkg_len > 0 || prg_len > 0) {
+        combined = malloc(pkg_len + prg_len + src_len + 3);
         if (combined != NULL) {
-            memcpy(combined, persisted, plen);
-            combined[plen] = '\n';
-            memcpy(combined + plen + 1, source, slen + 1);
+            size_t off = 0;
+            if (pkg_len > 0) {
+                memcpy(combined + off, package_source, pkg_len);
+                off += pkg_len;
+                combined[off++] = '\n';
+            }
+            if (prg_len > 0) {
+                memcpy(combined + off, program_source, prg_len);
+                off += prg_len;
+                combined[off++] = '\n';
+            }
+            memcpy(combined + off, source, src_len + 1);
         }
     }
-    free(persisted);
+
+    free(package_source);
+    free(program_source);
     const char* compile_source = combined != NULL ? combined : source;
 
     Chunk chunk;
@@ -73,6 +94,9 @@ static int run_file(const char* path, DBDriver* driver) {
 
     if (driver != NULL && strstr(source, "package ") != NULL) {
         packages_save_source(driver, ctx, source, 0);
+    }
+    if (driver != NULL) {
+        stored_programs_save_source(driver, ctx, source);
     }
 
     free(source);

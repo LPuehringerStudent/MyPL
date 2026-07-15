@@ -30,25 +30,25 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 | Area | MyPL Today | PL/SQL Capability | Future Goal | Status |
 |------|-----------|-------------------|-------------|--------|
 | **Functions** | `func` exists but is called like a procedure | `FUNCTION` callable from SQL expressions | Allow `func` in SQL `SELECT`, `WHERE`, and assignment expressions | ✅ Core `func` unit done |
-| **Packages** | Spec/body with sidecar persistence | Full schema-stored packages, overloading, `AUTHID` | Persist package source and state in the database catalog; add `AUTHID CURRENT_USER`/`DEFINER` | ✅ Spec/body/state done; catalog persistence next |
+| **Packages** | Spec/body with sidecar persistence | Full schema-stored packages, overloading, `AUTHID` | Persist package source and state in the database catalog; add `AUTHID CURRENT_USER`/`DEFINER` | ✅ Spec/body/state/authid done; package persistence via existing sidecar, top-level proc/func catalog added |
 | **Parameter modes** | `IN`, `OUT`, `IN OUT` | Same set plus `NOCOPY` | Add `NOCOPY` hint for large parameters | ✅ IN/OUT/IN OUT done |
 | **Cursors** | Explicit cursor variables | `REF CURSOR`, cursor variables as parameters, dynamic `OPEN FOR` | Add `REF CURSOR`-like cursor variables and `OPEN cursor FOR query` | ✅ Explicit cursors done; REF CURSOR next |
 | **Collections** | `array<T>`, `map<string,T>` | Associative arrays, nested tables, `VARRAY`s, collection methods | Add associative arrays and standard collection methods (`EXTEND`, `TRIM`, `DELETE`, `FIRST`/`LAST`/`NEXT`/`PRIOR`) | ✅ Done |
-| **Types** | Basic types and structs | `%TYPE`, `%ROWTYPE`, records, subtypes, `DATE`/`TIMESTAMP` | Add `%TYPE`/`%ROWTYPE`, a `date`/`timestamp` type, and user-defined subtypes | 🔲 Not started |
+| **Types** | Basic types and structs | `%TYPE`, `%ROWTYPE`, records, subtypes, `DATE`/`TIMESTAMP` | Add `%TYPE`/`%ROWTYPE`, a `date`/`timestamp` type, and user-defined subtypes | ✅ Done |
 | **Control flow** | `case` statement/expression | Labeled blocks, `GOTO` | Add labeled blocks and `GOTO` for parity with legacy PL/SQL | ✅ `case` done; labeled blocks/GOTO next |
 | **Blocks** | Anonymous blocks supported | Same | — | ✅ Done |
 | **Exceptions** | Generic `try/catch` with message string | Named predefined/user-defined exceptions, `RAISE`, `RAISE_APPLICATION_ERROR`, `SQLCODE`/`SQLERRM` | Add named exceptions, `raise`, `raise_application_error`, and `sqlcode`/`sqlerrm` | ✅ Done |
 | **Bulk binds** | Row-by-row loops | `BULK COLLECT INTO`, `FORALL` for set-based DML | Implement bulk-bind opcodes for performance | ✅ Done |
 | **Triggers** | None | DML/DDL/system triggers, row/statement level, `BEFORE`/`AFTER`/`INSTEAD OF` | Add database triggers | 🔲 Not started |
-| **Stored code** | Source files compiled at runtime | Schema-stored procedures/functions/packages compiled into the DB | Persist MyPL program units in the database catalog | 🔲 Not started |
+| **Stored code** | Source files compiled at runtime | Schema-stored procedures/functions/packages compiled into the DB | Persist MyPL program units in the database catalog | ✅ Done |
 | **Built-in packages** | Custom natives | `DBMS_OUTPUT`, `UTL_FILE`, `DBMS_SQL`, `DBMS_SCHEDULER`, etc. | Grow MyPL's standard library into named packages (`dbms_output`, `utl_file`, etc.) | 🔲 Not started |
 | **Table functions** | None | Pipelined/table functions returning collections | Add table-valued/pipelined functions | 🔲 Not started |
 | **Object types** | `struct` only | Object types with methods, inheritance, persistence | Extend `struct` toward object types with methods | 🔲 Not started |
-| **Transactions** | `begin`/`commit`/`rollback` | Savepoints, autonomous transactions (`PRAGMA AUTONOMOUS_TRANSACTION`) | Add savepoints and autonomous transactions | 🔲 Not started |
-| **Security** | None | `AUTHID CURRENT_USER` / `AUTHID DEFINER` | Add invoker/definer rights for stored units | 🔲 Not started |
+| **Transactions** | `begin`/`commit`/`rollback` | Savepoints, autonomous transactions (`PRAGMA AUTONOMOUS_TRANSACTION`) | Add savepoints and autonomous transactions | ✅ Done |
+| **Security** | None | `AUTHID CURRENT_USER` / `AUTHID DEFINER` | Add invoker/definer rights for stored units | ✅ Done |
 | **Regex** | None | `REGEXP_LIKE`, `REGEXP_REPLACE`, etc. | Add regular-expression natives | 🔲 Not started |
 | **Sequences** | None | `SEQUENCE` objects and `CURRVAL`/`NEXTVAL` | Add sequence support | 🔲 Not started |
-| **Pragmas** | None | `PRAGMA AUTONOMOUS_TRANSACTION`, `PRAGMA EXCEPTION_INIT`, etc. | Add pragma support starting with autonomous transactions | 🔲 Not started |
+| **Pragmas** | None | `PRAGMA AUTONOMOUS_TRANSACTION`, `PRAGMA EXCEPTION_INIT`, etc. | Add pragma support starting with autonomous transactions | ✅ Done |
 
 ## Phased Roadmap
 
@@ -91,10 +91,10 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 - [x] `date` / `timestamp` type and formatting natives
 - [x] User-defined subtypes
 
-### Phase 8 — Stored Code & Security
-- [ ] Persist procedures/functions/packages in the database catalog
-- [ ] `AUTHID CURRENT_USER` / `AUTHID DEFINER`
-- [ ] Savepoints and autonomous transactions
+### Phase 8 — Stored Code & Security ✅
+- [x] Persist procedures/functions/packages in the database catalog
+- [x] `AUTHID CURRENT_USER` / `AUTHID DEFINER`
+- [x] Savepoints and autonomous transactions
 
 ### Phase 9 — Standard Library as Packages
 - [ ] `dbms_output`

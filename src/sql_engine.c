@@ -2306,6 +2306,11 @@ static int custom_open(DBDriver* driver, const char* connection_string) {
     }
     driver->impl = impl;
     driver->error_message[0] = '\0';
+    if (connection_string != NULL) {
+        snprintf(driver->connection_string, sizeof(driver->connection_string), "%s", connection_string);
+    } else {
+        driver->connection_string[0] = '\0';
+    }
     return 1;
 }
 
@@ -2423,9 +2428,29 @@ static int custom_rollback(DBDriver* driver) {
     return 0; /* not supported by custom engine */
 }
 
+static int custom_savepoint(DBDriver* driver, const char* name) {
+    (void)driver;
+    (void)name;
+    return 0; /* not supported by custom engine */
+}
+
+static int custom_rollback_to_savepoint(DBDriver* driver, const char* name) {
+    (void)driver;
+    (void)name;
+    return 0; /* not supported by custom engine */
+}
+
+static int custom_release_savepoint(DBDriver* driver, const char* name) {
+    (void)driver;
+    (void)name;
+    return 0; /* not supported by custom engine */
+}
+
 void custom_driver_init(DBDriver* driver) {
     driver->impl = NULL;
     driver->is_sqlite = 0;
+    driver->init = custom_driver_init;
+    driver->connection_string[0] = '\0';
     driver->open = custom_open;
     driver->close = custom_close;
     driver->exec = custom_exec;
@@ -2439,4 +2464,7 @@ void custom_driver_init(DBDriver* driver) {
     driver->begin = custom_begin;
     driver->commit = custom_commit;
     driver->rollback = custom_rollback;
+    driver->savepoint = custom_savepoint;
+    driver->rollback_to_savepoint = custom_rollback_to_savepoint;
+    driver->release_savepoint = custom_release_savepoint;
 }

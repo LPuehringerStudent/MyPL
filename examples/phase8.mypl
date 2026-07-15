@@ -1,0 +1,53 @@
+// Phase 8 example: stored code, AUTHID, savepoints, and autonomous transactions.
+// Run with a SQLite database, e.g.:
+//   ./bin/mypl examples/phase8.mypl --db /tmp/phase8.db
+
+// A persisted procedure marked as running with definer rights.
+proc log_event(msg string) -> int authid definer {
+    insert into events(msg) values (?msg);
+    return sql_rowcount();
+}
+
+// A persisted function marked as running with caller (CURRENT_USER) rights.
+func event_count() -> int authid current_user {
+    int c;
+    select count(*) into c from events;
+    return c;
+}
+
+// A procedure that runs in its own autonomous transaction.
+proc autonomous_insert(msg string) -> int {
+    pragma autonomous_transaction;
+    insert into events(msg) values (?msg);
+    return 0;
+}
+
+proc main() -> int {
+    create table if not exists events (
+        id integer primary key autoincrement,
+        msg string
+    );
+
+    // Savepoint demo: one insert is rolled back, the other is released.
+    begin;
+    insert into events(msg) values ('before savepoint');
+    savepoint sp1;
+    insert into events(msg) values ('rolled back');
+    rollback to savepoint sp1;
+    release savepoint sp1;
+    insert into events(msg) values ('after savepoint');
+    commit;
+
+    // Autonomous transaction demo: the autonomous proc commits on its own.
+    autonomous_insert("autonomous survives");
+    begin;
+    insert into events(msg) values ('caller will rollback');
+    rollback;
+
+    // Show the final state.
+    print "event_count = " + int_to_string(event_count());
+    print "log_event returned " + int_to_string(log_event("direct insert"));
+    print "final event_count = " + int_to_string(event_count());
+
+    return 0;
+}
