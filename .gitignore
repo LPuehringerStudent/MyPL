@@ -11,6 +11,7 @@ graphify-out/
 
 # Runtime/test artifacts
 *.db
+*.db.packages
 
 # IDE
 .idea/

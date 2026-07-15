@@ -21,6 +21,11 @@ static int sqlite_open(DBDriver* driver, const char* conn) {
     }
     driver->impl = impl;
     driver->error_message[0] = '\0';
+    if (conn != NULL) {
+        snprintf(driver->connection_string, sizeof(driver->connection_string), "%s", conn);
+    } else {
+        driver->connection_string[0] = '\0';
+    }
     return 1;
 }
 
@@ -308,9 +313,29 @@ static int sqlite_rollback(DBDriver* driver) {
     return sqlite_exec(driver, "ROLLBACK", NULL, 0) >= 0 ? 1 : 0;
 }
 
+static int sqlite_savepoint(DBDriver* driver, const char* name) {
+    char sql[512];
+    snprintf(sql, sizeof(sql), "SAVEPOINT %s", name);
+    return sqlite_exec(driver, sql, NULL, 0) >= 0 ? 1 : 0;
+}
+
+static int sqlite_rollback_to_savepoint(DBDriver* driver, const char* name) {
+    char sql[512];
+    snprintf(sql, sizeof(sql), "ROLLBACK TO SAVEPOINT %s", name);
+    return sqlite_exec(driver, sql, NULL, 0) >= 0 ? 1 : 0;
+}
+
+static int sqlite_release_savepoint(DBDriver* driver, const char* name) {
+    char sql[512];
+    snprintf(sql, sizeof(sql), "RELEASE SAVEPOINT %s", name);
+    return sqlite_exec(driver, sql, NULL, 0) >= 0 ? 1 : 0;
+}
+
 void sqlite_driver_init(DBDriver* driver) {
     driver->impl = NULL;
     driver->is_sqlite = 1;
+    driver->init = sqlite_driver_init;
+    driver->connection_string[0] = '\0';
     driver->open = sqlite_open;
     driver->close = sqlite_close;
     driver->exec = sqlite_exec;
@@ -324,4 +349,7 @@ void sqlite_driver_init(DBDriver* driver) {
     driver->begin = sqlite_begin;
     driver->commit = sqlite_commit;
     driver->rollback = sqlite_rollback;
+    driver->savepoint = sqlite_savepoint;
+    driver->rollback_to_savepoint = sqlite_rollback_to_savepoint;
+    driver->release_savepoint = sqlite_release_savepoint;
 }

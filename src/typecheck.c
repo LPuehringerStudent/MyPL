@@ -2242,6 +2242,9 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
             }
             break;
         }
+        case STMT_PRAGMA:
+            /* Pragmas are handled during code generation. */
+            break;
     }
 }
 

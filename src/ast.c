@@ -347,12 +347,15 @@ ProcDecl* create_proc_decl(const char* name, Type* return_type) {
     proc->return_type = return_type;
     proc->body = NULL;
     proc->is_function = 0;
+    proc->authid = NULL;
+    proc->autonomous_transaction = 0;
     return proc;
 }
 
 void free_proc_decl(ProcDecl* proc) {
     if (proc == NULL) return;
     free(proc->name);
+    free(proc->authid);
     free_block(proc->body);
     for (int j = 0; j < proc->param_count; j++) {
         free(proc->params[j].name);
@@ -365,6 +368,7 @@ void free_proc_decl(ProcDecl* proc) {
 void free_package_spec(PackageSpecDecl* spec) {
     if (spec == NULL) return;
     free(spec->name);
+    free(spec->authid);
     for (int i = 0; i < spec->var_count; i++) {
         free_stmt(spec->vars[i]);
     }
@@ -382,6 +386,7 @@ void free_package_spec(PackageSpecDecl* spec) {
 void free_package_body(PackageBodyDecl* body) {
     if (body == NULL) return;
     free(body->name);
+    free(body->authid);
     for (int i = 0; i < body->var_count; i++) {
         free_stmt(body->vars[i]);
     }
@@ -516,6 +521,7 @@ void free_stmt(Stmt* stmt) {
             free(stmt->as.sql_stmt.into_vars);
             break;
         case STMT_SQL_TRANSACTION:
+            free(stmt->as.sql_transaction.name);
             break;
         case STMT_EXCEPTION_DECL:
             free(stmt->as.exception_decl.name);
@@ -568,6 +574,9 @@ void free_stmt(Stmt* stmt) {
             free(stmt->as.forall_stmt.var_name);
             free(stmt->as.forall_stmt.array_name);
             free_stmt(stmt->as.forall_stmt.sql_stmt);
+            break;
+        case STMT_PRAGMA:
+            free(stmt->as.pragma.name);
             break;
     }
     free(stmt);
@@ -977,12 +986,17 @@ Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char*
     return stmt;
 }
 
-Stmt* create_sql_transaction_stmt(int kind) {
+Stmt* create_sql_transaction_stmt(int kind, const char* name) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) return NULL;
     stmt->loc = (SourceLoc){0, 0};
     stmt->kind = STMT_SQL_TRANSACTION;
     stmt->as.sql_transaction.kind = kind;
+    stmt->as.sql_transaction.name = copy_string(name);
+    if (stmt->as.sql_transaction.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
     return stmt;
 }
 
@@ -1254,5 +1268,18 @@ Stmt* create_forall_stmt(const char* var_name, const char* array_name, Stmt* sql
         return NULL;
     }
     stmt->as.forall_stmt.sql_stmt = sql_stmt;
+    return stmt;
+}
+
+Stmt* create_pragma_stmt(const char* name) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_PRAGMA;
+    stmt->as.pragma.name = copy_string(name);
+    if (stmt->as.pragma.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
     return stmt;
 }

@@ -136,6 +136,26 @@ static int ascii_case_eq(char a, char b) {
     return a == b;
 }
 
+static int current_token_is_keyword(Parser* parser, const char* word) {
+    if (!check(parser, TOKEN_IDENT)) return 0;
+    int len = (int)strlen(word);
+    if (parser->current.length != len) return 0;
+    for (int i = 0; i < len; i++) {
+        if (!ascii_case_eq(parser->current.start[i], word[i])) return 0;
+    }
+    return 1;
+}
+
+static int match_authid(Parser* parser) {
+    if (!check(parser, TOKEN_IDENT)) return 0;
+    if (parser->current.length != 6) return 0;
+    for (int i = 0; i < 6; i++) {
+        if (!ascii_case_eq(parser->current.start[i], "authid"[i])) return 0;
+    }
+    advance(parser);
+    return 1;
+}
+
 static const char* find_word(const char* s, const char* word) {
     size_t len = strlen(word);
     size_t s_len = strlen(s);
@@ -1952,6 +1972,47 @@ static Stmt* statement(Parser* parser) {
         check(parser, TOKEN_MAP_TYPE)) {
         return var_decl(parser);
     }
+    if (current_token_is_keyword(parser, "savepoint")) {
+        advance(parser); /* consume savepoint */
+        advance(parser); /* consume name */
+        char* name = copy_token_lexeme(&parser->previous);
+        advance(parser); /* consume ; */
+        Stmt* stmt = create_sql_transaction_stmt(3, name);
+        free(name);
+        return stmt;
+    }
+    if (current_token_is_keyword(parser, "release")) {
+        advance(parser); /* consume release */
+        if (current_token_is_keyword(parser, "savepoint")) {
+            advance(parser); /* consume savepoint */
+        }
+        advance(parser); /* consume name */
+        char* name = copy_token_lexeme(&parser->previous);
+        advance(parser); /* consume ; */
+        Stmt* stmt = create_sql_transaction_stmt(5, name);
+        free(name);
+        return stmt;
+    }
+    if (current_token_is_keyword(parser, "pragma")) {
+        Token kw = parser->current;
+        advance(parser); /* consume pragma */
+        if (!current_token_is_keyword(parser, "autonomous_transaction")) {
+            error_at_current(parser, "expected 'autonomous_transaction' after 'pragma'");
+            return NULL;
+        }
+        advance(parser); /* consume autonomous_transaction */
+        if (!check(parser, TOKEN_SEMICOLON)) {
+            error_at_current(parser, "expected ';' after pragma");
+            return NULL;
+        }
+        advance(parser); /* consume ; */
+        Stmt* stmt = create_pragma_stmt("autonomous_transaction");
+        if (stmt != NULL) {
+            stmt->loc.line = kw.line;
+            stmt->loc.column = kw.column;
+        }
+        return stmt;
+    }
     if (check(parser, TOKEN_IDENT)) {
         /* Ambiguity between struct-typed or percent-typed variable
            declarations and other identifier-started statements. */
@@ -1986,15 +2047,27 @@ static Stmt* statement(Parser* parser) {
     }
     if (match(parser, TOKEN_BEGIN)) {
         advance(parser); /* consume ; */
-        return create_sql_transaction_stmt(0);
+        return create_sql_transaction_stmt(0, NULL);
     }
     if (match(parser, TOKEN_COMMIT)) {
         advance(parser); /* consume ; */
-        return create_sql_transaction_stmt(1);
+        return create_sql_transaction_stmt(1, NULL);
     }
     if (match(parser, TOKEN_ROLLBACK)) {
+        if (current_token_is_keyword(parser, "to")) {
+            advance(parser); /* consume to */
+            if (current_token_is_keyword(parser, "savepoint")) {
+                advance(parser); /* consume savepoint */
+            }
+            advance(parser); /* consume name */
+            char* name = copy_token_lexeme(&parser->previous);
+            advance(parser); /* consume ; */
+            Stmt* stmt = create_sql_transaction_stmt(4, name);
+            free(name);
+            return stmt;
+        }
         advance(parser); /* consume ; */
-        return create_sql_transaction_stmt(2);
+        return create_sql_transaction_stmt(2, NULL);
     }
     if (match(parser, TOKEN_SQL_QUERY)) {
         return sql_statement(parser, STMT_SQL_QUERY);
@@ -2099,6 +2172,18 @@ static ProcDecl* parse_proc_header(Parser* parser, int is_function) {
     proc->is_function = is_function;
     proc->params = params;
     proc->param_count = param_count;
+
+    if (match_authid(parser)) {
+        if (!check(parser, TOKEN_IDENT)) {
+            error_at_current(parser, "expected authid value after 'authid'");
+            free_proc_decl(proc);
+            free(proc);
+            return NULL;
+        }
+        proc->authid = copy_token_lexeme(&parser->current);
+        advance(parser);
+    }
+
     return proc;
 }
 
@@ -2108,6 +2193,7 @@ static void parse_proc_with_kind(Parser* parser, Program* program, int is_functi
     proc->body = block(parser);
     if (proc->body == NULL) {
         free(proc->name);
+        free(proc->authid);
         for (int i = 0; i < proc->param_count; i++) {
             free(proc->params[i].name);
             type_free(proc->params[i].type);
@@ -2230,6 +2316,16 @@ static void parse_package_spec(Parser* parser, Program* program) {
     PackageSpecDecl spec = {0};
     spec.name = name;
 
+    if (match_authid(parser)) {
+        if (!check(parser, TOKEN_IDENT)) {
+            error_at_current(parser, "expected authid value after 'authid'");
+            free_package_spec(&spec);
+            return;
+        }
+        spec.authid = copy_token_lexeme(&parser->current);
+        advance(parser);
+    }
+
     while (!check(parser, TOKEN_END) && !check(parser, TOKEN_EOF) && !parser->had_error) {
         if (check(parser, TOKEN_PROC)) {
             advance(parser); /* proc */
@@ -2241,6 +2337,7 @@ static void parse_package_spec(Parser* parser, Program* program) {
             if (!match(parser, TOKEN_SEMICOLON)) {
                 error_at_current(parser, "expected ';' after procedure declaration");
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2254,6 +2351,7 @@ static void parse_package_spec(Parser* parser, Program* program) {
             if (!package_add_proc(&spec.procs, &spec.proc_count, &spec.proc_capacity, proc)) {
                 error_at_current(parser, "out of memory");
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2275,6 +2373,7 @@ static void parse_package_spec(Parser* parser, Program* program) {
             if (!match(parser, TOKEN_SEMICOLON)) {
                 error_at_current(parser, "expected ';' after function declaration");
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2288,6 +2387,7 @@ static void parse_package_spec(Parser* parser, Program* program) {
             if (!package_add_proc(&spec.funcs, &spec.func_count, &spec.func_capacity, proc)) {
                 error_at_current(parser, "out of memory");
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2362,6 +2462,16 @@ static void parse_package_body(Parser* parser, Program* program) {
     PackageBodyDecl body = {0};
     body.name = name;
 
+    if (match_authid(parser)) {
+        if (!check(parser, TOKEN_IDENT)) {
+            error_at_current(parser, "expected authid value after 'authid'");
+            free_package_body(&body);
+            return;
+        }
+        body.authid = copy_token_lexeme(&parser->current);
+        advance(parser);
+    }
+
     while (!check(parser, TOKEN_END) && !check(parser, TOKEN_EOF) && !parser->had_error) {
         if (check(parser, TOKEN_PROC)) {
             advance(parser); /* proc */
@@ -2373,6 +2483,7 @@ static void parse_package_body(Parser* parser, Program* program) {
             proc->body = block(parser);
             if (proc->body == NULL) {
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2386,6 +2497,7 @@ static void parse_package_body(Parser* parser, Program* program) {
             if (!package_add_proc(&body.procs, &body.proc_count, &body.proc_capacity, proc)) {
                 error_at_current(parser, "out of memory");
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2407,6 +2519,7 @@ static void parse_package_body(Parser* parser, Program* program) {
             proc->body = block(parser);
             if (proc->body == NULL) {
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
@@ -2420,6 +2533,7 @@ static void parse_package_body(Parser* parser, Program* program) {
             if (!package_add_proc(&body.funcs, &body.func_count, &body.func_capacity, proc)) {
                 error_at_current(parser, "out of memory");
                 free(proc->name);
+                free(proc->authid);
                 for (int i = 0; i < proc->param_count; i++) {
                     free(proc->params[i].name);
                     type_free(proc->params[i].type);
