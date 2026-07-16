@@ -18,6 +18,8 @@ typedef struct {
     Value*   stack_top;
 } TryFrame;
 
+#define UTL_FILE_MAX_HANDLES 16
+
 typedef struct {
     int out_count;
     int out_positions[MAX_OUT_PARAMS];
@@ -55,6 +57,7 @@ struct VM {
     int           dbms_output_enabled;
     int           dbms_output_limit;
     ArrayObj*     dbms_output_buffer;
+    FILE*         utl_file_handles[UTL_FILE_MAX_HANDLES];
 };
 
 VM* vm_init(void) {
@@ -86,6 +89,9 @@ VM* vm_init(void) {
     vm->dbms_output_enabled = 0;
     vm->dbms_output_limit = 0;
     vm->dbms_output_buffer = NULL;
+    for (int i = 0; i < UTL_FILE_MAX_HANDLES; i++) {
+        vm->utl_file_handles[i] = NULL;
+    }
     return vm;
 }
 
@@ -243,6 +249,66 @@ Value vm_dbms_output_get_lines(VM* vm) {
     return value_array(result);
 }
 
+int vm_utl_file_fopen(VM* vm, const char* path, const char* mode) {
+    if (vm == NULL || path == NULL || mode == NULL) return -1;
+    int slot = -1;
+    for (int i = 0; i < UTL_FILE_MAX_HANDLES; i++) {
+        if (vm->utl_file_handles[i] == NULL) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return -1;
+    FILE* f = fopen(path, mode);
+    if (f == NULL) return -1;
+    vm->utl_file_handles[slot] = f;
+    return slot;
+}
+
+Value vm_utl_file_get_line(VM* vm, int handle) {
+    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL) {
+        char* empty = strdup("");
+        return value_string(empty ? empty : "");
+    }
+    FILE* f = vm->utl_file_handles[handle];
+    char buffer[1024];
+    if (fgets(buffer, sizeof(buffer), f) == NULL) {
+        char* empty = strdup("");
+        return value_string(empty ? empty : "");
+    }
+    size_t len = strlen(buffer);
+    if (len > 0 && buffer[len - 1] == '\n') {
+        buffer[len - 1] = '\0';
+        len--;
+    }
+    if (len > 0 && buffer[len - 1] == '\r') {
+        buffer[len - 1] = '\0';
+        len--;
+    }
+    char* copy = strdup(buffer);
+    return value_string(copy ? copy : buffer);
+}
+
+int vm_utl_file_put_line(VM* vm, int handle, const char* text) {
+    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL || text == NULL) {
+        return 0;
+    }
+    FILE* f = vm->utl_file_handles[handle];
+    if (fputs(text, f) == EOF || fputc('\n', f) == EOF) {
+        return 0;
+    }
+    return 1;
+}
+
+int vm_utl_file_fclose(VM* vm, int handle) {
+    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL) {
+        return 0;
+    }
+    int ok = fclose(vm->utl_file_handles[handle]) == 0;
+    vm->utl_file_handles[handle] = NULL;
+    return ok;
+}
+
 static int push(VM* vm, Value value);
 
 static int vm_catch(VM* vm) {
@@ -294,6 +360,12 @@ void vm_free(VM* vm) {
     }
     if (vm->dbms_output_buffer != NULL) {
         array_free(vm->dbms_output_buffer);
+    }
+    for (int i = 0; i < UTL_FILE_MAX_HANDLES; i++) {
+        if (vm->utl_file_handles[i] != NULL) {
+            fclose(vm->utl_file_handles[i]);
+            vm->utl_file_handles[i] = NULL;
+        }
     }
     array_pool_free_all();
     free(vm);
