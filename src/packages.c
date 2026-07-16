@@ -11,7 +11,37 @@
 
 static char* strip_main_procedure(const char* source);
 
+#define BUILTIN_DBMS_OUTPUT \
+    "package dbms_output is\n" \
+    "    proc enable(buffer_size int) -> int;\n" \
+    "    proc put_line(line string) -> int;\n" \
+    "    proc disable() -> int;\n" \
+    "    func get_lines() -> array<string>;\n" \
+    "end dbms_output;\n" \
+    "\n" \
+    "package body dbms_output is\n" \
+    "    proc enable(buffer_size int) -> int {\n" \
+    "        dbms_output_enable(buffer_size);\n" \
+    "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    proc put_line(line string) -> int {\n" \
+    "        dbms_output_put_line(line);\n" \
+    "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    proc disable() -> int {\n" \
+    "        dbms_output_disable();\n" \
+    "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    func get_lines() -> array<string> {\n" \
+    "        return dbms_output_get_lines();\n" \
+    "    }\n" \
+    "end dbms_output;"
+
 static const char* builtin_packages[] = {
+    BUILTIN_DBMS_OUTPUT,
     NULL
 };
 

@@ -52,6 +52,9 @@ struct VM {
     char          sql_errm[256];
     Value         globals[256];
     int           global_count;
+    int           dbms_output_enabled;
+    int           dbms_output_limit;
+    ArrayObj*     dbms_output_buffer;
 };
 
 VM* vm_init(void) {
@@ -80,6 +83,9 @@ VM* vm_init(void) {
         vm->globals[i].type = VAL_INT;
         vm->globals[i].as.as_int = 0;
     }
+    vm->dbms_output_enabled = 0;
+    vm->dbms_output_limit = 0;
+    vm->dbms_output_buffer = NULL;
     return vm;
 }
 
@@ -189,6 +195,54 @@ const char* vm_get_sql_errm(VM* vm) {
     return vm->sql_errm;
 }
 
+void vm_dbms_output_enable(VM* vm, int limit) {
+    if (vm == NULL) return;
+    vm->dbms_output_enabled = 1;
+    vm->dbms_output_limit = limit;
+    if (vm->dbms_output_buffer != NULL) {
+        array_free(vm->dbms_output_buffer);
+    }
+    vm->dbms_output_buffer = array_new();
+}
+
+void vm_dbms_output_put_line(VM* vm, Value line) {
+    if (vm == NULL || !vm->dbms_output_enabled) return;
+    if (vm->dbms_output_buffer == NULL) {
+        vm->dbms_output_buffer = array_new();
+    }
+    if (vm->dbms_output_limit > 0 && array_length(vm->dbms_output_buffer) >= vm->dbms_output_limit) {
+        set_runtime_error(vm, "dbms_output buffer full");
+        return;
+    }
+    value_retain(line);
+    array_append(vm->dbms_output_buffer, line);
+}
+
+void vm_dbms_output_disable(VM* vm) {
+    if (vm == NULL) return;
+    vm->dbms_output_enabled = 0;
+    if (vm->dbms_output_buffer != NULL) {
+        array_free(vm->dbms_output_buffer);
+        vm->dbms_output_buffer = NULL;
+    }
+}
+
+Value vm_dbms_output_get_lines(VM* vm) {
+    if (vm == NULL || vm->dbms_output_buffer == NULL) {
+        return value_array(array_new());
+    }
+    ArrayObj* result = array_new();
+    int n = array_length(vm->dbms_output_buffer);
+    for (int i = 0; i < n; i++) {
+        Value v = array_get(vm->dbms_output_buffer, i);
+        value_retain(v);
+        array_append(result, v);
+    }
+    array_free(vm->dbms_output_buffer);
+    vm->dbms_output_buffer = array_new();
+    return value_array(result);
+}
+
 static int push(VM* vm, Value value);
 
 static int vm_catch(VM* vm) {
@@ -237,6 +291,9 @@ void vm_free(VM* vm) {
         vm->driver->result_free(vm->driver, vm->result_handle);
     } else if (vm->driver == NULL) {
         result_free((Result*)vm->result_handle);
+    }
+    if (vm->dbms_output_buffer != NULL) {
+        array_free(vm->dbms_output_buffer);
     }
     array_pool_free_all();
     free(vm);

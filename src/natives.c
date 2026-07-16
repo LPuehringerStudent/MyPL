@@ -11,6 +11,7 @@
 
 #include "compiler.h"
 #include "os.h"
+#include "vm.h"
 
 typedef struct {
     const char* name;
@@ -1841,6 +1842,41 @@ static int native_current_timestamp(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_dbms_output_enable(VM* vm, int argc, Value* argv, Value* out) {
+    (void)out;
+    if (argc != 1 || argv[0].type != VAL_INT) {
+        vm_set_error(vm, "dbms_output_enable expects an int");
+        return 0;
+    }
+    vm_dbms_output_enable(vm, argv[0].as.as_int);
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_dbms_output_put_line(VM* vm, int argc, Value* argv, Value* out) {
+    (void)out;
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "dbms_output_put_line expects a string");
+        return 0;
+    }
+    vm_dbms_output_put_line(vm, argv[0]);
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_dbms_output_disable(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc; (void)argv;
+    vm_dbms_output_disable(vm);
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_dbms_output_get_lines(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc; (void)argv;
+    *out = vm_dbms_output_get_lines(vm);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -1920,6 +1956,10 @@ static NativeDef natives[] = {
     {"sqlcode", 0, native_sqlcode},
     {"sqlerrm", 0, native_sqlerrm},
     {"raise_application_error", 2, native_raise_application_error},
+    {"dbms_output_enable", 1, native_dbms_output_enable},
+    {"dbms_output_put_line", 1, native_dbms_output_put_line},
+    {"dbms_output_disable", 0, native_dbms_output_disable},
+    {"dbms_output_get_lines", 0, native_dbms_output_get_lines},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

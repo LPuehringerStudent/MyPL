@@ -555,6 +555,10 @@ static int is_native(const char* name) {
            strcmp(name, "sqlcode") == 0 ||
            strcmp(name, "sqlerrm") == 0 ||
            strcmp(name, "raise_application_error") == 0 ||
+           strcmp(name, "dbms_output_enable") == 0 ||
+           strcmp(name, "dbms_output_put_line") == 0 ||
+           strcmp(name, "dbms_output_disable") == 0 ||
+           strcmp(name, "dbms_output_get_lines") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1387,6 +1391,42 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             return NULL;
         }
         return &type_timestamp;
+    }
+    if (strcmp(name, "dbms_output_enable") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "dbms_output_enable expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_output_enable expects an int");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_output_put_line") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "dbms_output_put_line expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "dbms_output_put_line expects a string");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_output_disable") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "dbms_output_disable expects 0 arguments");
+            return NULL;
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_output_get_lines") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "dbms_output_get_lines expects 0 arguments");
+            return NULL;
+        }
+        return transient_array_type(tc, &type_string);
     }
     return NULL;
 }

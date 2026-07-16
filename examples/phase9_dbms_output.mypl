@@ -1,0 +1,16 @@
+// Phase 9: dbms_output example
+proc main() -> int {
+    dbms_output.enable(10);
+    dbms_output.put_line("Hello from dbms_output");
+    dbms_output.put_line("Second line");
+
+    array<string> lines = dbms_output.get_lines();
+    print int_to_string(length(lines));
+
+    for line in lines {
+        print line;
+    }
+
+    dbms_output.disable();
+    return 0;
+}

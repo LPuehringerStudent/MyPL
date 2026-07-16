@@ -33,6 +33,12 @@ int             vm_get_sql_code(VM* vm);
 const char*     vm_get_sql_errm(VM* vm);
 Value           vm_pop(VM* vm);
 int             vm_stack_depth(VM* vm);
+
+/* dbms_output buffer */
+void            vm_dbms_output_enable(VM* vm, int limit);
+void            vm_dbms_output_put_line(VM* vm, Value line);
+void            vm_dbms_output_disable(VM* vm);
+Value           vm_dbms_output_get_lines(VM* vm);
 Value           vm_stack_get(VM* vm, int index);
 int             vm_local_count(VM* vm);
 Value           vm_local_get(VM* vm, int index);
