@@ -559,6 +559,10 @@ static int is_native(const char* name) {
            strcmp(name, "dbms_output_put_line") == 0 ||
            strcmp(name, "dbms_output_disable") == 0 ||
            strcmp(name, "dbms_output_get_lines") == 0 ||
+           strcmp(name, "utl_file_fopen") == 0 ||
+           strcmp(name, "utl_file_get_line") == 0 ||
+           strcmp(name, "utl_file_put_line") == 0 ||
+           strcmp(name, "utl_file_fclose") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1427,6 +1431,58 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             return NULL;
         }
         return transient_array_type(tc, &type_string);
+    }
+    if (strcmp(name, "utl_file_fopen") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "utl_file_fopen expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "utl_file_fopen expects a string path");
+        }
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "utl_file_fopen expects a string mode");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_get_line") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "utl_file_get_line expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_get_line expects an int handle");
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "utl_file_put_line") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "utl_file_put_line expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_put_line expects an int handle");
+        }
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "utl_file_put_line expects a string");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_fclose") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "utl_file_fclose expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fclose expects an int handle");
+        }
+        return &type_int;
     }
     return NULL;
 }

@@ -39,6 +39,13 @@ void            vm_dbms_output_enable(VM* vm, int limit);
 void            vm_dbms_output_put_line(VM* vm, Value line);
 void            vm_dbms_output_disable(VM* vm);
 Value           vm_dbms_output_get_lines(VM* vm);
+
+/* utl_file handles */
+int             vm_utl_file_fopen(VM* vm, const char* path, const char* mode);
+Value           vm_utl_file_get_line(VM* vm, int handle);
+int             vm_utl_file_put_line(VM* vm, int handle, const char* text);
+int             vm_utl_file_fclose(VM* vm, int handle);
+
 Value           vm_stack_get(VM* vm, int index);
 int             vm_local_count(VM* vm);
 Value           vm_local_get(VM* vm, int index);

@@ -1877,6 +1877,45 @@ static int native_dbms_output_get_lines(VM* vm, int argc, Value* argv, Value* ou
     return 1;
 }
 
+static int native_utl_file_fopen(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "utl_file_fopen expects (string, string)");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* mode = argv[1].as.as_string ? argv[1].as.as_string : "";
+    *out = value_int(vm_utl_file_fopen(vm, path, mode));
+    return 1;
+}
+
+static int native_utl_file_get_line(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_INT) {
+        vm_set_error(vm, "utl_file_get_line expects an int handle");
+        return 0;
+    }
+    *out = vm_utl_file_get_line(vm, argv[0].as.as_int);
+    return 1;
+}
+
+static int native_utl_file_put_line(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_INT || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "utl_file_put_line expects (int, string)");
+        return 0;
+    }
+    const char* text = argv[1].as.as_string ? argv[1].as.as_string : "";
+    *out = value_int(vm_utl_file_put_line(vm, argv[0].as.as_int, text) ? 0 : -1);
+    return 1;
+}
+
+static int native_utl_file_fclose(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_INT) {
+        vm_set_error(vm, "utl_file_fclose expects an int handle");
+        return 0;
+    }
+    *out = value_int(vm_utl_file_fclose(vm, argv[0].as.as_int) ? 0 : -1);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -1960,6 +1999,10 @@ static NativeDef natives[] = {
     {"dbms_output_put_line", 1, native_dbms_output_put_line},
     {"dbms_output_disable", 0, native_dbms_output_disable},
     {"dbms_output_get_lines", 0, native_dbms_output_get_lines},
+    {"utl_file_fopen", 2, native_utl_file_fopen},
+    {"utl_file_get_line", 1, native_utl_file_get_line},
+    {"utl_file_put_line", 2, native_utl_file_put_line},
+    {"utl_file_fclose", 1, native_utl_file_fclose},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

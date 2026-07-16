@@ -1699,11 +1699,22 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
             ProcDecl* proc = &spec->procs[i];
             char* mangled = mangle_package_name(spec->name, proc->name);
             if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
-            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
-                                     proc->params ? &proc->params->type : NULL,
-                                     proc->params ? &proc->params->mode : NULL,
-                                     proc->param_count);
-            free(mangled);
+            Type** pt = NULL;
+            ParamMode* pm = NULL;
+            if (proc->param_count > 0) {
+                pt = malloc(sizeof(Type*) * (size_t)proc->param_count);
+                pm = malloc(sizeof(ParamMode) * (size_t)proc->param_count);
+                if (pt == NULL || pm == NULL) {
+                    free(pt); free(pm); free(mangled);
+                    error(compiler, "out of memory"); return 0;
+                }
+                for (int p = 0; p < proc->param_count; p++) {
+                    pt[p] = proc->params[p].type;
+                    pm[p] = proc->params[p].mode;
+                }
+            }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type, pt, pm, proc->param_count);
+            free(pt); free(pm); free(mangled);
             if (idx < 0) {
                 compiler_format_error(compiler, error_buf, error_size,
                                       "Duplicate package member '%s.%s'", spec->name, proc->name);
@@ -1714,11 +1725,22 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
             ProcDecl* proc = &spec->funcs[i];
             char* mangled = mangle_package_name(spec->name, proc->name);
             if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
-            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
-                                     proc->params ? &proc->params->type : NULL,
-                                     proc->params ? &proc->params->mode : NULL,
-                                     proc->param_count);
-            free(mangled);
+            Type** pt = NULL;
+            ParamMode* pm = NULL;
+            if (proc->param_count > 0) {
+                pt = malloc(sizeof(Type*) * (size_t)proc->param_count);
+                pm = malloc(sizeof(ParamMode) * (size_t)proc->param_count);
+                if (pt == NULL || pm == NULL) {
+                    free(pt); free(pm); free(mangled);
+                    error(compiler, "out of memory"); return 0;
+                }
+                for (int p = 0; p < proc->param_count; p++) {
+                    pt[p] = proc->params[p].type;
+                    pm[p] = proc->params[p].mode;
+                }
+            }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type, pt, pm, proc->param_count);
+            free(pt); free(pm); free(mangled);
             if (idx < 0) {
                 compiler_format_error(compiler, error_buf, error_size,
                                       "Duplicate package member '%s.%s'", spec->name, proc->name);
@@ -1732,11 +1754,22 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
             ProcDecl* proc = &body->procs[i];
             char* mangled = mangle_package_name(body->name, proc->name);
             if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
-            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
-                                     proc->params ? &proc->params->type : NULL,
-                                     proc->params ? &proc->params->mode : NULL,
-                                     proc->param_count);
-            free(mangled);
+            Type** pt = NULL;
+            ParamMode* pm = NULL;
+            if (proc->param_count > 0) {
+                pt = malloc(sizeof(Type*) * (size_t)proc->param_count);
+                pm = malloc(sizeof(ParamMode) * (size_t)proc->param_count);
+                if (pt == NULL || pm == NULL) {
+                    free(pt); free(pm); free(mangled);
+                    error(compiler, "out of memory"); return 0;
+                }
+                for (int p = 0; p < proc->param_count; p++) {
+                    pt[p] = proc->params[p].type;
+                    pm[p] = proc->params[p].mode;
+                }
+            }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type, pt, pm, proc->param_count);
+            free(pt); free(pm); free(mangled);
             if (idx < 0 && idx != -2) {
                 compiler_format_error(compiler, error_buf, error_size,
                                       "Duplicate package member '%s.%s'", body->name, proc->name);
@@ -1747,11 +1780,22 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
             ProcDecl* proc = &body->funcs[i];
             char* mangled = mangle_package_name(body->name, proc->name);
             if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
-            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type,
-                                     proc->params ? &proc->params->type : NULL,
-                                     proc->params ? &proc->params->mode : NULL,
-                                     proc->param_count);
-            free(mangled);
+            Type** pt = NULL;
+            ParamMode* pm = NULL;
+            if (proc->param_count > 0) {
+                pt = malloc(sizeof(Type*) * (size_t)proc->param_count);
+                pm = malloc(sizeof(ParamMode) * (size_t)proc->param_count);
+                if (pt == NULL || pm == NULL) {
+                    free(pt); free(pm); free(mangled);
+                    error(compiler, "out of memory"); return 0;
+                }
+                for (int p = 0; p < proc->param_count; p++) {
+                    pt[p] = proc->params[p].type;
+                    pm[p] = proc->params[p].mode;
+                }
+            }
+            int idx = add_proc_entry(compiler, mangled, -1, proc->return_type, pt, pm, proc->param_count);
+            free(pt); free(pm); free(mangled);
             if (idx < 0 && idx != -2) {
                 compiler_format_error(compiler, error_buf, error_size,
                                       "Duplicate package member '%s.%s'", body->name, proc->name);

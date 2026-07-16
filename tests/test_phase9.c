@@ -57,8 +57,36 @@ TEST(phase9_dbms_output_disabled_put_is_noop) {
     ASSERT_INT_EQ(1, output_contains(out, "0"));
 }
 
+TEST(phase9_utl_file_write_and_read) {
+    FILE* f = fopen("/tmp/test_phase9_file.txt", "w");
+    if (f != NULL) fclose(f);
+
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int h = utl_file.fopen(\"/tmp/test_phase9_file.txt\", \"w\");\n"
+        "    utl_file.put_line(h, \"hello\");\n"
+        "    utl_file.put_line(h, \"world\");\n"
+        "    utl_file.fclose(h);\n"
+        "\n"
+        "    int r = utl_file.fopen(\"/tmp/test_phase9_file.txt\", \"r\");\n"
+        "    string a = utl_file.get_line(r);\n"
+        "    string b = utl_file.get_line(r);\n"
+        "    utl_file.fclose(r);\n"
+        "\n"
+        "    print a;\n"
+        "    print b;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "hello"));
+    ASSERT_INT_EQ(1, output_contains(out, "world"));
+}
+
 int main(void) {
     RUN_TEST(phase9_dbms_output_buffer_and_get_lines);
     RUN_TEST(phase9_dbms_output_disabled_put_is_noop);
+    RUN_TEST(phase9_utl_file_write_and_read);
     TEST_SUMMARY();
 }
