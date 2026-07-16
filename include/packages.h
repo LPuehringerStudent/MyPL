@@ -8,6 +8,11 @@
    Caller must free the returned string. */
 char* packages_load_source(DBDriver* driver, Context* ctx);
 
+/* Load built-in package source code as a single string.
+   Returns NULL if there are no built-in packages or on error.
+   Caller must free the returned string. */
+char* packages_load_builtins(void);
+
 /* Persist package source code from the given source string.
    If append is non-zero, the source is appended to existing persisted
    packages; otherwise it replaces them. Returns 1 on success, 0 on failure. */

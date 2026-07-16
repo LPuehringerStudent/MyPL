@@ -11,6 +11,26 @@
 
 static char* strip_main_procedure(const char* source);
 
+static const char* builtin_packages[] = {
+    NULL
+};
+
+char* packages_load_builtins(void) {
+    size_t total = 0;
+    for (int i = 0; builtin_packages[i] != NULL; i++) {
+        total += strlen(builtin_packages[i]) + 1;
+    }
+    if (total == 0) return NULL;
+    char* result = malloc(total + 1);
+    if (result == NULL) return NULL;
+    result[0] = '\0';
+    for (int i = 0; builtin_packages[i] != NULL; i++) {
+        if (i > 0) strcat(result, "\n");
+        strcat(result, builtin_packages[i]);
+    }
+    return result;
+}
+
 #ifdef USE_SQLITE
 static const char* PACKAGES_TABLE =
     "CREATE TABLE IF NOT EXISTS _mypl_packages ("
