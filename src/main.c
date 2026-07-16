@@ -46,6 +46,7 @@ static int run_file(const char* path, DBDriver* driver) {
         ctx = &custom_ctx;
     }
 
+    char* builtin_source = packages_load_builtins();
     char* package_source = driver != NULL ? packages_load_source(driver, ctx) : NULL;
     char* program_source = driver != NULL ? stored_programs_load_source(driver, ctx) : NULL;
     if (program_source != NULL && source != NULL) {
@@ -54,15 +55,21 @@ static int run_file(const char* path, DBDriver* driver) {
         program_source = filtered;
     }
 
+    size_t builtin_len = (builtin_source != NULL && *builtin_source != '\0') ? strlen(builtin_source) : 0;
     size_t pkg_len = (package_source != NULL && *package_source != '\0') ? strlen(package_source) : 0;
     size_t prg_len = (program_source != NULL && *program_source != '\0') ? strlen(program_source) : 0;
     size_t src_len = strlen(source);
 
     char* combined = NULL;
-    if (pkg_len > 0 || prg_len > 0) {
-        combined = malloc(pkg_len + prg_len + src_len + 3);
+    if (builtin_len > 0 || pkg_len > 0 || prg_len > 0) {
+        combined = malloc(builtin_len + pkg_len + prg_len + src_len + 4);
         if (combined != NULL) {
             size_t off = 0;
+            if (builtin_len > 0) {
+                memcpy(combined + off, builtin_source, builtin_len);
+                off += builtin_len;
+                combined[off++] = '\n';
+            }
             if (pkg_len > 0) {
                 memcpy(combined + off, package_source, pkg_len);
                 off += pkg_len;
@@ -77,6 +84,7 @@ static int run_file(const char* path, DBDriver* driver) {
         }
     }
 
+    free(builtin_source);
     free(package_source);
     free(program_source);
     const char* compile_source = combined != NULL ? combined : source;
