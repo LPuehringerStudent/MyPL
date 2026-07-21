@@ -41,13 +41,13 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 | **Bulk binds** | Row-by-row loops | `BULK COLLECT INTO`, `FORALL` for set-based DML | Implement bulk-bind opcodes for performance | ✅ Done |
 | **Triggers** | None | DML/DDL/system triggers, row/statement level, `BEFORE`/`AFTER`/`INSTEAD OF` | Add database triggers | 🔲 Not started |
 | **Stored code** | Source files compiled at runtime | Schema-stored procedures/functions/packages compiled into the DB | Persist MyPL program units in the database catalog | ✅ Done |
-| **Built-in packages** | Custom natives | `DBMS_OUTPUT`, `UTL_FILE`, `DBMS_SQL`, `DBMS_SCHEDULER`, etc. | Grow MyPL's standard library into named packages (`dbms_output`, `utl_file`, etc.) | 🔲 Not started |
+| **Built-in packages** | Custom natives | `DBMS_OUTPUT`, `UTL_FILE`, `DBMS_SQL`, `DBMS_SCHEDULER`, etc. | Grow MyPL's standard library into named packages (`dbms_output`, `utl_file`, etc.) | ✅ Done |
 | **Table functions** | None | Pipelined/table functions returning collections | Add table-valued/pipelined functions | 🔲 Not started |
 | **Object types** | `struct` only | Object types with methods, inheritance, persistence | Extend `struct` toward object types with methods | 🔲 Not started |
 | **Transactions** | `begin`/`commit`/`rollback` | Savepoints, autonomous transactions (`PRAGMA AUTONOMOUS_TRANSACTION`) | Add savepoints and autonomous transactions | ✅ Done |
 | **Security** | None | `AUTHID CURRENT_USER` / `AUTHID DEFINER` | Add invoker/definer rights for stored units | ✅ Done |
-| **Regex** | None | `REGEXP_LIKE`, `REGEXP_REPLACE`, etc. | Add regular-expression natives | 🔲 Not started |
-| **Sequences** | None | `SEQUENCE` objects and `CURRVAL`/`NEXTVAL` | Add sequence support | 🔲 Not started |
+| **Regex** | None | `REGEXP_LIKE`, `REGEXP_REPLACE`, etc. | Add regular-expression natives | ✅ Done |
+| **Sequences** | None | `SEQUENCE` objects and `CURRVAL`/`NEXTVAL` | Add sequence support | ✅ Done |
 | **Pragmas** | None | `PRAGMA AUTONOMOUS_TRANSACTION`, `PRAGMA EXCEPTION_INIT`, etc. | Add pragma support starting with autonomous transactions | ✅ Done |
 
 ## Phased Roadmap
@@ -96,12 +96,12 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 - [x] `AUTHID CURRENT_USER` / `AUTHID DEFINER`
 - [x] Savepoints and autonomous transactions
 
-### Phase 9 — Standard Library as Packages
-- [ ] `dbms_output`
-- [ ] `utl_file`
-- [ ] `dbms_sql`
-- [ ] Regular-expression natives
-- [ ] Sequence support
+### Phase 9 — Standard Library as Packages ✅
+- [x] `dbms_output`
+- [x] `utl_file`
+- [x] `dbms_sql`
+- [x] Regular-expression natives
+- [x] Sequence support
 
 ### Phase 10 — Advanced Features
 - [ ] DML/DDL triggers
