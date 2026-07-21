@@ -568,6 +568,10 @@ static int is_native(const char* name) {
            strcmp(name, "regexp_like") == 0 ||
            strcmp(name, "regexp_substr") == 0 ||
            strcmp(name, "regexp_replace") == 0 ||
+           strcmp(name, "create_sequence") == 0 ||
+           strcmp(name, "nextval") == 0 ||
+           strcmp(name, "currval") == 0 ||
+           strcmp(name, "drop_sequence") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1549,6 +1553,35 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             }
         }
         return &type_string;
+    }
+    if (strcmp(name, "create_sequence") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "create_sequence expects 3 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "create_sequence expects a string name");
+        }
+        for (int i = 1; i < 3; i++) {
+            Type* t = infer_expr(tc, args[i], NULL);
+            if (t != &type_unknown && t != NULL && t->kind != TYPE_INT) {
+                type_error(tc, loc, "create_sequence expects int start and increment");
+            }
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "nextval") == 0 || strcmp(name, "currval") == 0 ||
+        strcmp(name, "drop_sequence") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "sequence operation expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "sequence operation expects a string name");
+        }
+        return &type_int;
     }
     return NULL;
 }

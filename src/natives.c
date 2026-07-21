@@ -2065,6 +2065,64 @@ static int native_regexp_replace(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_create_sequence(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_INT || argv[2].type != VAL_INT) {
+        vm_set_error(vm, "create_sequence expects (string, int, int)");
+        return 0;
+    }
+    const char* name = argv[0].as.as_string ? argv[0].as.as_string : "";
+    if (!vm_sequence_create(vm, name, argv[1].as.as_int, argv[2].as.as_int)) {
+        vm_set_error(vm, "create_sequence failed (duplicate name, empty name, or too many sequences)");
+        return 0;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
+static int native_nextval(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "nextval expects a string sequence name");
+        return 0;
+    }
+    const char* name = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int value = 0;
+    if (!vm_sequence_nextval(vm, name, &value)) {
+        vm_set_error(vm, "nextval: sequence does not exist");
+        return 0;
+    }
+    *out = value_int(value);
+    return 1;
+}
+
+static int native_currval(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "currval expects a string sequence name");
+        return 0;
+    }
+    const char* name = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int value = 0;
+    if (!vm_sequence_currval(vm, name, &value)) {
+        vm_set_error(vm, "currval: sequence does not exist or nextval was never called");
+        return 0;
+    }
+    *out = value_int(value);
+    return 1;
+}
+
+static int native_drop_sequence(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "drop_sequence expects a string sequence name");
+        return 0;
+    }
+    const char* name = argv[0].as.as_string ? argv[0].as.as_string : "";
+    if (!vm_sequence_drop(vm, name)) {
+        vm_set_error(vm, "drop_sequence: sequence does not exist");
+        return 0;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -2157,6 +2215,10 @@ static NativeDef natives[] = {
     {"regexp_like", 2, native_regexp_like},
     {"regexp_substr", 2, native_regexp_substr},
     {"regexp_replace", 3, native_regexp_replace},
+    {"create_sequence", 3, native_create_sequence},
+    {"nextval", 1, native_nextval},
+    {"currval", 1, native_currval},
+    {"drop_sequence", 1, native_drop_sequence},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

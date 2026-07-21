@@ -141,6 +141,43 @@ TEST(phase9_regexp_substr) {
     ASSERT_INT_EQ(1, output_contains(out, "123"));
 }
 
+TEST(phase9_sequence_nextval_and_currval) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create_sequence(\"order_seq\", 10, 5);\n"
+        "    print int_to_string(nextval(\"order_seq\"));\n"
+        "    print int_to_string(nextval(\"order_seq\"));\n"
+        "    print int_to_string(currval(\"order_seq\"));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "10"));
+    ASSERT_INT_EQ(1, output_contains(out, "15"));
+}
+
+TEST(phase9_sequence_drop_and_undefined) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create_sequence(\"tmp_seq\", 1, 1);\n"
+        "    nextval(\"tmp_seq\");\n"
+        "    drop_sequence(\"tmp_seq\");\n"
+        "    try {\n"
+        "        nextval(\"tmp_seq\");\n"
+        "        print \"bad\";\n"
+        "    } catch (err) {\n"
+        "        print \"caught\";\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "caught"));
+    ASSERT_INT_EQ(0, output_contains(out, "bad"));
+}
+
 int main(void) {
     RUN_TEST(phase9_dbms_output_buffer_and_get_lines);
     RUN_TEST(phase9_dbms_output_disabled_put_is_noop);
@@ -149,5 +186,7 @@ int main(void) {
     RUN_TEST(phase9_regexp_like);
     RUN_TEST(phase9_regexp_replace);
     RUN_TEST(phase9_regexp_substr);
+    RUN_TEST(phase9_sequence_nextval_and_currval);
+    RUN_TEST(phase9_sequence_drop_and_undefined);
     TEST_SUMMARY();
 }
