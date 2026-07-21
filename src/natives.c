@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <limits.h>
 #include <math.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1946,6 +1947,124 @@ static int native_dbms_sql_query(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int regex_compile(VM* vm, const char* pattern, regex_t* out_re) {
+    int rc = regcomp(out_re, pattern, REG_EXTENDED);
+    if (rc != 0) {
+        char buf[128];
+        regerror(rc, out_re, buf, sizeof(buf));
+        char msg[256];
+        snprintf(msg, sizeof(msg), "invalid regular expression: %s", buf);
+        vm_set_error(vm, msg);
+        regfree(out_re);
+        return 0;
+    }
+    return 1;
+}
+
+static int native_regexp_like(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "regexp_like expects (string, string)");
+        return 0;
+    }
+    const char* subject = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* pattern = argv[1].as.as_string ? argv[1].as.as_string : "";
+    regex_t re;
+    if (!regex_compile(vm, pattern, &re)) return 0;
+    *out = value_bool(regexec(&re, subject, 0, NULL, 0) == 0);
+    regfree(&re);
+    return 1;
+}
+
+static int native_regexp_substr(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "regexp_substr expects (string, string)");
+        return 0;
+    }
+    const char* subject = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* pattern = argv[1].as.as_string ? argv[1].as.as_string : "";
+    regex_t re;
+    if (!regex_compile(vm, pattern, &re)) return 0;
+    regmatch_t match;
+    if (regexec(&re, subject, 1, &match, 0) != 0) {
+        regfree(&re);
+        *out = value_string(strdup(""));
+        return 1;
+    }
+    regfree(&re);
+    size_t len = (size_t)(match.rm_eo - match.rm_so);
+    char* result = malloc(len + 1);
+    if (result == NULL) {
+        vm_set_error(vm, "out of memory");
+        return 0;
+    }
+    memcpy(result, subject + match.rm_so, len);
+    result[len] = '\0';
+    *out = value_string(result);
+    return 1;
+}
+
+static int native_regexp_replace(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING ||
+        argv[2].type != VAL_STRING) {
+        vm_set_error(vm, "regexp_replace expects (string, string, string)");
+        return 0;
+    }
+    const char* subject = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* pattern = argv[1].as.as_string ? argv[1].as.as_string : "";
+    const char* replacement = argv[2].as.as_string ? argv[2].as.as_string : "";
+    regex_t re;
+    if (!regex_compile(vm, pattern, &re)) return 0;
+
+    size_t cap = strlen(subject) + 1;
+    char* result = malloc(cap);
+    if (result == NULL) {
+        regfree(&re);
+        vm_set_error(vm, "out of memory");
+        return 0;
+    }
+    size_t used = 0;
+    const char* cursor = subject;
+    regmatch_t match;
+    while (regexec(&re, cursor, 1, &match, 0) == 0) {
+        if (match.rm_eo == 0) break; /* empty match: avoid infinite loop */
+        size_t prefix_len = (size_t)match.rm_so;
+        size_t repl_len = strlen(replacement);
+        size_t need = used + prefix_len + repl_len + 1;
+        if (need > cap) {
+            while (cap < need) cap *= 2;
+            char* bigger = realloc(result, cap);
+            if (bigger == NULL) {
+                free(result);
+                regfree(&re);
+                vm_set_error(vm, "out of memory");
+                return 0;
+            }
+            result = bigger;
+        }
+        memcpy(result + used, cursor, prefix_len);
+        used += prefix_len;
+        memcpy(result + used, replacement, repl_len);
+        used += repl_len;
+        cursor += match.rm_eo;
+    }
+    size_t tail_len = strlen(cursor);
+    size_t need = used + tail_len + 1;
+    if (need > cap) {
+        char* bigger = realloc(result, need);
+        if (bigger == NULL) {
+            free(result);
+            regfree(&re);
+            vm_set_error(vm, "out of memory");
+            return 0;
+        }
+        result = bigger;
+    }
+    memcpy(result + used, cursor, tail_len + 1);
+    regfree(&re);
+    *out = value_string(result);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -2035,6 +2154,9 @@ static NativeDef natives[] = {
     {"utl_file_fclose", 1, native_utl_file_fclose},
     {"dbms_sql_execute", 1, native_dbms_sql_execute},
     {"dbms_sql_query", 1, native_dbms_sql_query},
+    {"regexp_like", 2, native_regexp_like},
+    {"regexp_substr", 2, native_regexp_substr},
+    {"regexp_replace", 3, native_regexp_replace},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

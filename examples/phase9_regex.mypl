@@ -1,0 +1,11 @@
+// Phase 9: regular-expression natives example
+proc main() -> int {
+    if regexp_like("order-123", "[0-9]+$") {
+        print "ends with digits";
+    }
+
+    print regexp_replace("a1b22c333", "[0-9]+", "#");
+    print regexp_substr("invoice 4567 total", "[0-9]+");
+
+    return 0;
+}
