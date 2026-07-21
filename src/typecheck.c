@@ -565,6 +565,9 @@ static int is_native(const char* name) {
            strcmp(name, "utl_file_fclose") == 0 ||
            strcmp(name, "dbms_sql_execute") == 0 ||
            strcmp(name, "dbms_sql_query") == 0 ||
+           strcmp(name, "regexp_like") == 0 ||
+           strcmp(name, "regexp_substr") == 0 ||
+           strcmp(name, "regexp_replace") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1507,6 +1510,45 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "dbms_sql_query expects a string");
         }
         return transient_array_type(tc, &type_row);
+    }
+    if (strcmp(name, "regexp_like") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "regexp_like expects 2 arguments");
+            return NULL;
+        }
+        for (int i = 0; i < 2; i++) {
+            Type* a = infer_expr(tc, args[i], NULL);
+            if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+                type_error(tc, loc, "regexp_like expects strings");
+            }
+        }
+        return &type_bool;
+    }
+    if (strcmp(name, "regexp_substr") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "regexp_substr expects 2 arguments");
+            return NULL;
+        }
+        for (int i = 0; i < 2; i++) {
+            Type* a = infer_expr(tc, args[i], NULL);
+            if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+                type_error(tc, loc, "regexp_substr expects strings");
+            }
+        }
+        return &type_string;
+    }
+    if (strcmp(name, "regexp_replace") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "regexp_replace expects 3 arguments");
+            return NULL;
+        }
+        for (int i = 0; i < 3; i++) {
+            Type* a = infer_expr(tc, args[i], NULL);
+            if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+                type_error(tc, loc, "regexp_replace expects strings");
+            }
+        }
+        return &type_string;
     }
     return NULL;
 }

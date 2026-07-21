@@ -101,10 +101,53 @@ TEST(phase9_dbms_sql_execute_and_query) {
     ASSERT_INT_EQ(1, output_contains(out, "2"));
 }
 
+TEST(phase9_regexp_like) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    if regexp_like(\"hello123\", \"[0-9]+\") { print \"match\"; }\n"
+        "    if regexp_like(\"hello\", \"^[a-z]+$\") { print \"lower\"; }\n"
+        "    if regexp_like(\"hello\", \"[0-9]+\") { print \"bad\"; }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "match"));
+    ASSERT_INT_EQ(1, output_contains(out, "lower"));
+    ASSERT_INT_EQ(0, output_contains(out, "bad"));
+}
+
+TEST(phase9_regexp_replace) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    print regexp_replace(\"a1b22c333\", \"[0-9]+\", \"#\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "a#b#c#"));
+}
+
+TEST(phase9_regexp_substr) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    print regexp_substr(\"abc123def\", \"[0-9]+\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "123"));
+}
+
 int main(void) {
     RUN_TEST(phase9_dbms_output_buffer_and_get_lines);
     RUN_TEST(phase9_dbms_output_disabled_put_is_noop);
     RUN_TEST(phase9_utl_file_write_and_read);
     RUN_TEST(phase9_dbms_sql_execute_and_query);
+    RUN_TEST(phase9_regexp_like);
+    RUN_TEST(phase9_regexp_replace);
+    RUN_TEST(phase9_regexp_substr);
     TEST_SUMMARY();
 }
