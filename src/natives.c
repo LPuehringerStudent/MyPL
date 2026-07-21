@@ -1,6 +1,7 @@
 #include "natives.h"
 
 #include <ctype.h>
+#include <dlfcn.h>
 #include <limits.h>
 #include <math.h>
 #include <regex.h>
@@ -2123,6 +2124,40 @@ static int native_drop_sequence(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING ||
+        argv[2].type != VAL_INT) {
+        vm_set_error(vm, "external_call expects (string, string, int)");
+        return 0;
+    }
+    const char* lib = argv[0].as.as_string ? argv[0].as.as_string : "";
+    const char* sym = argv[1].as.as_string ? argv[1].as.as_string : "";
+
+    dlerror();
+    void* handle = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
+    if (handle == NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "external_call: %s", dlerror());
+        vm_set_error(vm, msg);
+        return 0;
+    }
+    dlerror();
+    void* addr = dlsym(handle, sym);
+    const char* sym_err = dlerror();
+    if (sym_err != NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "external_call: %s", sym_err);
+        dlclose(handle);
+        vm_set_error(vm, msg);
+        return 0;
+    }
+    typedef int (*ExtFn)(int);
+    ExtFn fn;
+    memcpy(&fn, &addr, sizeof(fn));
+    *out = value_int(fn(argv[2].as.as_int));
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -2219,6 +2254,7 @@ static NativeDef natives[] = {
     {"nextval", 1, native_nextval},
     {"currval", 1, native_currval},
     {"drop_sequence", 1, native_drop_sequence},
+    {"external_call", 3, native_external_call},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

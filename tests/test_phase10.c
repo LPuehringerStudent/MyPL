@@ -323,6 +323,52 @@ TEST(phase10_cc_unterminated_if_is_error) {
     ASSERT_INT_EQ(1, rc);
 }
 
+static int build_test_shared_lib(void) {
+    FILE* f = fopen("/tmp/test_phase10_ext.c", "w");
+    if (f == NULL) return 0;
+    fprintf(f, "int mypl_double(int x) { return x * 2; }\n");
+    fclose(f);
+    int rc = system("cc -shared -fPIC -o /tmp/test_phase10_ext.so /tmp/test_phase10_ext.c");
+    return rc == 0;
+}
+
+TEST(phase10_external_call_shared_library) {
+    ASSERT_INT_EQ(1, build_test_shared_lib());
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int r = external_call(\"/tmp/test_phase10_ext.so\", \"mypl_double\", 21);\n"
+        "    print int_to_string(r);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "42"));
+}
+
+TEST(phase10_external_call_missing_library_fails) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    external_call(\"/tmp/nonexistent_lib_xyz.so\", \"foo\", 1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase10_external_call_missing_symbol_fails) {
+    ASSERT_INT_EQ(1, build_test_shared_lib());
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    external_call(\"/tmp/test_phase10_ext.so\", \"no_such_symbol\", 1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
 int main(void) {
     RUN_TEST(phase10_trigger_before_after_insert);
     RUN_TEST(phase10_trigger_does_not_fire_on_other_table);
@@ -338,5 +384,8 @@ int main(void) {
     RUN_TEST(phase10_cc_excluded_code_is_not_parsed);
     RUN_TEST(phase10_cc_elsif_chain);
     RUN_TEST(phase10_cc_unterminated_if_is_error);
+    RUN_TEST(phase10_external_call_shared_library);
+    RUN_TEST(phase10_external_call_missing_library_fails);
+    RUN_TEST(phase10_external_call_missing_symbol_fails);
     TEST_SUMMARY();
 }

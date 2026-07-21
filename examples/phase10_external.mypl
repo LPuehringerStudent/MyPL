@@ -1,0 +1,7 @@
+// Phase 10: external procedure linkage example.
+// Calls abs() from the C standard library via dlopen/dlsym (Linux).
+proc main() -> int {
+    int r = external_call("libc.so.6", "abs", -42);
+    print int_to_string(r);
+    return 0;
+}
