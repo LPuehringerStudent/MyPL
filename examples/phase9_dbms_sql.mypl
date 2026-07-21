@@ -1,0 +1,14 @@
+// Phase 9: dbms_sql example (dynamic SQL)
+proc main() -> int {
+    dbms_sql.execute("CREATE TABLE phase9_people (id int, name string)");
+    dbms_sql.execute("INSERT INTO phase9_people VALUES (1, 'alice')");
+    dbms_sql.execute("INSERT INTO phase9_people VALUES (2, 'bob')");
+
+    array<row> rows = dbms_sql.query("SELECT * FROM phase9_people ORDER BY id");
+    print int_to_string(length(rows));
+    for r in rows {
+        print r.name;
+    }
+
+    return 0;
+}

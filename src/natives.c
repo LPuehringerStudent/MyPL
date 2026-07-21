@@ -1916,6 +1916,36 @@ static int native_utl_file_fclose(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_dbms_sql_execute(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "dbms_sql_execute expects a string");
+        return 0;
+    }
+    const char* sql = argv[0].as.as_string ? argv[0].as.as_string : "";
+    int rc = vm_dbms_sql_execute(vm, sql);
+    if (rc < 0) {
+        DBDriver* driver = vm_get_driver(vm);
+        if (driver != NULL && driver->error_message[0] != '\0') {
+            vm_set_error(vm, driver->error_message);
+        } else {
+            vm_set_error(vm, "dbms_sql_execute failed");
+        }
+        return 0;
+    }
+    *out = value_int(rc);
+    return 1;
+}
+
+static int native_dbms_sql_query(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "dbms_sql_query expects a string");
+        return 0;
+    }
+    const char* sql = argv[0].as.as_string ? argv[0].as.as_string : "";
+    *out = vm_dbms_sql_query(vm, sql);
+    return 1;
+}
+
 static NativeDef natives[] = {
     {"length",  1, native_length},
     {"append",  2, native_append},
@@ -2003,6 +2033,8 @@ static NativeDef natives[] = {
     {"utl_file_get_line", 1, native_utl_file_get_line},
     {"utl_file_put_line", 2, native_utl_file_put_line},
     {"utl_file_fclose", 1, native_utl_file_fclose},
+    {"dbms_sql_execute", 1, native_dbms_sql_execute},
+    {"dbms_sql_query", 1, native_dbms_sql_query},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

@@ -1003,6 +1003,7 @@ static Stmt* assignment(Parser* parser) {
                 Expr* call_expr = call(parser, left);
                 if (call_expr != NULL && call_expr->kind == EXPR_CALL) {
                     free(call_expr->as.call.package_name);
+                    free(call_expr->as.call.name);
                     call_expr->as.call.package_name = name;
                     call_expr->as.call.name = field_name;
                     stmt = create_expr_stmt(call_expr);
