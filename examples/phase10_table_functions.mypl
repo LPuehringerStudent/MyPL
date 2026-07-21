@@ -1,0 +1,30 @@
+// Phase 10: table functions example (functions returning collections)
+func squares(count int) -> array<int> {
+    array<int> result;
+    for i in range(1, count) {
+        append(result, i * i);
+    }
+    return result;
+}
+
+func active_accounts() -> array<row> {
+    array<row> rows;
+    select * into rows from accounts;
+    return rows;
+}
+
+proc main() -> int {
+    create table accounts (id int, name string);
+    insert into accounts values (1, 'alice');
+    insert into accounts values (2, 'bob');
+
+    for s in squares(4) {
+        print int_to_string(s);
+    }
+
+    for r in active_accounts() {
+        print r.name;
+    }
+
+    return 0;
+}

@@ -127,10 +127,57 @@ TEST(phase10_trigger_update_and_delete) {
     ASSERT_INT_EQ(1, output_contains(out, "deleted"));
 }
 
+TEST(phase10_table_function_scalar_collection) {
+    char out[256];
+    int rc = run_mypl(
+        "func numbers() -> array<int> {\n"
+        "    return range(1, 5);\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    int total = 0;\n"
+        "    for n in numbers() {\n"
+        "        total = total + n;\n"
+        "    }\n"
+        "    print int_to_string(total);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "10"));
+}
+
+TEST(phase10_table_function_row_collection) {
+    remove("mypl.db");
+    char out[256];
+    int rc = run_mypl(
+        "func all_accounts() -> array<row> {\n"
+        "    array<row> rows;\n"
+        "    select * into rows from accounts;\n"
+        "    return rows;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table accounts (id int, name string);\n"
+        "    insert into accounts values (1, 'alice');\n"
+        "    insert into accounts values (2, 'bob');\n"
+        "    print int_to_string(length(all_accounts()));\n"
+        "    for r in all_accounts() {\n"
+        "        print r.name;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "alice"));
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+}
+
 int main(void) {
     RUN_TEST(phase10_trigger_before_after_insert);
     RUN_TEST(phase10_trigger_does_not_fire_on_other_table);
     RUN_TEST(phase10_trigger_ddl_create_table);
     RUN_TEST(phase10_trigger_update_and_delete);
+    RUN_TEST(phase10_table_function_scalar_collection);
+    RUN_TEST(phase10_table_function_row_collection);
     TEST_SUMMARY();
 }

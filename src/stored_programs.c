@@ -652,6 +652,9 @@ static int custom_save_source(DBDriver* driver, Context* ctx, const char* source
     if (existing != NULL) {
         parse_sidecar(existing, &merged, &merged_count);
         free(existing);
+        /* parse_sidecar grows the array with its own capacity tracking;
+         * seed cap from the loaded count so add_unit grows correctly. */
+        cap = merged_count;
     }
 
     FILE* f = fopen(path, "w");
