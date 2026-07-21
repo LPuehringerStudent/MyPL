@@ -1,114 +1,44 @@
-# MyPL Future Goals: PL/SQL Gap Analysis & Roadmap
+# MyPL — Next Steps
 
-> This document compares MyPL with Oracle PL/SQL and reframes every gap as a future goal. It is the single source of truth for what to build next.
+This document tracks the remaining roadmap for MyPL. Phases 1–10 are complete (see git history and the closed issues #1–#16 for details). The phases below address the known gaps that remain after Phase 10.
 
-## Where MyPL Stands Today
+## Known Gaps (as of Phase 10 completion)
 
-MyPL is a usable small-language prototype with these features already in place:
-
-- **Program units:** `proc` procedures and `func` functions with typed parameters and a single return value.
-- **Parameter modes:** `IN`, `OUT`, and `IN OUT` parameters for multi-value returns.
-- **Core types:** `int`, `float`, `string`, `bool`, `array<T>`, `map<string,T>`, `row`, and user-defined `struct`.
-- **Control flow:** `if`/`else`, `while`, `do ... while`, numeric `for`, `foreach`, `case`, `break`, `continue`, `return`.
-- **Blocks:** Anonymous `declare ... begin ... end` blocks for ad-hoc scripting.
-- **Embedded SQL:** DDL/DML/transaction statements, `?var` parameter binding, `SELECT ... INTO` (scalar and `array<row>`), and `for row in SELECT ...` iteration.
-- **SQL feedback:** `sql_rowcount()`, `sql_found()`, `sql_notfound()` report the result of the last DML statement.
-- **Dynamic SQL:** `execute_immediate(sql_string)` runs DDL/DML built at runtime and returns the affected-row count.
-- **Exception handling:** `try { ... } catch (err) { ... }` with a reliable error-message variable.
-- **Named exceptions:** predefined (`no_data_found`, `too_many_rows`) and user-defined exceptions, `raise exception_name;`, `raise_application_error(code, message)`, and `sqlcode`/`sqlerrm` inside catch blocks.
-- **Explicit cursors:** `cursor` variables, `OPEN`, `FETCH`, `CLOSE`, and attributes `%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`.
-- **Packages:** `package is` specs and `package body is` bodies with public/private members, package state, and sidecar persistence across runs.
-- **Modules:** `import "path";` splits code across files and prevents circular/duplicate imports.
-- **Standard library:** string, math, array, file I/O, utility, and SQL helper natives.
-- **Backends:** built-in custom SQL engine or SQLite via `--db`/`.connect`.
-- **REPL:** `.connect`, `.tables`, `.schema`, `.sql`, `.vars`, `.load`, `.defs`, `.history`, and multiline procedure definitions.
-
-## PL/SQL Gaps Reframed as Future Goals
-
-The table below lists where Oracle PL/SQL is still ahead, rewritten as positive next-step goals. Completed items are marked with a checkmark in the "Status" column.
-
-| Area | MyPL Today | PL/SQL Capability | Future Goal | Status |
-|------|-----------|-------------------|-------------|--------|
-| **Functions** | `func` exists but is called like a procedure | `FUNCTION` callable from SQL expressions | Allow `func` in SQL `SELECT`, `WHERE`, and assignment expressions | ✅ Core `func` unit done |
-| **Packages** | Spec/body with sidecar persistence | Full schema-stored packages, overloading, `AUTHID` | Persist package source and state in the database catalog; add `AUTHID CURRENT_USER`/`DEFINER` | ✅ Spec/body/state/authid done; package persistence via existing sidecar, top-level proc/func catalog added |
-| **Parameter modes** | `IN`, `OUT`, `IN OUT` | Same set plus `NOCOPY` | Add `NOCOPY` hint for large parameters | ✅ IN/OUT/IN OUT done |
-| **Cursors** | Explicit cursor variables | `REF CURSOR`, cursor variables as parameters, dynamic `OPEN FOR` | Add `REF CURSOR`-like cursor variables and `OPEN cursor FOR query` | ✅ Explicit cursors done; REF CURSOR next |
-| **Collections** | `array<T>`, `map<string,T>` | Associative arrays, nested tables, `VARRAY`s, collection methods | Add associative arrays and standard collection methods (`EXTEND`, `TRIM`, `DELETE`, `FIRST`/`LAST`/`NEXT`/`PRIOR`) | ✅ Done |
-| **Types** | Basic types and structs | `%TYPE`, `%ROWTYPE`, records, subtypes, `DATE`/`TIMESTAMP` | Add `%TYPE`/`%ROWTYPE`, a `date`/`timestamp` type, and user-defined subtypes | ✅ Done |
-| **Control flow** | `case` statement/expression | Labeled blocks, `GOTO` | Add labeled blocks and `GOTO` for parity with legacy PL/SQL | ✅ `case` done; labeled blocks/GOTO next |
-| **Blocks** | Anonymous blocks supported | Same | — | ✅ Done |
-| **Exceptions** | Generic `try/catch` with message string | Named predefined/user-defined exceptions, `RAISE`, `RAISE_APPLICATION_ERROR`, `SQLCODE`/`SQLERRM` | Add named exceptions, `raise`, `raise_application_error`, and `sqlcode`/`sqlerrm` | ✅ Done |
-| **Bulk binds** | Row-by-row loops | `BULK COLLECT INTO`, `FORALL` for set-based DML | Implement bulk-bind opcodes for performance | ✅ Done |
-| **Triggers** | None | DML/DDL/system triggers, row/statement level, `BEFORE`/`AFTER`/`INSTEAD OF` | Add database triggers | ✅ Done |
-| **Stored code** | Source files compiled at runtime | Schema-stored procedures/functions/packages compiled into the DB | Persist MyPL program units in the database catalog | ✅ Done |
-| **Built-in packages** | Custom natives | `DBMS_OUTPUT`, `UTL_FILE`, `DBMS_SQL`, `DBMS_SCHEDULER`, etc. | Grow MyPL's standard library into named packages (`dbms_output`, `utl_file`, etc.) | ✅ Done |
-| **Table functions** | None | Pipelined/table functions returning collections | Add table-valued/pipelined functions | ✅ Done |
-| **Object types** | `struct` only | Object types with methods, inheritance, persistence | Extend `struct` toward object types with methods | ✅ Done |
-| **Transactions** | `begin`/`commit`/`rollback` | Savepoints, autonomous transactions (`PRAGMA AUTONOMOUS_TRANSACTION`) | Add savepoints and autonomous transactions | ✅ Done |
-| **Security** | None | `AUTHID CURRENT_USER` / `AUTHID DEFINER` | Add invoker/definer rights for stored units | ✅ Done |
-| **Regex** | None | `REGEXP_LIKE`, `REGEXP_REPLACE`, etc. | Add regular-expression natives | ✅ Done |
-| **Sequences** | None | `SEQUENCE` objects and `CURRVAL`/`NEXTVAL` | Add sequence support | ✅ Done |
-| **Pragmas** | None | `PRAGMA AUTONOMOUS_TRANSACTION`, `PRAGMA EXCEPTION_INIT`, etc. | Add pragma support starting with autonomous transactions | ✅ Done |
+- The custom SQL engine has no indexes (`src/btree.c` is a stub), no `DROP TABLE`/`ALTER TABLE`, single-condition `WHERE`, three column types, and no views or constraints.
+- There is no NULL semantics anywhere (`VAL_NULL` does not exist; SQLite NULLs map to `0`).
+- Phase 9/10 features are first cuts: statement-level triggers on static SQL only, session-only sequences, simplified `dbms_sql`/`utl_file`, single-signature FFI, line-flag-only conditional compilation.
+- Fixed ceilings everywhere (`STACK_MAX`, `MAX_LOCALS`, handle counts), full-recompile REPL, no package init for imported modules, non-overridable built-in packages, ref-count-only GC.
+- No fuzzing, examples not covered by CI, no install target, README lags the feature set, POSIX-only.
 
 ## Phased Roadmap
 
-### Phase 1 — Core PL/SQL Foundations ✅
-- [x] SQL DML feedback: `sql_rowcount`, `sql_found`, `sql_notfound`
-- [x] Dynamic SQL: `execute_immediate`
-- [x] Structured exception handling: `try`/`catch` with reliable error message
-- [x] `tests/test_phase1.c` and `examples/phase1.mypl`
+### Phase 11 — SQL Engine Depth
+- [ ] NULL semantics: `VAL_NULL`, `IS NULL` / `IS NOT NULL`, three-valued logic in `WHERE`, `COALESCE`/`NVL` natives, correct NULL mapping in both drivers
+- [ ] `DROP TABLE` and `ALTER TABLE` (`ADD COLUMN`, `DROP COLUMN`)
+- [ ] Rich `WHERE` for SELECT/UPDATE/DELETE: `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`
+- [ ] Real B-tree storage in `src/btree.c` plus `CREATE INDEX` / `DROP INDEX` and index-assisted lookups
+- [ ] Column constraints: `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `DEFAULT`
+- [ ] `CREATE VIEW` / `DROP VIEW` with view resolution in SELECT
 
-### Phase 2 — Functions, Parameters, and Control Flow ✅
-- [x] `func` keyword and callable functions
-- [x] `OUT` and `IN OUT` parameter modes
-- [x] `case` statement/expression
-- [x] Anonymous blocks
+### Phase 12 — Persistence & Runtime Completeness
+- [ ] Persist sequences in the database catalog (survive process restarts)
+- [ ] Persist triggers in the catalog, add `DROP TRIGGER`, and fire triggers on dynamic SQL (`execute_immediate`, `dbms_sql.execute`)
+- [ ] Row-level triggers (`FOR EACH ROW`) with `:new` / `:old` row context
+- [ ] Full `dbms_sql` cursor API: `open_cursor`, `parse`, `bind_variable`, `execute`, `fetch_rows`, `column_value`, `close_cursor`
+- [ ] Initialize packages declared in imported modules
+- [ ] Allow user packages to override/replace built-in packages
+- [ ] `utl_file` expansion: append/seek/flush, larger handle table, directory objects
+- [ ] `external_call` marshalling for float and string signatures
+- [ ] CLI flag definitions for conditional compilation (e.g. `mypl -DDEBUG file.mypl`)
 
-### Phase 3 — Explicit Cursors ✅
-- [x] Explicit cursor variables
-- [x] `OPEN`, `FETCH`, `CLOSE`
-- [x] Cursor attributes (`%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`)
-
-### Phase 4 — Schema-Level Program Units ✅
-- [x] `package is` / `package body is` syntax
-- [x] Package state and sidecar persistence
-- [x] `tests/test_phase4.c` and `examples/phase4.mypl`
-
-### Phase 5 — Exception Model & Named Errors ✅
-- [x] Named predefined exceptions
-- [x] User-defined exceptions
-- [x] `raise` and `raise_application_error`
-- [x] `sqlcode` and `sqlerrm`
-
-### Phase 6 — Collections & Bulk Binds ✅
-- [x] Associative arrays
-- [x] Collection methods: `EXTEND`, `TRIM`, `DELETE`, `FIRST`, `LAST`, `NEXT`, `PRIOR`
-- [x] `BULK COLLECT INTO`
-- [x] `FORALL`
-
-### Phase 7 — Type System Enhancements ✅
-- [x] `%TYPE` and `%ROWTYPE`
-- [x] `date` / `timestamp` type and formatting natives
-- [x] User-defined subtypes
-
-### Phase 8 — Stored Code & Security ✅
-- [x] Persist procedures/functions/packages in the database catalog
-- [x] `AUTHID CURRENT_USER` / `AUTHID DEFINER`
-- [x] Savepoints and autonomous transactions
-
-### Phase 9 — Standard Library as Packages ✅
-- [x] `dbms_output`
-- [x] `utl_file`
-- [x] `dbms_sql`
-- [x] Regular-expression natives
-- [x] Sequence support
-
-### Phase 10 — Advanced Features ✅
-- [x] DML/DDL triggers
-- [x] Table/pipelined functions
-- [x] Object types with methods
-- [x] Conditional compilation
-- [x] External procedure linkage
+### Phase 13 — Hardening & Tooling
+- [ ] Fuzzing harness for the lexer, parser, and conditional-compilation preprocessor (libFuzzer/AFL++)
+- [ ] Run all `examples/*.mypl` as smoke tests in CI
+- [ ] Makefile `install` target and a man page
+- [ ] Rewrite README to document the full Phase 1–10 feature set
+- [ ] Replace fixed ceilings (`STACK_MAX`, `MAX_LOCALS`, handle tables) with dynamic growth
+- [ ] Incremental REPL compilation instead of full recompile per input
+- [ ] Cycle detection or cycle-safe collection for reference-counted arrays/maps
 
 ## How to Use This Document
 
@@ -119,6 +49,5 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 
 ## References
 
-- [Oracle PL/SQL Language Reference](https://docs.oracle.com/en/database/oracle/oracle-database/23/lnpls/database-pl-sql-language-reference.pdf)
-- [PL/SQL — Wikipedia](https://en.wikipedia.org/wiki/PL/SQL)
-- MyPL `README.md` for current build/test instructions.
+- Oracle PL/SQL Language Reference (triggers, sequences, DBMS_SQL, UTL_FILE, conditional compilation)
+- SQLite documentation (indexes, views, NULL semantics) for the backend behavior MyPL mirrors
