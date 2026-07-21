@@ -22,6 +22,7 @@
 #define MAX_BREAK_PATCHES 256
 #define MAX_GLOBALS 256
 #define MAX_EXCEPTIONS 64
+#define MAX_TRIGGERS 64
 
 typedef struct {
     const char* name;
@@ -67,6 +68,13 @@ typedef struct {
 } ExceptionEntry;
 
 typedef struct {
+    char* proc_name;
+    int   timing;
+    int   event;
+    char* table;
+} TriggerEntry;
+
+typedef struct {
     Chunk* chunk;
     Local locals[MAX_LOCALS];
     int local_count;
@@ -99,6 +107,8 @@ typedef struct {
     int current_proc_autonomous;
     ExceptionEntry exceptions[MAX_EXCEPTIONS];
     int exception_count;
+    TriggerEntry triggers[MAX_TRIGGERS];
+    int trigger_count;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -183,6 +193,13 @@ static int add_exception(Compiler* compiler, const char* name, int code) {
 static void free_exception_entries(Compiler* compiler) {
     for (int i = 0; i < compiler->exception_count; i++) {
         free((void*)compiler->exceptions[i].name);
+    }
+}
+
+static void free_trigger_entries(Compiler* compiler) {
+    for (int i = 0; i < compiler->trigger_count; i++) {
+        free(compiler->triggers[i].proc_name);
+        free(compiler->triggers[i].table);
     }
 }
 
@@ -431,6 +448,8 @@ static void emit_call(Compiler* compiler, const char* name, int arg_count) {
 
 static void compile_expr(Compiler* compiler, Expr* expr);
 static void compile_stmt(Compiler* compiler, Stmt* stmt);
+static int sql_stmt_trigger_info(const char* sql, int* event, char* table, size_t table_size);
+static void emit_trigger_calls(Compiler* compiler, int timing, int event, const char* table);
 
 static int compiler_load_module(Compiler* compiler, const char* path, char* error, size_t error_size);
 static int compiler_compile_source(Compiler* compiler, const char* source, int is_main, const char* path, char* error, size_t error_size);
@@ -1211,9 +1230,18 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, "too many constants");
                 return;
             }
+            int trig_event = -1;
+            char trig_table[64];
+            int has_trig = sql_stmt_trigger_info(s->sql, &trig_event, trig_table, sizeof(trig_table));
+            if (has_trig) {
+                emit_trigger_calls(compiler, TRIGGER_BEFORE, trig_event, trig_table);
+            }
             emit_byte(compiler, OP_SQL_EXEC);
             emit_u16(compiler, (uint16_t)sql_idx);
             emit_u16(compiler, (uint16_t)stmt->loc.line);
+            if (has_trig) {
+                emit_trigger_calls(compiler, TRIGGER_AFTER, trig_event, trig_table);
+            }
             break;
         }
         case STMT_SQL_TRANSACTION: {
@@ -1806,6 +1834,127 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
     return 1;
 }
 
+static int register_trigger_procs(Compiler* compiler, Program* program, char* error_buf, size_t error_size) {
+    for (int i = 0; i < program->trigger_count; i++) {
+        TriggerDecl* trig = &program->triggers[i];
+        size_t len = strlen(trig->name) + 11;
+        char* mangled = malloc(len);
+        if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+        snprintf(mangled, len, "__trigger_%s", trig->name);
+        int idx = add_proc_entry(compiler, mangled, -1, &type_int, NULL, NULL, 0);
+        if (idx < 0) {
+            compiler_format_error(compiler, error_buf, error_size,
+                                  "Duplicate trigger '%s'", trig->name);
+            free(mangled);
+            return 0;
+        }
+        if (compiler->trigger_count >= MAX_TRIGGERS) {
+            compiler_format_error(compiler, error_buf, error_size, "Too many triggers");
+            free(mangled);
+            return 0;
+        }
+        TriggerEntry* entry = &compiler->triggers[compiler->trigger_count++];
+        entry->proc_name = mangled;
+        entry->timing = trig->timing;
+        entry->event = trig->event;
+        entry->table = malloc(strlen(trig->table) + 1);
+        if (entry->table == NULL) {
+            error(compiler, "out of memory");
+            return 0;
+        }
+        strcpy(entry->table, trig->table);
+    }
+    return 1;
+}
+
+static void compile_trigger_members(Compiler* compiler, Program* program) {
+    for (int i = 0; i < program->trigger_count; i++) {
+        TriggerDecl* trig = &program->triggers[i];
+        size_t len = strlen(trig->name) + 11;
+        char* mangled = malloc(len);
+        if (mangled == NULL) { error(compiler, "out of memory"); return; }
+        snprintf(mangled, len, "__trigger_%s", trig->name);
+        int idx = find_proc(compiler, mangled);
+        free(mangled);
+        if (idx < 0) continue;
+        compiler->current_proc_autonomous = 0;
+        compiler->procs[idx].offset = compiler->chunk->count;
+        compile_block(compiler, trig->body);
+        compiler->procs[idx].autonomous_transaction = compiler->current_proc_autonomous;
+        if (compiler->had_error) return;
+        emit_constant(compiler, value_int(0));
+        emit_byte(compiler, OP_RETURN);
+        compiler->local_count = 0;
+        compiler->scope_depth = 0;
+    }
+}
+
+/* Extract (event, table) from a static DML/DDL statement for trigger firing.
+ * Returns 1 on success, 0 when the statement has no trigger-relevant shape. */
+static int sql_stmt_trigger_info(const char* sql, int* event, char* table, size_t table_size) {
+    const char* p = sql;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    char kw[16];
+    int ki = 0;
+    while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) && ki < 15) {
+        char c = *p++;
+        kw[ki++] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+    }
+    kw[ki] = '\0';
+
+    int ev = -1;
+    const char* skip_kw = NULL;
+    if (strcmp(kw, "insert") == 0)      { ev = TRIGGER_INSERT; skip_kw = "into"; }
+    else if (strcmp(kw, "update") == 0) { ev = TRIGGER_UPDATE; skip_kw = NULL; }
+    else if (strcmp(kw, "delete") == 0) { ev = TRIGGER_DELETE; skip_kw = "from"; }
+    else if (strcmp(kw, "create") == 0) { ev = TRIGGER_CREATE; skip_kw = "table"; }
+    else if (strcmp(kw, "drop") == 0)   { ev = TRIGGER_DROP;   skip_kw = "table"; }
+    if (ev < 0) return 0;
+
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (skip_kw != NULL) {
+        size_t n = strlen(skip_kw);
+        for (size_t i = 0; i < n; i++) {
+            char c = p[i];
+            char lower = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+            if (lower != skip_kw[i]) return 0;
+        }
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    }
+    size_t ti = 0;
+    while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                  (*p >= '0' && *p <= '9') || *p == '_') && ti + 1 < table_size) {
+        table[ti++] = *p++;
+    }
+    if (ti == 0) return 0;
+    table[ti] = '\0';
+    *event = ev;
+    return 1;
+}
+
+static int trigger_name_equals(const char* a, const char* b) {
+    while (*a && *b) {
+        char ca = *a++;
+        char cb = *b++;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return 0;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static void emit_trigger_calls(Compiler* compiler, int timing, int event, const char* table) {
+    for (int i = 0; i < compiler->trigger_count; i++) {
+        TriggerEntry* entry = &compiler->triggers[i];
+        if (entry->timing == timing && entry->event == event &&
+            trigger_name_equals(entry->table, table)) {
+            emit_call(compiler, entry->proc_name, 0);
+            emit_byte(compiler, OP_POP);
+        }
+    }
+}
+
 static void compile_package_initializers(Compiler* compiler, Program* program) {
     for (int b = 0; b < program->body_count; b++) {
         PackageBodyDecl* body = &program->bodies[b];
@@ -1935,6 +2084,11 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         return 0;
     }
 
+    if (!register_trigger_procs(compiler, program, error, error_size)) {
+        free_program(program);
+        return 0;
+    }
+
     ProcSignature* sigs = malloc(sizeof(ProcSignature) * (size_t)compiler->proc_count);
     if (sigs == NULL) {
         compiler_format_error(compiler, error, error_size, "out of memory");
@@ -1974,6 +2128,16 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
 
     compile_package_members(compiler, program);
+    if (compiler->had_error) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, compiler->error_message, error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        free_program(program);
+        return 0;
+    }
+
+    compile_trigger_members(compiler, program);
     if (compiler->had_error) {
         if (error != NULL && error_size > 0) {
             strncpy(error, compiler->error_message, error_size - 1);
@@ -2072,6 +2236,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.current_proc_autonomous = 0;
     compiler.cursor_query_count = 0;
     compiler.exception_count = 0;
+    compiler.trigger_count = 0;
     add_exception(&compiler, "no_data_found", 100);
     add_exception(&compiler, "too_many_rows", -1422);
     for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;
@@ -2079,6 +2244,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
 
     if (!compiler_compile_source(&compiler, source, 1, path, error, error_size)) {
         free_exception_entries(&compiler);
+        free_trigger_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -2092,6 +2258,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
                          "No main procedure");
         }
         free_exception_entries(&compiler);
+        free_trigger_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -2108,6 +2275,8 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
                 format_error(error, error_size, compiler.source_path, 0, 0, msg);
             }
             free_exception_entries(&compiler);
+            free_trigger_entries(&compiler);
+        free_trigger_entries(&compiler);
             free_proc_entries(&compiler);
             free_global_names(&compiler);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);

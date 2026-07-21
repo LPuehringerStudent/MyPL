@@ -2833,6 +2833,96 @@ static void parse_struct(Parser* parser, Program* program) {
     parser_add_struct_name(parser, name);
 }
 
+static void parse_trigger(Parser* parser, Program* program) {
+    /* 'trigger' was already consumed; current is IDENT (trigger name) */
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected trigger name after 'trigger'");
+        return;
+    }
+    advance(parser); /* name */
+    char* name = copy_token_lexeme(&parser->previous);
+
+    int timing = -1;
+    if (current_token_is_keyword(parser, "before")) {
+        timing = TRIGGER_BEFORE;
+    } else if (current_token_is_keyword(parser, "after")) {
+        timing = TRIGGER_AFTER;
+    }
+    if (timing < 0) {
+        error_at_current(parser, "expected 'before' or 'after' in trigger declaration");
+        free(name);
+        return;
+    }
+    advance(parser); /* before/after */
+
+    int event = -1;
+    if (match(parser, TOKEN_INSERT)) {
+        event = TRIGGER_INSERT;
+    } else if (match(parser, TOKEN_UPDATE)) {
+        event = TRIGGER_UPDATE;
+    } else if (match(parser, TOKEN_DELETE)) {
+        event = TRIGGER_DELETE;
+    } else if (match(parser, TOKEN_CREATE)) {
+        event = TRIGGER_CREATE;
+    } else if (match(parser, TOKEN_DROP)) {
+        event = TRIGGER_DROP;
+    }
+    if (event < 0) {
+        error_at_current(parser, "expected 'insert', 'update', 'delete', 'create', or 'drop' in trigger declaration");
+        free(name);
+        return;
+    }
+
+    if (!current_token_is_keyword(parser, "on")) {
+        error_at_current(parser, "expected 'on' in trigger declaration");
+        free(name);
+        return;
+    }
+    advance(parser); /* on */
+
+    if (!check(parser, TOKEN_IDENT)) {
+        error_at_current(parser, "expected table name after 'on'");
+        free(name);
+        return;
+    }
+    advance(parser); /* table name */
+    char* table = copy_token_lexeme(&parser->previous);
+
+    if (!check(parser, TOKEN_LBRACE)) {
+        error_at_current(parser, "expected '{' to start trigger body");
+        free(name);
+        free(table);
+        return;
+    }
+    Block* body = block(parser);
+    if (body == NULL) {
+        free(name);
+        free(table);
+        return;
+    }
+
+    if (program->trigger_count >= program->trigger_capacity) {
+        int new_capacity = program->trigger_capacity == 0 ? 4 : program->trigger_capacity * 2;
+        TriggerDecl* new_triggers = realloc(program->triggers,
+            sizeof(TriggerDecl) * (size_t)new_capacity);
+        if (new_triggers == NULL) {
+            error_at_current(parser, "out of memory");
+            free(name);
+            free(table);
+            free_block(body);
+            return;
+        }
+        program->triggers = new_triggers;
+        program->trigger_capacity = new_capacity;
+    }
+    TriggerDecl* decl = &program->triggers[program->trigger_count++];
+    decl->name = name;
+    decl->timing = timing;
+    decl->event = event;
+    decl->table = table;
+    decl->body = body;
+}
+
 Program* parse_with_path(const char* source, const char* path, char* error, size_t error_size) {
     Parser parser;
     lexer_init(&parser.lexer, source);
@@ -2854,6 +2944,8 @@ Program* parse_with_path(const char* source, const char* path, char* error, size
             parse_func(&parser, program);
         } else if (match(&parser, TOKEN_PACKAGE)) {
             parse_package(&parser, program);
+        } else if (match(&parser, TOKEN_TRIGGER)) {
+            parse_trigger(&parser, program);
         } else if (check(&parser, TOKEN_CREATE)) {
             /* Support 'create [or replace] package [body] ...' syntax. */
             advance(&parser); /* create */
@@ -2877,7 +2969,7 @@ Program* parse_with_path(const char* source, const char* path, char* error, size
         } else if (match(&parser, TOKEN_BLOCK)) {
             parse_anon_block(&parser, program);
         } else {
-            error_at_current(&parser, "expected 'proc', 'func', 'struct', 'import', 'package', or 'block'");
+            error_at_current(&parser, "expected 'proc', 'func', 'struct', 'import', 'package', 'trigger', or 'block'");
             break;
         }
     }

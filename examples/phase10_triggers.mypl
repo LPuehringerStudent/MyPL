@@ -1,0 +1,26 @@
+// Phase 10: DML/DDL triggers example
+trigger audit_insert after insert on accounts {
+    dbms_output.put_line("row inserted into accounts");
+}
+
+trigger audit_update before update on accounts {
+    dbms_output.put_line("accounts about to be updated");
+}
+
+trigger audit_ddl after create on accounts {
+    dbms_output.put_line("accounts table created");
+}
+
+proc main() -> int {
+    dbms_output.enable(20);
+
+    create table accounts (id int, name string);
+    insert into accounts values (1, 'alice');
+    update accounts set name = 'bob' where id = 1;
+
+    array<string> lines = dbms_output.get_lines();
+    for line in lines {
+        print line;
+    }
+    return 0;
+}
