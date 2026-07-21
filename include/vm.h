@@ -50,6 +50,12 @@ int             vm_utl_file_fclose(VM* vm, int handle);
 int             vm_dbms_sql_execute(VM* vm, const char* sql);
 Value           vm_dbms_sql_query(VM* vm, const char* sql);
 
+/* sequences */
+int             vm_sequence_create(VM* vm, const char* name, int start, int increment);
+int             vm_sequence_nextval(VM* vm, const char* name, int* out);
+int             vm_sequence_currval(VM* vm, const char* name, int* out);
+int             vm_sequence_drop(VM* vm, const char* name);
+
 Value           vm_stack_get(VM* vm, int index);
 int             vm_local_count(VM* vm);
 Value           vm_local_get(VM* vm, int index);

@@ -1,0 +1,11 @@
+// Phase 9: sequence support example
+proc main() -> int {
+    create_sequence("order_seq", 1000, 10);
+
+    print int_to_string(nextval("order_seq"));
+    print int_to_string(nextval("order_seq"));
+    print int_to_string(currval("order_seq"));
+
+    drop_sequence("order_seq");
+    return 0;
+}

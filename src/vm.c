@@ -19,12 +19,22 @@ typedef struct {
 } TryFrame;
 
 #define UTL_FILE_MAX_HANDLES 16
+#define SEQUENCE_MAX 16
+#define SEQUENCE_NAME_MAX 64
 
 typedef struct {
     int out_count;
     int out_positions[MAX_OUT_PARAMS];
     int out_slots[MAX_OUT_PARAMS];
 } OutParamFrame;
+
+typedef struct {
+    int  used;
+    int  has_value;
+    int  current;
+    int  increment;
+    char name[SEQUENCE_NAME_MAX];
+} SequenceSlot;
 
 struct VM {
     Chunk*        chunk;
@@ -58,6 +68,7 @@ struct VM {
     int           dbms_output_limit;
     ArrayObj*     dbms_output_buffer;
     FILE*         utl_file_handles[UTL_FILE_MAX_HANDLES];
+    SequenceSlot  sequences[SEQUENCE_MAX];
 };
 
 VM* vm_init(void) {
@@ -91,6 +102,13 @@ VM* vm_init(void) {
     vm->dbms_output_buffer = NULL;
     for (int i = 0; i < UTL_FILE_MAX_HANDLES; i++) {
         vm->utl_file_handles[i] = NULL;
+    }
+    for (int i = 0; i < SEQUENCE_MAX; i++) {
+        vm->sequences[i].used = 0;
+        vm->sequences[i].has_value = 0;
+        vm->sequences[i].current = 0;
+        vm->sequences[i].increment = 1;
+        vm->sequences[i].name[0] = '\0';
     }
     return vm;
 }
@@ -388,6 +406,63 @@ Value vm_dbms_sql_query(VM* vm, const char* sql) {
         result_free(res);
     }
     return value_array(result);
+}
+
+static SequenceSlot* sequence_find(VM* vm, const char* name) {
+    for (int i = 0; i < SEQUENCE_MAX; i++) {
+        if (vm->sequences[i].used && strcmp(vm->sequences[i].name, name) == 0) {
+            return &vm->sequences[i];
+        }
+    }
+    return NULL;
+}
+
+int vm_sequence_create(VM* vm, const char* name, int start, int increment) {
+    if (vm == NULL || name == NULL || name[0] == '\0') return 0;
+    if (sequence_find(vm, name) != NULL) return 0;
+    for (int i = 0; i < SEQUENCE_MAX; i++) {
+        if (!vm->sequences[i].used) {
+            SequenceSlot* slot = &vm->sequences[i];
+            slot->used = 1;
+            slot->has_value = 0;
+            slot->current = start;
+            slot->increment = increment;
+            snprintf(slot->name, sizeof(slot->name), "%s", name);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int vm_sequence_nextval(VM* vm, const char* name, int* out) {
+    if (vm == NULL || name == NULL || out == NULL) return 0;
+    SequenceSlot* slot = sequence_find(vm, name);
+    if (slot == NULL) return 0;
+    if (slot->has_value) {
+        slot->current += slot->increment;
+    } else {
+        slot->has_value = 1;
+    }
+    *out = slot->current;
+    return 1;
+}
+
+int vm_sequence_currval(VM* vm, const char* name, int* out) {
+    if (vm == NULL || name == NULL || out == NULL) return 0;
+    SequenceSlot* slot = sequence_find(vm, name);
+    if (slot == NULL || !slot->has_value) return 0;
+    *out = slot->current;
+    return 1;
+}
+
+int vm_sequence_drop(VM* vm, const char* name) {
+    if (vm == NULL || name == NULL) return 0;
+    SequenceSlot* slot = sequence_find(vm, name);
+    if (slot == NULL) return 0;
+    slot->used = 0;
+    slot->has_value = 0;
+    slot->name[0] = '\0';
+    return 1;
 }
 
 static int push(VM* vm, Value value);
