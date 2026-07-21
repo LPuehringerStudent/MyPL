@@ -109,6 +109,7 @@ typedef struct {
     int exception_count;
     TriggerEntry triggers[MAX_TRIGGERS];
     int trigger_count;
+    const StructDecl* current_struct;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -400,6 +401,21 @@ static char* mangle_package_name(const char* package_name, const char* member_na
     return mangled;
 }
 
+static char* mangle_struct_method(const char* struct_name, const char* method_name) {
+    size_t len = strlen(struct_name) + strlen(method_name) + 11;
+    char* mangled = malloc(len);
+    if (mangled == NULL) return NULL;
+    snprintf(mangled, len, "__struct_%s_%s", struct_name, method_name);
+    return mangled;
+}
+
+static int struct_has_field(const StructDecl* decl, const char* name) {
+    for (int i = 0; i < decl->field_count; i++) {
+        if (strcmp(decl->field_names[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
 static void register_cursor_query(Compiler* compiler, const char* name, int length, const char* query) {
     for (int i = 0; i < compiler->cursor_query_count; i++) {
         if (compiler->cursor_queries[i].length == length &&
@@ -525,6 +541,32 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                     break;
                 }
             }
+            if (slot < 0 && compiler->current_struct != NULL &&
+                struct_has_field(compiler->current_struct, name)) {
+                /* Unqualified field access inside a struct method: self.<field> */
+                int self_slot = resolve_local(compiler, "self", 4);
+                if (self_slot < 0) {
+                    error(compiler, "Undefined variable 'self'");
+                    return;
+                }
+                char* field_name = malloc((size_t)length + 1);
+                if (field_name == NULL) {
+                    error(compiler, "out of memory");
+                    return;
+                }
+                strcpy(field_name, name);
+                int field_idx = add_constant(compiler->chunk, value_string(field_name));
+                if (field_idx < 0) {
+                    free(field_name);
+                    error(compiler, "too many constants");
+                    return;
+                }
+                emit_byte(compiler, OP_GET_LOCAL);
+                emit_byte(compiler, (uint8_t)self_slot);
+                emit_byte(compiler, OP_ROW_GET);
+                emit_u16(compiler, (uint16_t)field_idx);
+                break;
+            }
             if (slot < 0) {
                 char msg[256];
                 snprintf(msg, sizeof(msg), "Undefined variable '%s'", name);
@@ -555,6 +597,34 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         }
         case EXPR_CALL: {
             CallExpr* c = &expr->as.call;
+            if (c->package_name != NULL) {
+                /* Method call on a struct-typed variable: the receiver becomes
+                 * the implicit first argument ('self'). */
+                Type* recv_type = resolve_local_type(compiler, c->package_name,
+                                                     (int)strlen(c->package_name));
+                if (recv_type != NULL && recv_type->kind == TYPE_STRUCT &&
+                    recv_type->struct_name != NULL) {
+                    char* mangled = mangle_struct_method(recv_type->struct_name, c->name);
+                    if (mangled == NULL) {
+                        error(compiler, "out of memory");
+                        return;
+                    }
+                    if (find_proc(compiler, mangled) >= 0) {
+                        int recv_slot = resolve_local(compiler, c->package_name,
+                                                      (int)strlen(c->package_name));
+                        emit_byte(compiler, OP_GET_LOCAL);
+                        emit_byte(compiler, (uint8_t)recv_slot);
+                        for (int i = 0; i < c->arg_count; i++) {
+                            compile_expr(compiler, c->args[i]);
+                            if (compiler->had_error) { free(mangled); return; }
+                        }
+                        emit_call(compiler, mangled, c->arg_count + 1);
+                        free(mangled);
+                        break;
+                    }
+                    free(mangled);
+                }
+            }
             char* effective_name = NULL;
             int is_native = 0;
             int native_idx = -1;
@@ -854,9 +924,38 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         }
         case STMT_ASSIGN: {
             AssignStmt* a = &stmt->as.assign;
+            int slot = resolve_local(compiler, a->name, (int)strlen(a->name));
+            if (slot < 0 && compiler->current_struct != NULL &&
+                struct_has_field(compiler->current_struct, a->name)) {
+                /* Unqualified field write inside a struct method: self.<field> = value */
+                int self_slot = resolve_local(compiler, "self", 4);
+                if (self_slot < 0) {
+                    error(compiler, "Undefined variable 'self'");
+                    return;
+                }
+                char* field_name = malloc(strlen(a->name) + 1);
+                if (field_name == NULL) {
+                    error(compiler, "out of memory");
+                    return;
+                }
+                strcpy(field_name, a->name);
+                int field_idx = add_constant(compiler->chunk, value_string(field_name));
+                if (field_idx < 0) {
+                    free(field_name);
+                    error(compiler, "too many constants");
+                    return;
+                }
+                emit_byte(compiler, OP_GET_LOCAL);
+                emit_byte(compiler, (uint8_t)self_slot);
+                emit_byte(compiler, OP_CONST);
+                emit_u16(compiler, (uint16_t)field_idx);
+                compile_expr(compiler, a->value);
+                if (compiler->had_error) return;
+                emit_byte(compiler, OP_INDEX_SET);
+                break;
+            }
             compile_expr(compiler, a->value);
             if (compiler->had_error) return;
-            int slot = resolve_local(compiler, a->name, (int)strlen(a->name));
             if (slot < 0 && compiler->current_package != NULL) {
                 char* global_name = mangle_package_name(compiler->current_package, a->name);
                 if (global_name != NULL) {
@@ -1889,6 +1988,93 @@ static void compile_trigger_members(Compiler* compiler, Program* program) {
     }
 }
 
+/* Register struct methods as hidden procs named __struct_<Struct>_<method>
+ * with an implicit first parameter 'self' of the struct type. */
+static int register_struct_methods(Compiler* compiler, Program* program, char* error_buf, size_t error_size) {
+    for (int s = 0; s < program->struct_count; s++) {
+        StructDecl* decl = &program->structs[s];
+        for (int m = 0; m < decl->method_count; m++) {
+            ProcDecl* method = &decl->methods[m];
+            char* mangled = mangle_struct_method(decl->name, method->name);
+            if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+            int total = method->param_count + 1;
+            Type** pt = malloc(sizeof(Type*) * (size_t)total);
+            ParamMode* pm = malloc(sizeof(ParamMode) * (size_t)total);
+            Type* self_type = type_new(TYPE_STRUCT, NULL);
+            if (pt == NULL || pm == NULL || self_type == NULL) {
+                free(pt); free(pm); type_free(self_type); free(mangled);
+                error(compiler, "out of memory"); return 0;
+            }
+            self_type->struct_name = malloc(strlen(decl->name) + 1);
+            if (self_type->struct_name == NULL) {
+                free(pt); free(pm); type_free(self_type); free(mangled);
+                error(compiler, "out of memory"); return 0;
+            }
+            strcpy(self_type->struct_name, decl->name);
+            pt[0] = self_type;
+            pm[0] = PARAM_IN;
+            for (int p = 0; p < method->param_count; p++) {
+                pt[p + 1] = method->params[p].type;
+                pm[p + 1] = method->params[p].mode;
+            }
+            int idx = add_proc_entry(compiler, mangled, -1, method->return_type,
+                                     pt, pm, total);
+            free(pt); free(pm); type_free(self_type); free(mangled);
+            if (idx < 0) {
+                compiler_format_error(compiler, error_buf, error_size,
+                                      "Duplicate method '%s' in struct '%s'",
+                                      method->name, decl->name);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static void compile_struct_methods(Compiler* compiler, Program* program) {
+    for (int s = 0; s < program->struct_count; s++) {
+        StructDecl* decl = &program->structs[s];
+        if (decl->method_count == 0) continue;
+        Type* self_type = type_new(TYPE_STRUCT, NULL);
+        if (self_type == NULL) { error(compiler, "out of memory"); return; }
+        self_type->struct_name = malloc(strlen(decl->name) + 1);
+        if (self_type->struct_name == NULL) {
+            type_free(self_type);
+            error(compiler, "out of memory");
+            return;
+        }
+        strcpy(self_type->struct_name, decl->name);
+        for (int m = 0; m < decl->method_count; m++) {
+            ProcDecl* method = &decl->methods[m];
+            char* mangled = mangle_struct_method(decl->name, method->name);
+            if (mangled == NULL) {
+                type_free(self_type);
+                error(compiler, "out of memory");
+                return;
+            }
+            int idx = find_proc(compiler, mangled);
+            free(mangled);
+            if (idx < 0) continue;
+            compiler->current_proc_autonomous = 0;
+            compiler->procs[idx].offset = compiler->chunk->count;
+            add_local(compiler, "self", 4, self_type);
+            for (int p = 0; p < method->param_count; p++) {
+                add_local(compiler, method->params[p].name,
+                          (int)strlen(method->params[p].name), method->params[p].type);
+            }
+            compiler->current_struct = decl;
+            compile_block(compiler, method->body);
+            compiler->current_struct = NULL;
+            compiler->procs[idx].autonomous_transaction = compiler->current_proc_autonomous;
+            if (compiler->had_error) { type_free(self_type); return; }
+            emit_byte(compiler, OP_RETURN);
+            compiler->local_count = 0;
+            compiler->scope_depth = 0;
+        }
+        type_free(self_type);
+    }
+}
+
 /* Extract (event, table) from a static DML/DDL statement for trigger firing.
  * Returns 1 on success, 0 when the statement has no trigger-relevant shape. */
 static int sql_stmt_trigger_info(const char* sql, int* event, char* table, size_t table_size) {
@@ -2089,6 +2275,11 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         return 0;
     }
 
+    if (!register_struct_methods(compiler, program, error, error_size)) {
+        free_program(program);
+        return 0;
+    }
+
     ProcSignature* sigs = malloc(sizeof(ProcSignature) * (size_t)compiler->proc_count);
     if (sigs == NULL) {
         compiler_format_error(compiler, error, error_size, "out of memory");
@@ -2138,6 +2329,16 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
 
     compile_trigger_members(compiler, program);
+    if (compiler->had_error) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, compiler->error_message, error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        free_program(program);
+        return 0;
+    }
+
+    compile_struct_methods(compiler, program);
     if (compiler->had_error) {
         if (error != NULL && error_size > 0) {
             strncpy(error, compiler->error_message, error_size - 1);
@@ -2237,6 +2438,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.cursor_query_count = 0;
     compiler.exception_count = 0;
     compiler.trigger_count = 0;
+    compiler.current_struct = NULL;
     add_exception(&compiler, "no_data_found", 100);
     add_exception(&compiler, "too_many_rows", -1422);
     for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;

@@ -419,6 +419,10 @@ void free_program(Program* program) {
         }
         free(s->field_names);
         free(s->field_types);
+        for (int j = 0; j < s->method_count; j++) {
+            free_proc_decl(&s->methods[j]);
+        }
+        free(s->methods);
     }
     free(program->structs);
     for (int i = 0; i < program->spec_count; i++) {

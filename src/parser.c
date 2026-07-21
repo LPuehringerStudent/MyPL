@@ -2081,7 +2081,7 @@ static Stmt* statement(Parser* parser) {
     return NULL;
 }
 
-static ProcDecl* parse_proc_header(Parser* parser, int is_function) {
+static ProcDecl* parse_proc_header(Parser* parser, int is_function, int allow_no_return) {
     /* current is IDENT (procedure/function name); 'proc'/'func' was consumed by caller */
     advance(parser); /* name */
     char* name = copy_token_lexeme(&parser->previous);
@@ -2149,7 +2149,13 @@ static ProcDecl* parse_proc_header(Parser* parser, int is_function) {
         free(name);
         return NULL;
     }
-    if (!match(parser, TOKEN_ARROW)) {
+    Type* return_type = NULL;
+    if (match(parser, TOKEN_ARROW)) {
+        return_type = parse_type(parser);
+    } else if (allow_no_return && !is_function) {
+        /* Procedure members of structs may omit the return type. */
+        return_type = &type_int;
+    } else {
         error_at_current(parser, "expected '->' after parameter list");
         for (int i = 0; i < param_count; i++) {
             free(params[i].name);
@@ -2159,7 +2165,6 @@ static ProcDecl* parse_proc_header(Parser* parser, int is_function) {
         free(name);
         return NULL;
     }
-    Type* return_type = parse_type(parser);
     ProcDecl* proc = create_proc_decl(name, return_type);
     free(name);
     if (proc == NULL) {
@@ -2189,7 +2194,7 @@ static ProcDecl* parse_proc_header(Parser* parser, int is_function) {
 }
 
 static void parse_proc_with_kind(Parser* parser, Program* program, int is_function) {
-    ProcDecl* proc = parse_proc_header(parser, is_function);
+    ProcDecl* proc = parse_proc_header(parser, is_function, 0);
     if (proc == NULL) return;
     proc->body = block(parser);
     if (proc->body == NULL) {
@@ -2330,7 +2335,7 @@ static void parse_package_spec(Parser* parser, Program* program) {
     while (!check(parser, TOKEN_END) && !check(parser, TOKEN_EOF) && !parser->had_error) {
         if (check(parser, TOKEN_PROC)) {
             advance(parser); /* proc */
-            ProcDecl* proc = parse_proc_header(parser, 0);
+            ProcDecl* proc = parse_proc_header(parser, 0, 0);
             if (proc == NULL) {
                 free_package_spec(&spec);
                 return;
@@ -2366,7 +2371,7 @@ static void parse_package_spec(Parser* parser, Program* program) {
             free(proc);
         } else if (check(parser, TOKEN_FUNC)) {
             advance(parser); /* func */
-            ProcDecl* proc = parse_proc_header(parser, 1);
+            ProcDecl* proc = parse_proc_header(parser, 1, 0);
             if (proc == NULL) {
                 free_package_spec(&spec);
                 return;
@@ -2476,7 +2481,7 @@ static void parse_package_body(Parser* parser, Program* program) {
     while (!check(parser, TOKEN_END) && !check(parser, TOKEN_EOF) && !parser->had_error) {
         if (check(parser, TOKEN_PROC)) {
             advance(parser); /* proc */
-            ProcDecl* proc = parse_proc_header(parser, 0);
+            ProcDecl* proc = parse_proc_header(parser, 0, 0);
             if (proc == NULL) {
                 free_package_body(&body);
                 return;
@@ -2512,7 +2517,7 @@ static void parse_package_body(Parser* parser, Program* program) {
             free(proc);
         } else if (check(parser, TOKEN_FUNC)) {
             advance(parser); /* func */
-            ProcDecl* proc = parse_proc_header(parser, 1);
+            ProcDecl* proc = parse_proc_header(parser, 1, 0);
             if (proc == NULL) {
                 free_package_body(&body);
                 return;
@@ -2758,28 +2763,67 @@ static void parse_struct(Parser* parser, Program* program) {
     char** field_names = NULL;
     Type** field_types = NULL;
     int field_count = 0;
+    ProcDecl* methods = NULL;
+    int method_count = 0;
+    int method_capacity = 0;
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF) && !parser->had_error) {
-        if (!check(parser, TOKEN_IDENT)) {
-            error_at_current(parser, "expected field name");
-            break;
+        if (check(parser, TOKEN_PROC) || check(parser, TOKEN_FUNC)) {
+            int is_function = check(parser, TOKEN_FUNC);
+            advance(parser); /* proc/func */
+            ProcDecl* method = parse_proc_header(parser, is_function, 1);
+            if (method == NULL) break;
+            method->body = block(parser);
+            if (method->body == NULL) {
+                free_proc_decl(method);
+                free(method);
+                break;
+            }
+            if (!package_add_proc(&methods, &method_count, &method_capacity, method)) {
+                error_at_current(parser, "out of memory");
+                free_proc_decl(method);
+                free(method);
+                break;
+            }
+            free(method);
+        } else {
+            if (!check(parser, TOKEN_IDENT)) {
+                error_at_current(parser, "expected field or method name");
+                break;
+            }
+            advance(parser); /* field name */
+            char** new_names = realloc(field_names, sizeof(char*) * (size_t)(field_count + 1));
+            Type** new_types = realloc(field_types, sizeof(Type*) * (size_t)(field_count + 1));
+            if (new_names == NULL || new_types == NULL) {
+                error_at_current(parser, "out of memory");
+                break;
+            }
+            field_names = new_names;
+            field_types = new_types;
+            field_names[field_count] = copy_token_lexeme(&parser->previous);
+            field_types[field_count] = parse_type(parser);
+            field_count++;
         }
-        advance(parser); /* field name */
-        char** new_names = realloc(field_names, sizeof(char*) * (size_t)(field_count + 1));
-        Type** new_types = realloc(field_types, sizeof(Type*) * (size_t)(field_count + 1));
-        if (new_names == NULL || new_types == NULL) {
-            error_at_current(parser, "out of memory");
-            break;
-        }
-        field_names = new_names;
-        field_types = new_types;
-        field_names[field_count] = copy_token_lexeme(&parser->previous);
-        field_types[field_count] = parse_type(parser);
-        field_count++;
         if (!check(parser, TOKEN_RBRACE)) {
             if (!match(parser, TOKEN_COMMA)) {
                 error_at_current(parser, "expected ',' or '}' in struct declaration");
                 break;
             }
+        }
+    }
+
+    if (!parser->had_error && !match(parser, TOKEN_RBRACE)) {
+        error_at_current(parser, "expected '}' after struct members");
+    }
+
+    if (!parser->had_error && program->struct_count >= program->struct_capacity) {
+        int new_capacity = program->struct_capacity == 0 ? 4 : program->struct_capacity * 2;
+        StructDecl* new_structs = realloc(program->structs,
+            sizeof(StructDecl) * (size_t)new_capacity);
+        if (new_structs == NULL) {
+            error_at_current(parser, "out of memory");
+        } else {
+            program->structs = new_structs;
+            program->struct_capacity = new_capacity;
         }
     }
 
@@ -2790,39 +2834,12 @@ static void parse_struct(Parser* parser, Program* program) {
         }
         free(field_names);
         free(field_types);
+        for (int i = 0; i < method_count; i++) {
+            free_proc_decl(&methods[i]);
+        }
+        free(methods);
         free(name);
         return;
-    }
-
-    if (!match(parser, TOKEN_RBRACE)) {
-        error_at_current(parser, "expected '}' after struct fields");
-        for (int i = 0; i < field_count; i++) {
-            free(field_names[i]);
-            type_free(field_types[i]);
-        }
-        free(field_names);
-        free(field_types);
-        free(name);
-        return;
-    }
-
-    if (program->struct_count >= program->struct_capacity) {
-        int new_capacity = program->struct_capacity == 0 ? 4 : program->struct_capacity * 2;
-        StructDecl* new_structs = realloc(program->structs,
-            sizeof(StructDecl) * (size_t)new_capacity);
-        if (new_structs == NULL) {
-            error_at_current(parser, "out of memory");
-            for (int i = 0; i < field_count; i++) {
-                free(field_names[i]);
-                type_free(field_types[i]);
-            }
-            free(field_names);
-            free(field_types);
-            free(name);
-            return;
-        }
-        program->structs = new_structs;
-        program->struct_capacity = new_capacity;
     }
 
     StructDecl* decl = &program->structs[program->struct_count++];
@@ -2830,6 +2847,9 @@ static void parse_struct(Parser* parser, Program* program) {
     decl->field_names = field_names;
     decl->field_types = field_types;
     decl->field_count = field_count;
+    decl->methods = methods;
+    decl->method_count = method_count;
+    decl->method_capacity = method_capacity;
     parser_add_struct_name(parser, name);
 }
 
