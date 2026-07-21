@@ -240,6 +240,89 @@ TEST(phase10_struct_method_with_params) {
     ASSERT_INT_EQ(1, output_contains(out, "40"));
 }
 
+TEST(phase10_cc_if_defined_takes_then_branch) {
+    char out[256];
+    int rc = run_mypl(
+        "$define DEBUG\n"
+        "proc main() -> int {\n"
+        "$if DEBUG $then\n"
+        "    print \"debug on\";\n"
+        "$else\n"
+        "    print \"debug off\";\n"
+        "$end\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "debug on"));
+    ASSERT_INT_EQ(0, output_contains(out, "debug off"));
+}
+
+TEST(phase10_cc_if_undefined_takes_else_branch) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "$if DEBUG $then\n"
+        "    print \"debug on\";\n"
+        "$else\n"
+        "    print \"debug off\";\n"
+        "$end\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "debug off"));
+    ASSERT_INT_EQ(0, output_contains(out, "debug on"));
+}
+
+TEST(phase10_cc_excluded_code_is_not_parsed) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "$if DISABLED $then\n"
+        "    this is not valid mypl syntax at all +++ ;;;\n"
+        "$end\n"
+        "    print \"ok\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "ok"));
+}
+
+TEST(phase10_cc_elsif_chain) {
+    char out[256];
+    int rc = run_mypl(
+        "$define B\n"
+        "proc main() -> int {\n"
+        "$if A $then\n"
+        "    print \"a\";\n"
+        "$elsif B $then\n"
+        "    print \"b\";\n"
+        "$else\n"
+        "    print \"c\";\n"
+        "$end\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "b"));
+    ASSERT_INT_EQ(0, output_contains(out, "a"));
+    ASSERT_INT_EQ(0, output_contains(out, "c"));
+}
+
+TEST(phase10_cc_unterminated_if_is_error) {
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "$if DEBUG $then\n"
+        "    print \"x\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
 int main(void) {
     RUN_TEST(phase10_trigger_before_after_insert);
     RUN_TEST(phase10_trigger_does_not_fire_on_other_table);
@@ -250,5 +333,10 @@ int main(void) {
     RUN_TEST(phase10_struct_method_mutates_field);
     RUN_TEST(phase10_struct_func_method_returns_value);
     RUN_TEST(phase10_struct_method_with_params);
+    RUN_TEST(phase10_cc_if_defined_takes_then_branch);
+    RUN_TEST(phase10_cc_if_undefined_takes_else_branch);
+    RUN_TEST(phase10_cc_excluded_code_is_not_parsed);
+    RUN_TEST(phase10_cc_elsif_chain);
+    RUN_TEST(phase10_cc_unterminated_if_is_error);
     TEST_SUMMARY();
 }

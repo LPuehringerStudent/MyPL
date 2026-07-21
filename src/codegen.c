@@ -2203,9 +2203,198 @@ static void compile_package_members(Compiler* compiler, Program* program) {
     }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Conditional compilation preprocessor                                        */
+/*                                                                            */
+/* Line-oriented directives:                                                  */
+/*   $define NAME / $undefine NAME                                            */
+/*   $if NAME $then ... $elsif NAME $then ... $else ... $end                  */
+/* Excluded regions are blanked in place (newlines kept) so diagnostics keep  */
+/* their line numbers. Undefined flags evaluate to false.                     */
+/* -------------------------------------------------------------------------- */
+
+#define CC_MAX_FLAGS 64
+#define CC_NAME_MAX 64
+#define CC_MAX_DEPTH 16
+
+typedef struct {
+    int parent_active;
+    int branch_taken;
+    int branch_active;
+    int saw_else;
+} CCFrame;
+
+static int cc_is_name_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static int cc_flag_defined(char flags[][CC_NAME_MAX], int flag_count, const char* name) {
+    for (int i = 0; i < flag_count; i++) {
+        if (strcmp(flags[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Returns a malloc'd processed copy of source (same length), or NULL and
+ * writes an error message into error_buf. */
+static char* cc_preprocess(const char* source, const char* source_path, char* error_buf, size_t error_size) {
+    size_t len = strlen(source);
+    char* out = malloc(len + 1);
+    if (out == NULL) return NULL;
+    memcpy(out, source, len + 1);
+
+    char flags[CC_MAX_FLAGS][CC_NAME_MAX];
+    int flag_count = 0;
+    CCFrame stack[CC_MAX_DEPTH];
+    int depth = 0;
+    int active = 1;
+
+    const char* p = source;
+    int line_no = 1;
+    while (*p != '\0') {
+        const char* line_start = p;
+        const char* nl = strchr(p, '\n');
+        const char* line_end = nl != NULL ? nl : p + strlen(p);
+
+        /* Find first non-blank char of the line. */
+        const char* q = line_start;
+        while (q < line_end && (*q == ' ' || *q == '\t' || *q == '\r')) q++;
+
+        int is_directive = (q < line_end && *q == '$');
+        if (is_directive) {
+            char kw[16];
+            char arg[CC_NAME_MAX];
+            kw[0] = '\0';
+            arg[0] = '\0';
+            q++; /* skip '$' */
+            int ki = 0;
+            while (q < line_end && cc_is_name_char(*q) && ki < 15) kw[ki++] = *q++;
+            kw[ki] = '\0';
+            while (q < line_end && (*q == ' ' || *q == '\t')) q++;
+            int ai = 0;
+            while (q < line_end && cc_is_name_char(*q) && ai < CC_NAME_MAX - 1) arg[ai++] = *q++;
+            arg[ai] = '\0';
+
+            if (strcmp(kw, "define") == 0) {
+                if (active && arg[0] != '\0' && !cc_flag_defined(flags, flag_count, arg)) {
+                    if (flag_count < CC_MAX_FLAGS) {
+                        strcpy(flags[flag_count++], arg);
+                    }
+                }
+            } else if (strcmp(kw, "undefine") == 0) {
+                if (active) {
+                    for (int i = 0; i < flag_count; i++) {
+                        if (strcmp(flags[i], arg) == 0) {
+                            memmove(flags[i], flags[i + 1], (size_t)(flag_count - i - 1) * CC_NAME_MAX);
+                            flag_count--;
+                            break;
+                        }
+                    }
+                }
+            } else if (strcmp(kw, "if") == 0) {
+                if (depth >= CC_MAX_DEPTH) {
+                    free(out);
+                    format_error(error_buf, error_size, source_path, line_no, 1,
+                                 "conditional compilation: too many nested $if blocks");
+                    return NULL;
+                }
+                CCFrame* f = &stack[depth++];
+                f->parent_active = active;
+                f->branch_active = active && arg[0] != '\0' && cc_flag_defined(flags, flag_count, arg);
+                f->branch_taken = f->branch_active;
+                f->saw_else = 0;
+                active = f->branch_active;
+            } else if (strcmp(kw, "elsif") == 0) {
+                if (depth == 0) {
+                    free(out);
+                    format_error(error_buf, error_size, source_path, line_no, 1,
+                                 "conditional compilation: $elsif without $if");
+                    return NULL;
+                }
+                CCFrame* f = &stack[depth - 1];
+                if (f->branch_taken || !f->parent_active) {
+                    f->branch_active = 0;
+                } else {
+                    f->branch_active = arg[0] != '\0' && cc_flag_defined(flags, flag_count, arg);
+                    f->branch_taken = f->branch_taken || f->branch_active;
+                }
+                active = f->branch_active;
+            } else if (strcmp(kw, "else") == 0) {
+                if (depth == 0) {
+                    free(out);
+                    format_error(error_buf, error_size, source_path, line_no, 1,
+                                 "conditional compilation: $else without $if");
+                    return NULL;
+                }
+                CCFrame* f = &stack[depth - 1];
+                if (f->saw_else) {
+                    free(out);
+                    format_error(error_buf, error_size, source_path, line_no, 1,
+                                 "conditional compilation: duplicate $else");
+                    return NULL;
+                }
+                f->saw_else = 1;
+                f->branch_active = f->parent_active && !f->branch_taken;
+                f->branch_taken = 1;
+                active = f->branch_active;
+            } else if (strcmp(kw, "end") == 0) {
+                if (depth == 0) {
+                    free(out);
+                    format_error(error_buf, error_size, source_path, line_no, 1,
+                                 "conditional compilation: $end without $if");
+                    return NULL;
+                }
+                active = stack[--depth].parent_active;
+            } else {
+                free(out);
+                format_error(error_buf, error_size, source_path, line_no, 1,
+                             "conditional compilation: unknown directive");
+                return NULL;
+            }
+
+            /* Blank the directive line itself. */
+            for (const char* r = line_start; r < line_end; r++) {
+                out[r - source] = ' ';
+            }
+        } else if (!active) {
+            /* Blank excluded source, keeping newlines for line numbers. */
+            for (const char* r = line_start; r < line_end; r++) {
+                out[r - source] = ' ';
+            }
+        }
+
+        p = nl != NULL ? nl + 1 : line_end;
+        line_no++;
+    }
+
+    if (depth != 0) {
+        free(out);
+        format_error(error_buf, error_size, source_path, line_no, 1,
+                     "conditional compilation: unterminated $if (missing $end)");
+        return NULL;
+    }
+    return out;
+}
+
 static int do_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
+    char cc_error[256] = {0};
+    char* processed = cc_preprocess(source, compiler->source_path, cc_error, sizeof(cc_error));
+    if (processed == NULL) {
+        if (error != NULL && error_size > 0) {
+            if (cc_error[0] != '\0') {
+                strncpy(error, cc_error, error_size - 1);
+                error[error_size - 1] = '\0';
+            } else {
+                strncpy(error, "conditional compilation: out of memory", error_size - 1);
+                error[error_size - 1] = '\0';
+            }
+        }
+        return 0;
+    }
     char parse_error[256] = {0};
-    Program* program = parse_with_path(source, compiler->source_path, parse_error, sizeof(parse_error));
+    Program* program = parse_with_path(processed, compiler->source_path, parse_error, sizeof(parse_error));
+    free(processed);
     if (program == NULL) {
         if (error != NULL && error_size > 0) {
             strncpy(error, parse_error, error_size - 1);
