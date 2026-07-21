@@ -39,11 +39,11 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 | **Blocks** | Anonymous blocks supported | Same | — | ✅ Done |
 | **Exceptions** | Generic `try/catch` with message string | Named predefined/user-defined exceptions, `RAISE`, `RAISE_APPLICATION_ERROR`, `SQLCODE`/`SQLERRM` | Add named exceptions, `raise`, `raise_application_error`, and `sqlcode`/`sqlerrm` | ✅ Done |
 | **Bulk binds** | Row-by-row loops | `BULK COLLECT INTO`, `FORALL` for set-based DML | Implement bulk-bind opcodes for performance | ✅ Done |
-| **Triggers** | None | DML/DDL/system triggers, row/statement level, `BEFORE`/`AFTER`/`INSTEAD OF` | Add database triggers | 🔲 Not started |
+| **Triggers** | None | DML/DDL/system triggers, row/statement level, `BEFORE`/`AFTER`/`INSTEAD OF` | Add database triggers | ✅ Done |
 | **Stored code** | Source files compiled at runtime | Schema-stored procedures/functions/packages compiled into the DB | Persist MyPL program units in the database catalog | ✅ Done |
 | **Built-in packages** | Custom natives | `DBMS_OUTPUT`, `UTL_FILE`, `DBMS_SQL`, `DBMS_SCHEDULER`, etc. | Grow MyPL's standard library into named packages (`dbms_output`, `utl_file`, etc.) | ✅ Done |
-| **Table functions** | None | Pipelined/table functions returning collections | Add table-valued/pipelined functions | 🔲 Not started |
-| **Object types** | `struct` only | Object types with methods, inheritance, persistence | Extend `struct` toward object types with methods | 🔲 Not started |
+| **Table functions** | None | Pipelined/table functions returning collections | Add table-valued/pipelined functions | ✅ Done |
+| **Object types** | `struct` only | Object types with methods, inheritance, persistence | Extend `struct` toward object types with methods | ✅ Done |
 | **Transactions** | `begin`/`commit`/`rollback` | Savepoints, autonomous transactions (`PRAGMA AUTONOMOUS_TRANSACTION`) | Add savepoints and autonomous transactions | ✅ Done |
 | **Security** | None | `AUTHID CURRENT_USER` / `AUTHID DEFINER` | Add invoker/definer rights for stored units | ✅ Done |
 | **Regex** | None | `REGEXP_LIKE`, `REGEXP_REPLACE`, etc. | Add regular-expression natives | ✅ Done |
@@ -103,12 +103,12 @@ The table below lists where Oracle PL/SQL is still ahead, rewritten as positive 
 - [x] Regular-expression natives
 - [x] Sequence support
 
-### Phase 10 — Advanced Features
-- [ ] DML/DDL triggers
-- [ ] Table/pipelined functions
-- [ ] Object types with methods
-- [ ] Conditional compilation
-- [ ] External procedure linkage
+### Phase 10 — Advanced Features ✅
+- [x] DML/DDL triggers
+- [x] Table/pipelined functions
+- [x] Object types with methods
+- [x] Conditional compilation
+- [x] External procedure linkage
 
 ## How to Use This Document
 
