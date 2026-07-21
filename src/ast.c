@@ -244,6 +244,9 @@ Program* create_program(void) {
     program->body_capacity = 0;
     program->procs = NULL;
     program->proc_count = 0;
+    program->triggers = NULL;
+    program->trigger_count = 0;
+    program->trigger_capacity = 0;
     return program;
 }
 
@@ -430,6 +433,13 @@ void free_program(Program* program) {
         free_proc_decl(&program->procs[i]);
     }
     free(program->procs);
+    for (int i = 0; i < program->trigger_count; i++) {
+        TriggerDecl* t = &program->triggers[i];
+        free(t->name);
+        free(t->table);
+        free_block(t->body);
+    }
+    free(program->triggers);
     free(program);
 }
 

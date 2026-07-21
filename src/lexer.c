@@ -185,6 +185,7 @@ static TokenType identifier_type(Lexer* lexer) {
             break;
         case 't':
             if (length == 5 && memcmp(lexer->start, "table", 5) == 0) return TOKEN_TABLE;
+            if (length == 7 && memcmp(lexer->start, "trigger", 7) == 0) return TOKEN_TRIGGER;
             if (length == 4 && memcmp(lexer->start, "type", 4) == 0) return TOKEN_TYPE;
             if (length == 3 && memcmp(lexer->start, "try", 3) == 0) return TOKEN_TRY;
             if (length == 4 && memcmp(lexer->start, "true", 4) == 0) return TOKEN_TRUE;

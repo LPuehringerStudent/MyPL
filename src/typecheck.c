@@ -2612,6 +2612,17 @@ int typecheck_program(Program* program,
     }
     tc.current_package = NULL;
 
+    for (int i = 0; i < program->trigger_count && !tc.had_error; i++) {
+        TriggerDecl* trig = &program->triggers[i];
+        if (!push_scope(&tc)) {
+            type_error(&tc, (SourceLoc){0, 0}, "Too many nested scopes");
+            break;
+        }
+        tc.return_type = &type_int;
+        check_block(&tc, trig->body);
+        pop_scope(&tc);
+    }
+
     for (int i = 0; i < tc.transient_count; i++) {
         type_free(tc.transient_types[i]);
     }

@@ -177,6 +177,23 @@ typedef struct {
     int func_capacity;
 } PackageBodyDecl;
 
+/* Trigger timing and event constants */
+#define TRIGGER_BEFORE 0
+#define TRIGGER_AFTER  1
+#define TRIGGER_INSERT 0
+#define TRIGGER_UPDATE 1
+#define TRIGGER_DELETE 2
+#define TRIGGER_CREATE 3
+#define TRIGGER_DROP   4
+
+typedef struct {
+    char*  name;
+    int    timing;      /* TRIGGER_BEFORE or TRIGGER_AFTER */
+    int    event;       /* TRIGGER_INSERT/UPDATE/DELETE/CREATE/DROP */
+    char*  table;
+    Block* body;
+} TriggerDecl;
+
 typedef struct {
     Stmt** imports;
     int import_count;
@@ -192,6 +209,9 @@ typedef struct {
     int body_capacity;
     ProcDecl* procs;
     int proc_count;
+    TriggerDecl* triggers;
+    int trigger_count;
+    int trigger_capacity;
 } Program;
 
 struct Block {

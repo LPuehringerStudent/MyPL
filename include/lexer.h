@@ -36,6 +36,7 @@ typedef enum {
     TOKEN_FORALL,
     TOKEN_SQLCODE,
     TOKEN_SQLERRM,
+    TOKEN_TRIGGER,
 
     /* SQL keywords */
     TOKEN_CREATE,
