@@ -1,0 +1,18 @@
+// Phase 10: conditional compilation example
+$define VERBOSE
+
+proc main() -> int {
+$if VERBOSE $then
+    print "verbose mode enabled";
+$else
+    print "quiet mode";
+$end
+
+$if TRACING $then
+    print "this line is compiled out";
+$elsif VERBOSE $then
+    print "tracing off, verbose on";
+$end
+
+    return 0;
+}
