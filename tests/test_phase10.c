@@ -172,6 +172,74 @@ TEST(phase10_table_function_row_collection) {
     ASSERT_INT_EQ(1, output_contains(out, "bob"));
 }
 
+TEST(phase10_struct_method_mutates_field) {
+    char out[256];
+    int rc = run_mypl(
+        "struct Counter {\n"
+        "    value int,\n"
+        "    proc inc() {\n"
+        "        value = value + 1;\n"
+        "    },\n"
+        "    func get() -> int {\n"
+        "        return value;\n"
+        "    }\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    Counter c = Counter { value = 0 };\n"
+        "    c.inc();\n"
+        "    c.inc();\n"
+        "    print int_to_string(c.get());\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase10_struct_func_method_returns_value) {
+    char out[256];
+    int rc = run_mypl(
+        "struct Point {\n"
+        "    x int,\n"
+        "    y int,\n"
+        "    func sum() -> int {\n"
+        "        return x + y;\n"
+        "    }\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    Point p = Point { x = 3, y = 4 };\n"
+        "    print int_to_string(p.sum());\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "7"));
+}
+
+TEST(phase10_struct_method_with_params) {
+    char out[256];
+    int rc = run_mypl(
+        "struct Acc {\n"
+        "    balance int,\n"
+        "    proc deposit(n int) {\n"
+        "        balance = balance + n;\n"
+        "    },\n"
+        "    func total() -> int {\n"
+        "        return balance;\n"
+        "    }\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    Acc a = Acc { balance = 10 };\n"
+        "    a.deposit(5);\n"
+        "    a.deposit(25);\n"
+        "    print int_to_string(a.total());\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "40"));
+}
+
 int main(void) {
     RUN_TEST(phase10_trigger_before_after_insert);
     RUN_TEST(phase10_trigger_does_not_fire_on_other_table);
@@ -179,5 +247,8 @@ int main(void) {
     RUN_TEST(phase10_trigger_update_and_delete);
     RUN_TEST(phase10_table_function_scalar_collection);
     RUN_TEST(phase10_table_function_row_collection);
+    RUN_TEST(phase10_struct_method_mutates_field);
+    RUN_TEST(phase10_struct_func_method_returns_value);
+    RUN_TEST(phase10_struct_method_with_params);
     TEST_SUMMARY();
 }

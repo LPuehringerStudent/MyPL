@@ -1,0 +1,32 @@
+struct Counter {
+    value int,
+    proc inc() {
+        value = value + 1;
+    },
+    proc inc_by(n int) {
+        value = value + n;
+    },
+    func get() -> int {
+        return value;
+    }
+}
+
+struct Point {
+    x int,
+    y int,
+    func sum() -> int {
+        return x + y;
+    }
+}
+
+proc main() -> int {
+    Counter c = Counter { value = 0 };
+    c.inc();
+    c.inc();
+    c.inc_by(5);
+    print int_to_string(c.get());
+
+    Point p = Point { x = 3, y = 4 };
+    print int_to_string(p.sum());
+    return 0;
+}

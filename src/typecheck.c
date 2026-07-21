@@ -1701,16 +1701,36 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
             const char* call_name = expr->as.call.name;
             const char* package_name = expr->as.call.package_name;
             ProcSignature* sig = NULL;
+            int is_method_call = 0;
 
             if (package_name != NULL) {
                 sig = resolve_proc_in_package(tc, package_name, call_name);
+                if (sig == NULL) {
+                    /* Maybe a method call on a struct-typed variable. */
+                    Type* recv = resolve_local(tc, package_name);
+                    if (recv != NULL && recv->kind == TYPE_STRUCT &&
+                        recv->struct_name != NULL) {
+                        size_t mlen = strlen(recv->struct_name) + strlen(call_name) + 11;
+                        char* mangled = malloc(mlen);
+                        if (mangled != NULL) {
+                            snprintf(mangled, mlen, "__struct_%s_%s",
+                                     recv->struct_name, call_name);
+                            sig = resolve_proc(tc, mangled);
+                            free(mangled);
+                        }
+                        if (sig != NULL) {
+                            is_method_call = 1;
+                        }
+                    }
+                }
                 if (sig == NULL) {
                     type_error(tc, expr->loc, "Undefined package member '%s.%s'",
                                package_name, call_name);
                     return NULL;
                 }
-                if (tc->current_package == NULL ||
-                    strcmp(tc->current_package, package_name) != 0) {
+                if (!is_method_call &&
+                    (tc->current_package == NULL ||
+                    strcmp(tc->current_package, package_name) != 0)) {
                     if (!package_has_public_member(tc->program, package_name, call_name)) {
                         type_error(tc, expr->loc,
                                    "Package member '%s.%s' is private",
@@ -1735,17 +1755,19 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                     return NULL;
                 }
             }
-            if (expr->as.call.arg_count != sig->param_count) {
+            int param_offset = is_method_call ? 1 : 0;
+            if (expr->as.call.arg_count != sig->param_count - param_offset) {
                 type_error(tc, expr->loc,
                            "Procedure '%s' expects %d arguments but got %d",
-                           expr->as.call.name, sig->param_count,
+                           expr->as.call.name, sig->param_count - param_offset,
                            expr->as.call.arg_count);
                 return sig->return_type;
             }
             for (int i = 0; i < expr->as.call.arg_count; i++) {
+                int p = i + param_offset;
                 if (sig->param_modes != NULL &&
-                    (sig->param_modes[i] == PARAM_OUT ||
-                     sig->param_modes[i] == PARAM_INOUT)) {
+                    (sig->param_modes[p] == PARAM_OUT ||
+                     sig->param_modes[p] == PARAM_INOUT)) {
                     if (expr->as.call.args[i]->kind != EXPR_VARIABLE) {
                         type_error(tc, expr->as.call.args[i]->loc,
                                    "Argument %d of '%s' must be a variable for OUT/IN OUT parameter",
@@ -1754,9 +1776,9 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                     }
                 }
                 Type* arg_type = infer_expr(tc, expr->as.call.args[i],
-                                            sig->param_types[i]);
+                                            sig->param_types[p]);
                 if (tc->had_error) return sig->return_type;
-                if (!types_assignable(sig->param_types[i], arg_type)) {
+                if (!types_assignable(sig->param_types[p], arg_type)) {
                     type_error(tc, expr->as.call.args[i]->loc,
                                "Argument %d of '%s' has incompatible type",
                                i + 1, expr->as.call.name);
@@ -2560,6 +2582,46 @@ int typecheck_program(Program* program,
         check_block(&tc, proc->body);
         pop_scope(&tc);
         if (tc.had_error) break;
+    }
+
+    /* Check struct method bodies: implicit 'self', fields in scope, then params. */
+    for (int s = 0; s < program->struct_count && !tc.had_error; s++) {
+        StructDecl* decl = &program->structs[s];
+        for (int m = 0; m < decl->method_count && !tc.had_error; m++) {
+            ProcDecl* method = &decl->methods[m];
+            if (!push_scope(&tc)) {
+                type_error(&tc, (SourceLoc){0, 0}, "Too many nested scopes");
+                break;
+            }
+            Type* self_type = transient_struct_type(&tc, decl->name, NULL, NULL, 0);
+            if (tc.had_error ||
+                !add_local(&tc, "self", self_type)) {
+                type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                pop_scope(&tc);
+                break;
+            }
+            for (int f = 0; f < decl->field_count; f++) {
+                if (!add_local(&tc, decl->field_names[f],
+                               resolve_named_type(&tc, decl->field_types[f]))) {
+                    type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                    break;
+                }
+            }
+            for (int p = 0; p < method->param_count && !tc.had_error; p++) {
+                if (!add_local(&tc, method->params[p].name,
+                               resolve_named_type(&tc, method->params[p].type))) {
+                    type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                    break;
+                }
+            }
+            if (tc.had_error) {
+                pop_scope(&tc);
+                break;
+            }
+            tc.return_type = resolve_named_type(&tc, method->return_type);
+            check_block(&tc, method->body);
+            pop_scope(&tc);
+        }
     }
 
     for (int b = 0; b < program->body_count && !tc.had_error; b++) {

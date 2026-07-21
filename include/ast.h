@@ -147,6 +147,9 @@ typedef struct {
     char** field_names;
     Type** field_types;
     int field_count;
+    ProcDecl* methods;
+    int method_count;
+    int method_capacity;
 } StructDecl;
 
 typedef struct {
