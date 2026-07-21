@@ -46,6 +46,10 @@ Value           vm_utl_file_get_line(VM* vm, int handle);
 int             vm_utl_file_put_line(VM* vm, int handle, const char* text);
 int             vm_utl_file_fclose(VM* vm, int handle);
 
+/* dbms_sql helpers */
+int             vm_dbms_sql_execute(VM* vm, const char* sql);
+Value           vm_dbms_sql_query(VM* vm, const char* sql);
+
 Value           vm_stack_get(VM* vm, int index);
 int             vm_local_count(VM* vm);
 Value           vm_local_get(VM* vm, int index);

@@ -84,9 +84,27 @@ TEST(phase9_utl_file_write_and_read) {
     ASSERT_INT_EQ(1, output_contains(out, "world"));
 }
 
+TEST(phase9_dbms_sql_execute_and_query) {
+    remove("mypl.db");
+    char out[256];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    dbms_sql.execute(\"CREATE TABLE phase9_t (id int, name string)\");\n"
+        "    dbms_sql.execute(\"INSERT INTO phase9_t VALUES (1, 'alice')\");\n"
+        "    dbms_sql.execute(\"INSERT INTO phase9_t VALUES (2, 'bob')\");\n"
+        "    array<row> rows = dbms_sql.query(\"SELECT * FROM phase9_t ORDER BY id\");\n"
+        "    print int_to_string(length(rows));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
 int main(void) {
     RUN_TEST(phase9_dbms_output_buffer_and_get_lines);
     RUN_TEST(phase9_dbms_output_disabled_put_is_noop);
     RUN_TEST(phase9_utl_file_write_and_read);
+    RUN_TEST(phase9_dbms_sql_execute_and_query);
     TEST_SUMMARY();
 }

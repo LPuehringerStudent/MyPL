@@ -68,9 +68,26 @@ static char* strip_main_procedure(const char* source);
     "    }\n" \
     "end utl_file;"
 
+#define BUILTIN_DBMS_SQL \
+    "package dbms_sql is\n" \
+    "    proc execute(sql string) -> int;\n" \
+    "    func query(sql string) -> array<row>;\n" \
+    "end dbms_sql;\n" \
+    "\n" \
+    "package body dbms_sql is\n" \
+    "    proc execute(sql string) -> int {\n" \
+    "        return dbms_sql_execute(sql);\n" \
+    "    }\n" \
+    "\n" \
+    "    func query(sql string) -> array<row> {\n" \
+    "        return dbms_sql_query(sql);\n" \
+    "    }\n" \
+    "end dbms_sql;"
+
 static const char* builtin_packages[] = {
     BUILTIN_DBMS_OUTPUT,
     BUILTIN_UTL_FILE,
+    BUILTIN_DBMS_SQL,
     NULL
 };
 

@@ -309,6 +309,87 @@ int vm_utl_file_fclose(VM* vm, int handle) {
     return ok;
 }
 
+int vm_dbms_sql_execute(VM* vm, const char* sql) {
+    if (vm == NULL || sql == NULL) return -1;
+    DBDriver* driver = vm_get_driver(vm);
+    if (driver != NULL) {
+        int row_count = driver->exec(driver, sql, NULL, 0);
+        if (row_count < 0) return -1;
+        vm_set_sql_rowcount(vm, row_count);
+        return row_count;
+    }
+    Context* ctx = vm->context;
+    if (ctx == NULL || ctx->pager == NULL) return -1;
+    Result* res = sql_exec(sql, ctx);
+    if (res == NULL) return -1;
+    int row_count = res->row_count;
+    result_free(res);
+    vm_set_sql_rowcount(vm, row_count);
+    return row_count;
+}
+
+Value vm_dbms_sql_query(VM* vm, const char* sql) {
+    if (vm == NULL || sql == NULL) return value_array(array_new());
+    ArrayObj* result = array_new();
+    DBDriver* driver = vm_get_driver(vm);
+
+    if (driver != NULL) {
+        void* handle = NULL;
+        if (!driver->query(driver, sql, NULL, 0, &handle)) {
+            return value_array(result);
+        }
+        int col_count = driver->result_column_count(driver, handle);
+        void* row_handle = NULL;
+        while (driver->result_next(driver, handle, &row_handle)) {
+            RowObj* row = row_obj_new(col_count);
+            if (row == NULL) break;
+            for (int c = 0; c < col_count; c++) {
+                Value cell;
+                if (!driver->row_get_column(driver, row_handle, c, &cell)) {
+                    cell = value_int(0);
+                }
+                const char* col_name = driver->result_column_name(driver, handle, c);
+                row_obj_set_column(row, c, col_name, cell);
+                value_release(cell);
+            }
+            array_append(result, value_row(row));
+            value_release(value_row(row));
+        }
+        driver->result_free(driver, handle);
+    } else {
+        Context* ctx = vm->context;
+        if (ctx == NULL || ctx->pager == NULL) {
+            return value_array(result);
+        }
+        Result* res = sql_exec(sql, ctx);
+        if (res == NULL) {
+            return value_array(result);
+        }
+        Row* row = NULL;
+        while ((row = result_next(res)) != NULL) {
+            int col_count = row->field_count;
+            RowObj* row_obj = row_obj_new(col_count);
+            if (row_obj == NULL) break;
+            for (int c = 0; c < col_count; c++) {
+                Value cell;
+                Cell cell_data = row->fields[c].value;
+                switch (cell_data.type) {
+                    case VAL_INT:    cell = value_int(cell_data.as.as_int); break;
+                    case VAL_FLOAT:  cell = value_float(cell_data.as.as_float); break;
+                    case VAL_STRING: cell = value_string(strdup(cell_data.as.as_string)); break;
+                    default:         cell = value_int(0); break;
+                }
+                row_obj_set_column(row_obj, c, row->fields[c].name, cell);
+                value_release(cell);
+            }
+            array_append(result, value_row(row_obj));
+            value_release(value_row(row_obj));
+        }
+        result_free(res);
+    }
+    return value_array(result);
+}
+
 static int push(VM* vm, Value value);
 
 static int vm_catch(VM* vm) {
