@@ -572,6 +572,7 @@ static int is_native(const char* name) {
            strcmp(name, "nextval") == 0 ||
            strcmp(name, "currval") == 0 ||
            strcmp(name, "drop_sequence") == 0 ||
+           strcmp(name, "external_call") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1580,6 +1581,23 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* a = infer_expr(tc, args[0], NULL);
         if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
             type_error(tc, loc, "sequence operation expects a string name");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "external_call") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "external_call expects 3 arguments");
+            return NULL;
+        }
+        for (int i = 0; i < 2; i++) {
+            Type* a = infer_expr(tc, args[i], NULL);
+            if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+                type_error(tc, loc, "external_call expects string library and symbol");
+            }
+        }
+        Type* third = infer_expr(tc, args[2], NULL);
+        if (third != &type_unknown && third != NULL && third->kind != TYPE_INT) {
+            type_error(tc, loc, "external_call expects an int argument");
         }
         return &type_int;
     }
