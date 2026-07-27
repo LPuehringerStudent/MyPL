@@ -36,7 +36,7 @@ proc list_todos() -> int {
 ## Quick start
 
 ```bash
-git clone <repo>
+git clone https://github.com/LPuehringerStudent/MyPL.git
 cd MyPL
 make
 ./bin/mypl examples/todo.mypl --db :memory:
