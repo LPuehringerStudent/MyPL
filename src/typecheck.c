@@ -533,6 +533,8 @@ static int is_native(const char* name) {
            strcmp(name, "sort") == 0 ||
            strcmp(name, "reverse") == 0 ||
            strcmp(name, "clamp") == 0 ||
+           strcmp(name, "coalesce") == 0 ||
+           strcmp(name, "nvl") == 0 ||
            strcmp(name, "env_get") == 0 ||
            strcmp(name, "sleep") == 0 ||
            strcmp(name, "random_int") == 0 ||
@@ -1240,6 +1242,19 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return has_float ? &type_float : &type_int;
     }
+    if (strcmp(name, "coalesce") == 0 || strcmp(name, "nvl") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "%s expects 2 arguments", name);
+            return NULL;
+        }
+        /* Any argument types are allowed; the result type is the first
+           argument's type when known, otherwise the second's. */
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != NULL && a != &type_unknown) return a;
+        if (b != NULL && b != &type_unknown) return b;
+        return &type_unknown;
+    }
     if (strcmp(name, "env_get") == 0) {
         if (arg_count != 1) {
             type_error(tc, loc, "env_get expects 1 argument");
@@ -1630,6 +1645,10 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                 case VAL_BOOL:      return &type_bool;
                 case VAL_DATE:      return &type_date;
                 case VAL_TIMESTAMP: return &type_timestamp;
+                /* The null literal has no concrete type: it is assignable to
+                   and comparable with every type. type_unknown already carries
+                   exactly that meaning in this checker, so reuse it. */
+                case VAL_NULL:      return &type_unknown;
                 case VAL_ARRAY:     return &type_int; /* unreachable for literals */
             }
             return NULL;

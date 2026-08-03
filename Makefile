@@ -62,6 +62,7 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase6 tests/test_phase6.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase7 tests/test_phase7.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase10 tests/test_phase10.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase11 tests/test_phase11.c $(LIB_OBJECTS) $(LDFLAGS)
 ifeq ($(USE_SQLITE),1)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase1 tests/test_phase1.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_phase8 tests/test_phase8.c $(LIB_OBJECTS) $(LDFLAGS)
@@ -92,6 +93,7 @@ endif
 	$(BINDIR)/test_phase6
 	$(BINDIR)/test_phase7
 	$(BINDIR)/test_phase10
+	$(BINDIR)/test_phase11
 ifeq ($(USE_SQLITE),1)
 	$(BINDIR)/test_phase1
 	$(BINDIR)/test_phase8

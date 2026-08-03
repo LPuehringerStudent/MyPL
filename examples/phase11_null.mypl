@@ -1,0 +1,65 @@
+/* Phase 11 capabilities demo: NULL semantics.
+ *
+ * - null literal assignable to any type
+ * - three-valued logic: arithmetic/comparison with null yields null,
+ *   and null in a boolean condition is not true
+ * - INSERT ... null, WHERE col IS [NOT] NULL, aggregates skip NULLs
+ * - coalesce(a, b) / nvl(a, b) return the first non-null argument
+ */
+
+proc main() -> int {
+    print "=== null literal ===";
+    int x = null;
+    string s = null;
+    print x;
+    print s;
+
+    print "=== three-valued logic ===";
+    print x + 1;          /* null */
+    if x == null {
+        print "x == null is true";
+    } else {
+        print "x == null is unknown";
+    }
+    if null {
+        print "null condition taken";
+    } else {
+        print "null condition not taken";
+    }
+
+    print "=== SQL NULL ===";
+    create table people (id int, name string, score int);
+    insert into people values (1, "alice", 10);
+    insert into people values (2, null, null);
+    insert into people values (3, "carol", 30);
+
+    string who = "?";
+    select name into who from people where id = 2;
+    print who;            /* null */
+
+    int null_id = 0;
+    select id into null_id from people where name is null;
+    print null_id;        /* 2 */
+
+    int named_id = 0;
+    select id into named_id from people where name is not null;
+    print named_id;       /* 1 */
+
+    print "=== aggregates skip null ===";
+    int rows = 0;
+    select count(*) into rows from people;
+    print rows;           /* 3 */
+    int scored = 0;
+    select count(score) into scored from people;
+    print scored;         /* 2 */
+    int total = 0;
+    select sum(score) into total from people;
+    print total;          /* 40 */
+
+    print "=== coalesce / nvl ===";
+    print coalesce(x, 5);          /* 5 */
+    print nvl(who, "anonymous");   /* anonymous */
+    print nvl("carol", "anon");    /* carol */
+
+    return 0;
+}

@@ -1422,6 +1422,20 @@ static int native_clamp(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+/* coalesce(a, b) / nvl(a, b): return the first non-NULL argument.
+   The chosen argument is retained because the VM releases argv after the
+   native returns. */
+static int native_coalesce(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2) {
+        vm_set_error(vm, "coalesce expects 2 arguments");
+        return 0;
+    }
+    Value chosen = argv[0].type != VAL_NULL ? argv[0] : argv[1];
+    value_retain(chosen);
+    *out = chosen;
+    return 1;
+}
+
 static int native_env_get(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
@@ -2221,6 +2235,8 @@ static NativeDef natives[] = {
     {"insert", 3, native_insert},
     {"array_fill", 2, native_array_fill},
     {"clamp", 3, native_clamp},
+    {"coalesce", 2, native_coalesce},
+    {"nvl", 2, native_coalesce},
     {"env_get", 1, native_env_get},
     {"sleep", 1, native_sleep},
     {"random_int", 2, native_random_int},

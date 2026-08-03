@@ -156,6 +156,9 @@ static TokenType identifier_type(Lexer* lexer) {
         case 'm':
             if (length == 3 && memcmp(lexer->start, "map", 3) == 0) return TOKEN_MAP_TYPE;
             break;
+        case 'n':
+            if (length == 4 && memcmp(lexer->start, "null", 4) == 0) return TOKEN_NULL;
+            break;
         case 'o':
             if (length == 3 && memcmp(lexer->start, "out", 3) == 0) return TOKEN_OUT;
             if (length == 4 && memcmp(lexer->start, "open", 4) == 0) return TOKEN_OPEN;
