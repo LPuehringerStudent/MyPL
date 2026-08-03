@@ -75,6 +75,7 @@ typedef enum {
     TOKEN_SQL_QUERY,
     TOKEN_TRUE,
     TOKEN_FALSE,
+    TOKEN_NULL,
 
     /* multi-char operators */
     TOKEN_ARROW,

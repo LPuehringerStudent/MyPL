@@ -56,6 +56,17 @@ Value value_int(int v) {
     return value;
 }
 
+/* SQL NULL semantics (three-valued logic):
+ * - Any arithmetic or comparison involving NULL yields NULL (unknown).
+ * - NULL in a boolean condition is not true (value_is_truthy returns 0).
+ * - NULL carries no payload, so retain/release are no-ops for it. */
+Value value_null(void) {
+    Value value;
+    value.type = VAL_NULL;
+    value.as.as_int = 0;
+    return value;
+}
+
 Value value_float(double v) {
     Value value;
     value.type = VAL_FLOAT;
@@ -247,6 +258,7 @@ static double as_number(Value v) {
 }
 
 Value value_add(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (a.type == VAL_STRING && b.type == VAL_STRING) {
         const char* as = a.as.as_string ? a.as.as_string : "";
         const char* bs = b.as.as_string ? b.as.as_string : "";
@@ -266,6 +278,7 @@ Value value_add(Value a, Value b) {
 }
 
 Value value_sub(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (either_float(a, b)) {
         return value_float(as_number(a) - as_number(b));
     }
@@ -276,6 +289,7 @@ Value value_sub(Value a, Value b) {
 }
 
 Value value_mul(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (either_float(a, b)) {
         return value_float(as_number(a) * as_number(b));
     }
@@ -286,6 +300,7 @@ Value value_mul(Value a, Value b) {
 }
 
 Value value_div(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (either_float(a, b)) {
         double divisor = as_number(b);
         if (divisor == 0.0) return value_int(0);
@@ -299,6 +314,7 @@ Value value_div(Value a, Value b) {
 }
 
 Value value_eq(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (a.type == VAL_BOOL && b.type == VAL_BOOL) {
         return value_int(a.as.as_int == b.as.as_int ? 1 : 0);
     }
@@ -320,6 +336,7 @@ Value value_eq(Value a, Value b) {
 }
 
 Value value_lt(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (a.type == VAL_STRING && b.type == VAL_STRING) {
         const char* as = a.as.as_string ? a.as.as_string : "";
         const char* bs = b.as.as_string ? b.as.as_string : "";
@@ -341,6 +358,7 @@ Value value_lt(Value a, Value b) {
 }
 
 Value value_gt(Value a, Value b) {
+    if (a.type == VAL_NULL || b.type == VAL_NULL) return value_null();
     if (a.type == VAL_STRING && b.type == VAL_STRING) {
         const char* as = a.as.as_string ? a.as.as_string : "";
         const char* bs = b.as.as_string ? b.as.as_string : "";
@@ -363,6 +381,9 @@ Value value_gt(Value a, Value b) {
 
 int value_is_truthy(Value value) {
     switch (value.type) {
+        case VAL_NULL:
+            /* NULL is unknown, which is not true. */
+            return 0;
         case VAL_INT:
             return value.as.as_int != 0;
         case VAL_FLOAT:
@@ -387,6 +408,9 @@ int value_is_truthy(Value value) {
 
 void value_print(Value value) {
     switch (value.type) {
+        case VAL_NULL:
+            printf("null");
+            break;
         case VAL_INT:
             printf("%d", value.as.as_int);
             break;
@@ -614,6 +638,7 @@ int array_trim(ArrayObj* array, int count) {
 static int values_equal_values(Value a, Value b) {
     if (a.type != b.type) return 0;
     switch (a.type) {
+        case VAL_NULL:   return 1; /* two NULLs are identical for internal use */
         case VAL_INT:    return a.as.as_int == b.as.as_int;
         case VAL_FLOAT:  return a.as.as_float == b.as.as_float;
         case VAL_BOOL:   return a.as.as_int == b.as.as_int;

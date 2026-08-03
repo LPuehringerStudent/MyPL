@@ -56,6 +56,9 @@ static int bind_params(DBDriver* driver, sqlite3_stmt* stmt, Value* params, int 
             case VAL_BOOL:
                 rc = sqlite3_bind_int(stmt, idx, v.as.as_int);
                 break;
+            case VAL_NULL:
+                rc = sqlite3_bind_null(stmt, idx);
+                break;
             default:
                 rc = sqlite3_bind_null(stmt, idx);
                 break;
@@ -239,7 +242,7 @@ static int sqlite_row_get_field(DBDriver* driver, void* row_handle, const char* 
                     *out = value_string(strdup((const char*)sqlite3_column_text(stmt, i)));
                     return 1;
                 case SQLITE_NULL:
-                    *out = value_int(0);
+                    *out = value_null();
                     return 1;
                 default:
                     *out = value_int(0);
@@ -275,7 +278,7 @@ static int sqlite_row_get_column(DBDriver* driver, void* row_handle, int index, 
             *out = value_string(strdup((const char*)sqlite3_column_text(stmt, index)));
             return 1;
         case SQLITE_NULL:
-            *out = value_int(0);
+            *out = value_null();
             return 1;
         default:
             *out = value_int(0);

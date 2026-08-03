@@ -100,7 +100,10 @@ typedef enum {
     VAL_ARRAY,
     VAL_MAP,
     VAL_ROW,
-    VAL_CURSOR
+    VAL_CURSOR,
+    /* SQL NULL. Kept last so the numeric tags of the earlier types (which the
+       custom engine persists to disk) stay stable. */
+    VAL_NULL
 } ValueType;
 
 typedef struct {
@@ -155,6 +158,7 @@ void   write_chunk_u16_line(Chunk* chunk, uint16_t value, int line, int column);
 uint16_t read_u16(const uint8_t* bytes);
 
 Value value_int(int v);
+Value value_null(void);
 Value value_float(double v);
 Value value_string(char* s);
 Value value_bool(int v);

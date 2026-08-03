@@ -431,6 +431,13 @@ static Expr* literal_bool(Parser* parser) {
     return expr;
 }
 
+static Expr* literal_null(Parser* parser) {
+    Expr* expr = create_literal_expr(value_null());
+    expr->loc.line = parser->previous.line;
+    expr->loc.column = parser->previous.column;
+    return expr;
+}
+
 static Expr* number(Parser* parser) {
     Expr* expr;
     if (parser->previous.type == TOKEN_FLOAT) {
@@ -2686,6 +2693,7 @@ static ParseRule rules[] = {
     [TOKEN_END]        = {NULL,        NULL,   PREC_NONE},
     [TOKEN_TRUE]       = {literal_bool,NULL,   PREC_NONE},
     [TOKEN_FALSE]      = {literal_bool,NULL,   PREC_NONE},
+    [TOKEN_NULL]       = {literal_null,NULL,   PREC_NONE},
     [TOKEN_SQLCODE]    = {sqlcode_expr,NULL,   PREC_NONE},
     [TOKEN_SQLERRM]    = {sqlerrm_expr,NULL,   PREC_NONE},
     [TOKEN_IDENT]      = {variable,    NULL,   PREC_NONE},

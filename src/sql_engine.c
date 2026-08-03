@@ -247,6 +247,7 @@ static int row_record_size(Table* table, Cell* cells) {
             case VAL_INT:    size += 4; break;
             case VAL_FLOAT:  size += 8; break;
             case VAL_STRING: size += 4 + (int)strlen(cells[i].as.as_string); break;
+            case VAL_NULL:   break; /* tag only, no payload */
             default:         size += 4; break;
         }
     }
@@ -279,6 +280,9 @@ static void serialize_row(Table* table, Cell* cells, uint8_t* out) {
                 offset += len;
                 break;
             }
+            case VAL_NULL:
+                /* NULL cells serialize as just the type tag. */
+                break;
             default: {
                 int32_t v = 0;
                 memcpy(out + offset, &v, sizeof(v));
@@ -294,6 +298,9 @@ static void serialize_row(Table* table, Cell* cells, uint8_t* out) {
 static int deserialize_cell(const uint8_t* data, int* offset, Cell* cell) {
     cell->type = data[(*offset)++];
     switch (cell->type) {
+        case VAL_NULL:
+            cell->as.as_int = 0;
+            return 1;
         case VAL_INT: {
             int32_t v = 0;
             memcpy(&v, data + *offset, sizeof(v));
@@ -564,7 +571,10 @@ typedef enum {
     TOK_GT,
     TOK_LE,
     TOK_GE,
-    TOK_NE
+    TOK_NE,
+    TOK_NULL,
+    TOK_IS,
+    TOK_NOT
 } SqlTokenType;
 
 typedef struct {
@@ -631,6 +641,9 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 3 && strncasecmp(start, "INT", 3) == 0) return TOK_INT;
     if (length == 5 && strncasecmp(start, "FLOAT", 5) == 0) return TOK_FLOAT;
     if (length == 6 && strncasecmp(start, "STRING", 6) == 0) return TOK_STRING_KW;
+    if (length == 4 && strncasecmp(start, "NULL", 4) == 0) return TOK_NULL;
+    if (length == 2 && strncasecmp(start, "IS", 2) == 0) return TOK_IS;
+    if (length == 3 && strncasecmp(start, "NOT", 3) == 0) return TOK_NOT;
     return TOK_IDENT;
 }
 
@@ -907,36 +920,50 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
         strcpy(stmt->where_table_prefix, where_prefix_buf);
         strcpy(stmt->where_column, where_name_buf);
 
-        if (tok.type == TOK_EQ) stmt->where_op = 0;
-        else if (tok.type == TOK_LT) stmt->where_op = 1;
-        else if (tok.type == TOK_GT) stmt->where_op = 2;
-        else if (tok.type == TOK_LE) stmt->where_op = 3;
-        else if (tok.type == TOK_GE) stmt->where_op = 4;
-        else if (tok.type == TOK_NE) stmt->where_op = 5;
-        else return 0;
-
-        tok = sql_next_token(&lex);
-        if (tok.type == TOK_NUMBER) {
-            char buf[64];
-            sql_token_text(&tok, buf, sizeof(buf));
-            if (strchr(buf, '.') != NULL) {
-                stmt->where_value.type = VAL_FLOAT;
-                stmt->where_value.as.as_float = strtod(buf, NULL);
-            } else {
-                stmt->where_value.type = VAL_INT;
-                stmt->where_value.as.as_int = atoi(buf);
+        if (tok.type == TOK_IS) {
+            /* WHERE col IS [NOT] NULL */
+            tok = sql_next_token(&lex);
+            int is_not = 0;
+            if (tok.type == TOK_NOT) {
+                is_not = 1;
+                tok = sql_next_token(&lex);
             }
-        } else if (tok.type == TOK_STRING) {
-            stmt->where_value.type = VAL_STRING;
-            stmt->where_value.as.as_string = malloc((size_t)tok.length + 1);
-            if (stmt->where_value.as.as_string == NULL) return 0;
-            memcpy(stmt->where_value.as.as_string, tok.text, (size_t)tok.length);
-            stmt->where_value.as.as_string[tok.length] = '\0';
+            if (tok.type != TOK_NULL) return 0;
+            stmt->where_op = is_not ? 7 : 6;
+            stmt->has_where = 1;
+            tok = sql_next_token(&lex);
         } else {
-            return 0;
+            if (tok.type == TOK_EQ) stmt->where_op = 0;
+            else if (tok.type == TOK_LT) stmt->where_op = 1;
+            else if (tok.type == TOK_GT) stmt->where_op = 2;
+            else if (tok.type == TOK_LE) stmt->where_op = 3;
+            else if (tok.type == TOK_GE) stmt->where_op = 4;
+            else if (tok.type == TOK_NE) stmt->where_op = 5;
+            else return 0;
+
+            tok = sql_next_token(&lex);
+            if (tok.type == TOK_NUMBER) {
+                char buf[64];
+                sql_token_text(&tok, buf, sizeof(buf));
+                if (strchr(buf, '.') != NULL) {
+                    stmt->where_value.type = VAL_FLOAT;
+                    stmt->where_value.as.as_float = strtod(buf, NULL);
+                } else {
+                    stmt->where_value.type = VAL_INT;
+                    stmt->where_value.as.as_int = atoi(buf);
+                }
+            } else if (tok.type == TOK_STRING) {
+                stmt->where_value.type = VAL_STRING;
+                stmt->where_value.as.as_string = malloc((size_t)tok.length + 1);
+                if (stmt->where_value.as.as_string == NULL) return 0;
+                memcpy(stmt->where_value.as.as_string, tok.text, (size_t)tok.length);
+                stmt->where_value.as.as_string[tok.length] = '\0';
+            } else {
+                return 0;
+            }
+            stmt->has_where = 1;
+            tok = sql_next_token(&lex);
         }
-        stmt->has_where = 1;
-        tok = sql_next_token(&lex);
     }
 
     if (tok.type == TOK_GROUP) {
@@ -1018,6 +1045,12 @@ static Cell cell_from_int(int v) {
 }
 
 static int cell_compare(Cell* a, Cell* b) {
+    /* Deterministic ordering for NULLs (sorts/grouping only): NULL is
+       smaller than any non-NULL value. WHERE evaluation handles NULL
+       separately with three-valued logic before calling this. */
+    if (a->type == VAL_NULL && b->type == VAL_NULL) return 0;
+    if (a->type == VAL_NULL) return -1;
+    if (b->type == VAL_NULL) return 1;
     if (a->type == VAL_INT && b->type == VAL_INT) {
         if (a->as.as_int < b->as.as_int) return -1;
         if (a->as.as_int > b->as.as_int) return 1;
@@ -1044,6 +1077,13 @@ static int cell_compare(Cell* a, Cell* b) {
 static int evaluate_where(Row* row, SelectStmt* stmt) {
     Cell* value = resolve_field(row, stmt->where_table_prefix, stmt->where_column, stmt);
     if (value == NULL) return 0;
+
+    if (stmt->where_op == 6) return value->type == VAL_NULL; /* IS NULL */
+    if (stmt->where_op == 7) return value->type != VAL_NULL; /* IS NOT NULL */
+
+    /* Three-valued logic: any comparison against NULL is unknown, so the
+       row does not match. */
+    if (value->type == VAL_NULL || stmt->where_value.type == VAL_NULL) return 0;
 
     int cmp = cell_compare(value, &stmt->where_value);
     switch (stmt->where_op) {
@@ -1159,6 +1199,9 @@ static int evaluate_join(Row* left, Row* right, SelectStmt* stmt) {
         }
     }
     if (right_value == NULL) return 0;
+
+    /* NULL join keys never match (three-valued logic). */
+    if (left_value->type == VAL_NULL || right_value->type == VAL_NULL) return 0;
 
     return cell_compare(left_value, right_value) == 0;
 }
@@ -1334,8 +1377,18 @@ static Cell compute_aggregate(AggregateFunc agg, Row** rows, int row_count,
                               const char* arg) {
     Cell result;
     if (agg == AGG_COUNT) {
+        /* COUNT(*) counts rows; COUNT(col) skips NULL values (SQLite-style). */
         result.type = VAL_INT;
-        result.as.as_int = row_count;
+        if (strcmp(arg, "*") == 0) {
+            result.as.as_int = row_count;
+            return result;
+        }
+        int non_null = 0;
+        for (int i = 0; i < row_count; i++) {
+            Cell* value = source_row_find_field(rows[i], arg);
+            if (value != NULL && value->type != VAL_NULL) non_null++;
+        }
+        result.as.as_int = non_null;
         return result;
     }
 
@@ -1350,7 +1403,7 @@ static Cell compute_aggregate(AggregateFunc agg, Row** rows, int row_count,
         int numeric_count = 0;
         for (int i = 0; i < row_count; i++) {
             Cell* value = source_row_find_field(rows[i], arg);
-            if (value == NULL) continue;
+            if (value == NULL || value->type == VAL_NULL) continue;
             if (value->type == VAL_INT) {
                 sum += value->as.as_int;
                 numeric_count++;
@@ -1370,16 +1423,18 @@ static Cell compute_aggregate(AggregateFunc agg, Row** rows, int row_count,
     }
 
     if (agg == AGG_MIN || agg == AGG_MAX) {
-        Cell* first = source_row_find_field(rows[0], arg);
-        if (first == NULL) {
-            result.type = VAL_INT;
-            result.as.as_int = 0;
-            return result;
-        }
-        result = *first;
-        for (int i = 1; i < row_count; i++) {
+        /* MIN/MAX skip NULLs; if every value is NULL the result is NULL. */
+        int found = 0;
+        result.type = VAL_NULL;
+        result.as.as_int = 0;
+        for (int i = 0; i < row_count; i++) {
             Cell* value = source_row_find_field(rows[i], arg);
-            if (value == NULL) continue;
+            if (value == NULL || value->type == VAL_NULL) continue;
+            if (!found) {
+                result = *value;
+                found = 1;
+                continue;
+            }
             int cmp = cell_compare(value, &result);
             if ((agg == AGG_MIN && cmp < 0) || (agg == AGG_MAX && cmp > 0)) {
                 result = *value;
@@ -1683,6 +1738,9 @@ static int sql_parse_insert(const char* query, DdlStmt* stmt) {
                 stmt->values[stmt->value_count].type = VAL_INT;
                 stmt->values[stmt->value_count].as.as_int = atoi(buf);
             }
+        } else if (tok.type == TOK_NULL) {
+            stmt->values[stmt->value_count].type = VAL_NULL;
+            stmt->values[stmt->value_count].as.as_int = 0;
         } else if (tok.type == TOK_STRING) {
             stmt->values[stmt->value_count].type = VAL_STRING;
             stmt->values[stmt->value_count].as.as_string = malloc((size_t)tok.length + 1);
@@ -1847,6 +1905,21 @@ static int parse_where_clause(SqlLexer* lex, int* has_where,
     sql_token_text(&tok, where_column, (int)where_column_size);
 
     tok = sql_next_token(lex);
+    if (tok.type == TOK_IS) {
+        /* WHERE col IS [NOT] NULL */
+        tok = sql_next_token(lex);
+        int is_not = 0;
+        if (tok.type == TOK_NOT) {
+            is_not = 1;
+            tok = sql_next_token(lex);
+        }
+        if (tok.type != TOK_NULL) return 0;
+        *where_op = is_not ? 7 : 6;
+        tok = sql_next_token(lex);
+        if (tok.type != TOK_EOF) return 0;
+        *has_where = 1;
+        return 1;
+    }
     if (tok.type == TOK_EQ) *where_op = 0;
     else if (tok.type == TOK_LT) *where_op = 1;
     else if (tok.type == TOK_GT) *where_op = 2;
@@ -1930,6 +2003,9 @@ static int sql_parse_update(const char* query, UpdateStmt* stmt) {
             stmt->set_value.type = VAL_INT;
             stmt->set_value.as.as_int = atoi(buf);
         }
+    } else if (tok.type == TOK_NULL) {
+        stmt->set_value.type = VAL_NULL;
+        stmt->set_value.as.as_int = 0;
     } else if (tok.type == TOK_STRING) {
         stmt->set_value.type = VAL_STRING;
         stmt->set_value.as.as_string = malloc((size_t)tok.length + 1);
@@ -1973,6 +2049,12 @@ static int row_matches_where(Row* row, const char* where_column, int where_op, C
         }
     }
     if (value == NULL) return 0;
+
+    if (where_op == 6) return value->type == VAL_NULL; /* IS NULL */
+    if (where_op == 7) return value->type != VAL_NULL; /* IS NOT NULL */
+
+    /* Three-valued logic: comparisons against NULL never match. */
+    if (value->type == VAL_NULL || where_value->type == VAL_NULL) return 0;
 
     int cmp = cell_compare(value, where_value);
     switch (where_op) {
@@ -2363,6 +2445,7 @@ static int custom_row_get_field(DBDriver* driver, void* row_handle, const char* 
         case VAL_INT:    *out = value_int(cell.as.as_int);       break;
         case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
         case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
+        case VAL_NULL:   *out = value_null();                    break;
         default:
             snprintf(driver->error_message, sizeof(driver->error_message),
                      "column '%s' not found", name);
@@ -2385,6 +2468,7 @@ static int custom_row_get_column(DBDriver* driver, void* row_handle, int index, 
         case VAL_INT:    *out = value_int(cell.as.as_int);       break;
         case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
         case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
+        case VAL_NULL:   *out = value_null();                    break;
         default:
             *out = value_int(0);
             return 0;

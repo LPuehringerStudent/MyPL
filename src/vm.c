@@ -729,6 +729,8 @@ dispatch:
                     ok = push(vm, value_float(-value.as.as_float));
                 } else if (value.type == VAL_INT) {
                     ok = push(vm, value_int(-value.as.as_int));
+                } else if (value.type == VAL_NULL) {
+                    ok = push(vm, value_null());
                 } else {
                     value_release(value);
                     set_runtime_error(vm, "Cannot negate non-numeric value");
