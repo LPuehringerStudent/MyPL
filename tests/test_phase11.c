@@ -245,6 +245,177 @@ TEST(phase11_nvl_alias) {
     ASSERT_INT_EQ(1, output_contains(out, "keep"));
 }
 
+TEST(phase11_drop_table_recreate_works) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table d_t (id int);\n"
+        "    insert into d_t values (1);\n"
+        "    drop table d_t;\n"
+        "    create table d_t (id int, tag string);\n"
+        "    insert into d_t values (2, \"new\");\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from d_t;\n"
+        "    print n;\n"
+        "    string s = \"?\";\n"
+        "    select tag into s from d_t where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Only the row inserted after the recreate is present. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "new"));
+
+    /* The recreated table persists across process restarts. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from d_t;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_drop_missing_table_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop table nope;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_drop_table_if_exists) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop table if exists maybe_t;\n"
+        "    create table maybe_t (id int);\n"
+        "    drop table if exists maybe_t;\n"
+        "    drop table if exists maybe_t;\n"
+        "    print \"ok\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "ok"));
+}
+
+TEST(phase11_alter_add_column) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table a_t (id int, name string);\n"
+        "    insert into a_t values (1, \"alice\");\n"
+        "    alter table a_t add column age int;\n"
+        "    insert into a_t values (2, \"bob\", 42);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: the added column persists; old rows read back as null. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int old_age = -1;\n"
+        "    select age into old_age from a_t where id = 1;\n"
+        "    print old_age;\n"
+        "    int new_age = -1;\n"
+        "    select age into new_age from a_t where id = 2;\n"
+        "    print new_age;\n"
+        "    string nm = \"?\";\n"
+        "    select name into nm from a_t where id = 1;\n"
+        "    print nm;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "null"));
+    ASSERT_INT_EQ(1, output_contains(out, "42"));
+    ASSERT_INT_EQ(1, output_contains(out, "alice"));
+}
+
+TEST(phase11_alter_add_column_insert_needs_new_column) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table a2_t (id int);\n"
+        "    alter table a2_t add column tag string;\n"
+        "    insert into a2_t values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    /* Too few values after ADD COLUMN is an error. */
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_alter_drop_column) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dc_t (id int, name string);\n"
+        "    insert into dc_t values (1, \"alice\");\n"
+        "    insert into dc_t values (2, \"bob\");\n"
+        "    alter table dc_t drop column name;\n"
+        "    insert into dc_t values (3);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: remaining column keeps its data across the rebuild. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from dc_t;\n"
+        "    print n;\n"
+        "    int x = -1;\n"
+        "    select id into x from dc_t where id = 2;\n"
+        "    print x;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+
+    /* Selecting the dropped column is an error. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    for row in select name from dc_t {\n"
+        "        print row.name;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_alter_missing_table_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    alter table nope add column x int;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -256,5 +427,12 @@ int main(void) {
     RUN_TEST(phase11_aggregates_skip_null);
     RUN_TEST(phase11_coalesce_returns_first_non_null);
     RUN_TEST(phase11_nvl_alias);
+    RUN_TEST(phase11_drop_table_recreate_works);
+    RUN_TEST(phase11_drop_missing_table_errors);
+    RUN_TEST(phase11_drop_table_if_exists);
+    RUN_TEST(phase11_alter_add_column);
+    RUN_TEST(phase11_alter_add_column_insert_needs_new_column);
+    RUN_TEST(phase11_alter_drop_column);
+    RUN_TEST(phase11_alter_missing_table_errors);
     TEST_SUMMARY();
 }

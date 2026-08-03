@@ -574,7 +574,13 @@ typedef enum {
     TOK_NE,
     TOK_NULL,
     TOK_IS,
-    TOK_NOT
+    TOK_NOT,
+    TOK_DROP,
+    TOK_ALTER,
+    TOK_ADD,
+    TOK_IF,
+    TOK_EXISTS,
+    TOK_COLUMN
 } SqlTokenType;
 
 typedef struct {
@@ -644,6 +650,12 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 4 && strncasecmp(start, "NULL", 4) == 0) return TOK_NULL;
     if (length == 2 && strncasecmp(start, "IS", 2) == 0) return TOK_IS;
     if (length == 3 && strncasecmp(start, "NOT", 3) == 0) return TOK_NOT;
+    if (length == 4 && strncasecmp(start, "DROP", 4) == 0) return TOK_DROP;
+    if (length == 5 && strncasecmp(start, "ALTER", 5) == 0) return TOK_ALTER;
+    if (length == 3 && strncasecmp(start, "ADD", 3) == 0) return TOK_ADD;
+    if (length == 2 && strncasecmp(start, "IF", 2) == 0) return TOK_IF;
+    if (length == 6 && strncasecmp(start, "EXISTS", 6) == 0) return TOK_EXISTS;
+    if (length == 6 && strncasecmp(start, "COLUMN", 6) == 0) return TOK_COLUMN;
     return TOK_IDENT;
 }
 
@@ -1638,6 +1650,7 @@ typedef struct {
     int         value_count;
     int         has_select;
     char*       select_query;
+    int         if_not_exists;
 } DdlStmt;
 
 static int sql_parse_type(SqlToken* tok, int* out_type) {
@@ -1667,6 +1680,14 @@ static int sql_parse_create_table(const char* query, DdlStmt* stmt) {
     tok = sql_next_token(&lex);
     if (tok.type != TOK_TABLE) return 0;
     tok = sql_next_token(&lex);
+    if (tok.type == TOK_IF) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_NOT) return 0;
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_EXISTS) return 0;
+        stmt->if_not_exists = 1;
+        tok = sql_next_token(&lex);
+    }
     if (tok.type != TOK_IDENT) return 0;
     sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
 
@@ -1803,6 +1824,16 @@ static void sql_free_update_stmt(UpdateStmt* stmt);
 static void sql_free_delete_stmt(DeleteStmt* stmt);
 static int execute_update(Context* ctx, UpdateStmt* stmt);
 static int execute_delete(Context* ctx, DeleteStmt* stmt);
+static int sql_parse_drop_table(const char* query, char* table_name, size_t table_name_size,
+                                int* if_exists);
+static int sql_parse_alter_table(const char* query, char* table_name, size_t table_name_size,
+                                 int* action, char* column_name, size_t column_name_size,
+                                 int* column_type);
+static int execute_drop_table(Context* ctx, const char* table_name, int if_exists);
+static int execute_alter_add_column(Context* ctx, const char* table_name,
+                                    const char* column_name, int column_type);
+static int execute_alter_drop_column(Context* ctx, const char* table_name,
+                                     const char* column_name);
 
 static int execute_insert_select(Context* ctx, Table* table, const char* select_query) {
     Result* res = sql_exec(select_query, ctx);
@@ -1842,11 +1873,38 @@ static int execute_insert_select(Context* ctx, Table* table, const char* select_
 int sql_exec_ddl(const char* query, Context* ctx) {
     DdlStmt stmt;
     if (sql_parse_create_table(query, &stmt)) {
+        if (stmt.if_not_exists && catalog_find_table(ctx, stmt.table_name) != NULL) {
+            sql_free_ddl_stmt(&stmt);
+            return 1;
+        }
         Table* t = catalog_create_table(ctx, stmt.table_name,
                                         (const char**)stmt.column_names,
                                         stmt.column_types,
                                         stmt.column_count);
+        sql_free_ddl_stmt(&stmt);
         return t != NULL ? 1 : 0;
+    }
+
+    {
+        char table_name[MAX_NAME_LEN + 1];
+        int if_exists = 0;
+        if (sql_parse_drop_table(query, table_name, sizeof(table_name), &if_exists)) {
+            return execute_drop_table(ctx, table_name, if_exists);
+        }
+    }
+
+    {
+        char table_name[MAX_NAME_LEN + 1];
+        char column_name[MAX_NAME_LEN + 1];
+        int action = 0;
+        int column_type = 0;
+        if (sql_parse_alter_table(query, table_name, sizeof(table_name),
+                                  &action, column_name, sizeof(column_name), &column_type)) {
+            if (action == 1) {
+                return execute_alter_add_column(ctx, table_name, column_name, column_type);
+            }
+            return execute_alter_drop_column(ctx, table_name, column_name);
+        }
     }
 
     if (sql_parse_insert(query, &stmt)) {
@@ -2213,6 +2271,206 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
         free(rows[i].fields);
     }
     free(rows);
+
+    catalog_write_page(ctx);
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* DROP TABLE / ALTER TABLE parsing and execution                             */
+/* -------------------------------------------------------------------------- */
+
+static int sql_parse_drop_table(const char* query, char* table_name, size_t table_name_size,
+                                int* if_exists) {
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_DROP) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_TABLE) return 0;
+
+    *if_exists = 0;
+    tok = sql_next_token(&lex);
+    if (tok.type == TOK_IF) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_EXISTS) return 0;
+        *if_exists = 1;
+        tok = sql_next_token(&lex);
+    }
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, table_name, table_name_size);
+
+    tok = sql_next_token(&lex);
+    return tok.type == TOK_EOF;
+}
+
+/* action: 1 = ADD COLUMN, 2 = DROP COLUMN */
+static int sql_parse_alter_table(const char* query, char* table_name, size_t table_name_size,
+                                 int* action, char* column_name, size_t column_name_size,
+                                 int* column_type) {
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_ALTER) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_TABLE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, table_name, table_name_size);
+
+    tok = sql_next_token(&lex);
+    if (tok.type == TOK_ADD) {
+        *action = 1;
+    } else if (tok.type == TOK_DROP) {
+        *action = 2;
+    } else {
+        return 0;
+    }
+
+    tok = sql_next_token(&lex);
+    if (tok.type == TOK_COLUMN) {
+        tok = sql_next_token(&lex);
+    }
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, column_name, column_name_size);
+
+    if (*action == 1) {
+        tok = sql_next_token(&lex);
+        if (!sql_parse_type(&tok, column_type)) return 0;
+    }
+
+    tok = sql_next_token(&lex);
+    return tok.type == TOK_EOF;
+}
+
+static int execute_drop_table(Context* ctx, const char* table_name, int if_exists) {
+    for (int i = 0; i < g_catalog_count; i++) {
+        if (g_catalog[i] != NULL && strcmp(g_catalog[i]->name, table_name) == 0) {
+            Table* table = g_catalog[i];
+            free_row_pages(ctx, table);
+            free_table(table);
+            for (int j = i + 1; j < g_catalog_count; j++) {
+                g_catalog[j - 1] = g_catalog[j];
+            }
+            g_catalog_count--;
+            g_catalog[g_catalog_count] = NULL;
+            catalog_write_page(ctx);
+            return 1;
+        }
+    }
+    return if_exists;
+}
+
+static int execute_alter_add_column(Context* ctx, const char* table_name,
+                                    const char* column_name, int column_type) {
+    Table* table = catalog_find_table(ctx, table_name);
+    if (table == NULL) return 0;
+    if (table->column_count >= MAX_COLUMNS) return 0;
+    for (int i = 0; i < table->column_count; i++) {
+        if (strcmp(table->columns[i].name, column_name) == 0) return 0;
+    }
+
+    /* Read existing rows under the old schema before touching the table. */
+    Row* rows = NULL;
+    int row_count = 0;
+    if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
+
+    Column* new_columns = realloc(table->columns,
+                                  sizeof(Column) * (size_t)(table->column_count + 1));
+    if (new_columns == NULL) {
+        free_rows(rows, row_count);
+        return 0;
+    }
+    table->columns = new_columns;
+    char* name_copy = strdup(column_name);
+    if (name_copy == NULL) {
+        free_rows(rows, row_count);
+        return 0;
+    }
+    table->columns[table->column_count].name = name_copy;
+    table->columns[table->column_count].type = column_type;
+    table->column_count++;
+
+    /* Rebuild the row chain; pre-existing rows get NULL for the new column. */
+    free_row_pages(ctx, table);
+    for (int i = 0; i < row_count; i++) {
+        Cell cells[MAX_COLUMNS];
+        for (int j = 0; j < rows[i].field_count; j++) {
+            cells[j] = rows[i].fields[j].value;
+        }
+        cells[table->column_count - 1].type = VAL_NULL;
+        cells[table->column_count - 1].as.as_int = 0;
+        catalog_insert(ctx, table, cells);
+    }
+    free_rows(rows, row_count);
+
+    catalog_write_page(ctx);
+    return 1;
+}
+
+static int execute_alter_drop_column(Context* ctx, const char* table_name,
+                                     const char* column_name) {
+    Table* table = catalog_find_table(ctx, table_name);
+    if (table == NULL) return 0;
+    if (table->column_count <= 1) return 0; /* cannot drop the last column */
+
+    int drop_index = -1;
+    for (int i = 0; i < table->column_count; i++) {
+        if (strcmp(table->columns[i].name, column_name) == 0) {
+            drop_index = i;
+            break;
+        }
+    }
+    if (drop_index < 0) return 0;
+
+    /* Read existing rows under the old schema before touching the table. */
+    Row* rows = NULL;
+    int row_count = 0;
+    if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
+
+    int new_count = table->column_count - 1;
+    Column* new_columns = calloc((size_t)new_count, sizeof(Column));
+    if (new_columns == NULL) {
+        free_rows(rows, row_count);
+        return 0;
+    }
+    int k = 0;
+    for (int i = 0; i < table->column_count; i++) {
+        if (i == drop_index) continue;
+        new_columns[k].name = strdup(table->columns[i].name);
+        if (new_columns[k].name == NULL) {
+            for (int j = 0; j < k; j++) {
+                free(new_columns[j].name);
+            }
+            free(new_columns);
+            free_rows(rows, row_count);
+            return 0;
+        }
+        new_columns[k].type = table->columns[i].type;
+        k++;
+    }
+
+    /* Rebuild the row chain without the dropped column. */
+    free_row_pages(ctx, table);
+    for (int i = 0; i < table->column_count; i++) {
+        free(table->columns[i].name);
+    }
+    free(table->columns);
+    table->columns = new_columns;
+    table->column_count = new_count;
+
+    for (int i = 0; i < row_count; i++) {
+        Cell cells[MAX_COLUMNS];
+        int c = 0;
+        for (int j = 0; j < rows[i].field_count; j++) {
+            if (j == drop_index) continue;
+            cells[c++] = rows[i].fields[j].value;
+        }
+        catalog_insert(ctx, table, cells);
+    }
+    free_rows(rows, row_count);
 
     catalog_write_page(ctx);
     return 1;
