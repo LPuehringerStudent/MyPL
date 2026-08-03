@@ -1,0 +1,43 @@
+/* Phase 11 capabilities demo: DROP TABLE and ALTER TABLE.
+ *
+ * - CREATE TABLE IF NOT EXISTS
+ * - DROP TABLE / DROP TABLE IF EXISTS
+ * - ALTER TABLE ... ADD COLUMN (old rows read back null for the new column)
+ * - ALTER TABLE ... DROP COLUMN (row chain rebuilt without the column)
+ */
+
+proc main() -> int {
+    print "=== drop table ===";
+    drop table if exists demo;
+    create table demo (id int, name string);
+    insert into demo values (1, "alice");
+    drop table demo;
+    create table demo (id int, tag string);
+    insert into demo values (2, "fresh");
+    string tag = "?";
+    select tag into tag from demo where id = 2;
+    print tag;            /* fresh */
+
+    print "=== alter add column ===";
+    alter table demo add column score int;
+    insert into demo values (3, "new", 99);
+    int old_score = -1;
+    select score into old_score from demo where id = 2;
+    print old_score;      /* null (row predates the column) */
+    int new_score = -1;
+    select score into new_score from demo where id = 3;
+    print new_score;      /* 99 */
+
+    print "=== alter drop column ===";
+    alter table demo drop column tag;
+    int n = -1;
+    select count(*) into n from demo;
+    print n;              /* 2 */
+    int id2 = -1;
+    select id into id2 from demo where score = 99;
+    print id2;            /* 3 */
+
+    drop table demo;
+    print "done";
+    return 0;
+}

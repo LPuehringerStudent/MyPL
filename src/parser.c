@@ -2021,6 +2021,10 @@ static Stmt* statement(Parser* parser) {
         }
         return stmt;
     }
+    if (current_token_is_keyword(parser, "alter")) {
+        advance(parser); /* consume alter */
+        return sql_statement(parser, STMT_SQL_DDL);
+    }
     if (check(parser, TOKEN_IDENT)) {
         /* Ambiguity between struct-typed or percent-typed variable
            declarations and other identifier-started statements. */
