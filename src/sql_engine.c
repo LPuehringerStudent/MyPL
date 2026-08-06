@@ -575,6 +575,10 @@ typedef enum {
     TOK_NULL,
     TOK_IS,
     TOK_NOT,
+    TOK_AND,
+    TOK_OR,
+    TOK_IN,
+    TOK_LIKE,
     TOK_DROP,
     TOK_ALTER,
     TOK_ADD,
@@ -650,6 +654,10 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 4 && strncasecmp(start, "NULL", 4) == 0) return TOK_NULL;
     if (length == 2 && strncasecmp(start, "IS", 2) == 0) return TOK_IS;
     if (length == 3 && strncasecmp(start, "NOT", 3) == 0) return TOK_NOT;
+    if (length == 3 && strncasecmp(start, "AND", 3) == 0) return TOK_AND;
+    if (length == 2 && strncasecmp(start, "OR", 2) == 0) return TOK_OR;
+    if (length == 2 && strncasecmp(start, "IN", 2) == 0) return TOK_IN;
+    if (length == 4 && strncasecmp(start, "LIKE", 4) == 0) return TOK_LIKE;
     if (length == 4 && strncasecmp(start, "DROP", 4) == 0) return TOK_DROP;
     if (length == 5 && strncasecmp(start, "ALTER", 5) == 0) return TOK_ALTER;
     if (length == 3 && strncasecmp(start, "ADD", 3) == 0) return TOK_ADD;
@@ -741,6 +749,36 @@ typedef enum {
     AGG_MAX
 } AggregateFunc;
 
+/* -------------------------------------------------------------------------- */
+/* WHERE expression trees                                                     */
+/* -------------------------------------------------------------------------- */
+
+#define MAX_IN_LIST 16
+
+typedef enum {
+    WHERE_CMP,         /* column <cmp_op> literal */
+    WHERE_IS_NULL,     /* column IS NULL */
+    WHERE_IS_NOT_NULL, /* column IS NOT NULL */
+    WHERE_IN,          /* column [NOT] IN (literal, ...) */
+    WHERE_LIKE,        /* column [NOT] LIKE 'pattern' */
+    WHERE_AND,
+    WHERE_OR,
+    WHERE_NOT
+} WhereType;
+
+typedef struct WhereNode {
+    WhereType type;
+    struct WhereNode* left;
+    struct WhereNode* right; /* AND/OR only; NOT uses left */
+    char table_prefix[MAX_NAME_LEN + 1];
+    char column[MAX_NAME_LEN + 1];
+    int  cmp_op;             /* 0 =, 1 <, 2 >, 3 <=, 4 >=, 5 <> */
+    int  negate;             /* NOT IN / NOT LIKE */
+    Cell literal;            /* WHERE_CMP operand / WHERE_LIKE pattern */
+    Cell list[MAX_IN_LIST];  /* WHERE_IN operands */
+    int  list_count;
+} WhereNode;
+
 typedef struct {
     char column_names[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
     char column_table_prefix[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
@@ -749,11 +787,7 @@ typedef struct {
     char column_aggregate_args[MAX_SELECT_COLUMNS][MAX_NAME_LEN + 1];
     int  column_aggregate_star[MAX_SELECT_COLUMNS];
     char table_name[MAX_NAME_LEN + 1];
-    int  has_where;
-    char where_table_prefix[MAX_NAME_LEN + 1];
-    char where_column[MAX_NAME_LEN + 1];
-    int  where_op;
-    Cell where_value;
+    WhereNode* where;
     int  has_join;
     int  join_type; /* 0 = inner, 1 = left */
     char join_table_name[MAX_NAME_LEN + 1];
@@ -774,10 +808,369 @@ typedef struct {
 
 static Cell* resolve_field(Row* row, const char* prefix, const char* name,
                            SelectStmt* stmt);
+static Cell* row_find_field(Row* row, const char* name);
+static int   cell_compare(Cell* a, Cell* b);
+
+/* -------------------------------------------------------------------------- */
+/* WHERE expression parsing & evaluation                                      */
+/*                                                                            */
+/* Grammar (precedence: NOT > AND > OR):                                      */
+/*   or       := and ( OR and )*                                              */
+/*   and      := not ( AND not )*                                             */
+/*   not      := NOT not | primary                                            */
+/*   primary  := '(' or ')' | comparison                                      */
+/*   comparison := ident[.ident] ( cmp_op literal                             */
+/*               | IS [NOT] NULL                                              */
+/*               | [NOT] IN ( literal, ... )                                  */
+/*               | [NOT] LIKE 'pattern' )                                     */
+/* LIKE is case-sensitive: '%' matches any sequence, '_' one character.       */
+/* -------------------------------------------------------------------------- */
+
+static void where_free(WhereNode* node) {
+    if (node == NULL) return;
+    where_free(node->left);
+    where_free(node->right);
+    if (node->literal.type == VAL_STRING) {
+        free(node->literal.as.as_string);
+    }
+    for (int i = 0; i < node->list_count; i++) {
+        if (node->list[i].type == VAL_STRING) {
+            free(node->list[i].as.as_string);
+        }
+    }
+    free(node);
+}
+
+static WhereNode* where_node_new(WhereType type) {
+    WhereNode* node = calloc(1, sizeof(WhereNode));
+    if (node != NULL) node->type = type;
+    return node;
+}
+
+/* Parses the literal under *tok into out and advances *tok past it. */
+static int where_parse_literal(SqlLexer* lex, SqlToken* tok, Cell* out) {
+    if (tok->type == TOK_NUMBER) {
+        char buf[64];
+        sql_token_text(tok, buf, sizeof(buf));
+        if (strchr(buf, '.') != NULL) {
+            out->type = VAL_FLOAT;
+            out->as.as_float = strtod(buf, NULL);
+        } else {
+            out->type = VAL_INT;
+            out->as.as_int = atoi(buf);
+        }
+    } else if (tok->type == TOK_STRING) {
+        out->type = VAL_STRING;
+        out->as.as_string = malloc((size_t)tok->length + 1);
+        if (out->as.as_string == NULL) return 0;
+        memcpy(out->as.as_string, tok->text, (size_t)tok->length);
+        out->as.as_string[tok->length] = '\0';
+    } else if (tok->type == TOK_NULL) {
+        out->type = VAL_NULL;
+        out->as.as_int = 0;
+    } else {
+        return 0;
+    }
+    *tok = sql_next_token(lex);
+    return 1;
+}
+
+static WhereNode* where_parse_or(SqlLexer* lex, SqlToken* tok);
+
+static WhereNode* where_parse_primary(SqlLexer* lex, SqlToken* tok) {
+    if (tok->type == TOK_LPAREN) {
+        *tok = sql_next_token(lex);
+        WhereNode* inner = where_parse_or(lex, tok);
+        if (inner == NULL) return NULL;
+        if (tok->type != TOK_RPAREN) {
+            where_free(inner);
+            return NULL;
+        }
+        *tok = sql_next_token(lex);
+        return inner;
+    }
+    if (tok->type != TOK_IDENT) return NULL;
+
+    WhereNode* node = where_node_new(WHERE_CMP);
+    if (node == NULL) return NULL;
+
+    char name_buf[MAX_NAME_LEN + 1];
+    sql_token_text(tok, name_buf, sizeof(name_buf));
+    *tok = sql_next_token(lex);
+    if (tok->type == TOK_DOT) {
+        strcpy(node->table_prefix, name_buf);
+        *tok = sql_next_token(lex);
+        if (tok->type != TOK_IDENT) {
+            where_free(node);
+            return NULL;
+        }
+        sql_token_text(tok, name_buf, sizeof(name_buf));
+        *tok = sql_next_token(lex);
+    }
+    strcpy(node->column, name_buf);
+
+    if (tok->type == TOK_IS) {
+        *tok = sql_next_token(lex);
+        int is_not = 0;
+        if (tok->type == TOK_NOT) {
+            is_not = 1;
+            *tok = sql_next_token(lex);
+        }
+        if (tok->type != TOK_NULL) {
+            where_free(node);
+            return NULL;
+        }
+        *tok = sql_next_token(lex);
+        node->type = is_not ? WHERE_IS_NOT_NULL : WHERE_IS_NULL;
+        return node;
+    }
+
+    int is_not = 0;
+    if (tok->type == TOK_NOT) {
+        /* Only NOT IN / NOT LIKE may follow a column name. */
+        is_not = 1;
+        *tok = sql_next_token(lex);
+    }
+
+    if (tok->type == TOK_IN) {
+        node->type = WHERE_IN;
+        node->negate = is_not;
+        *tok = sql_next_token(lex);
+        if (tok->type != TOK_LPAREN) {
+            where_free(node);
+            return NULL;
+        }
+        *tok = sql_next_token(lex);
+        while (tok->type != TOK_RPAREN) {
+            if (node->list_count >= MAX_IN_LIST || tok->type == TOK_EOF) {
+                where_free(node);
+                return NULL;
+            }
+            if (!where_parse_literal(lex, tok, &node->list[node->list_count])) {
+                where_free(node);
+                return NULL;
+            }
+            node->list_count++;
+            if (tok->type == TOK_COMMA) {
+                *tok = sql_next_token(lex);
+            } else if (tok->type != TOK_RPAREN) {
+                where_free(node);
+                return NULL;
+            }
+        }
+        if (node->list_count == 0) {
+            where_free(node);
+            return NULL;
+        }
+        *tok = sql_next_token(lex); /* consume ')' */
+        return node;
+    }
+
+    if (tok->type == TOK_LIKE) {
+        node->type = WHERE_LIKE;
+        node->negate = is_not;
+        *tok = sql_next_token(lex);
+        if (tok->type != TOK_STRING ||
+            !where_parse_literal(lex, tok, &node->literal)) {
+            where_free(node);
+            return NULL;
+        }
+        return node;
+    }
+
+    if (is_not) {
+        where_free(node);
+        return NULL;
+    }
+
+    if (tok->type == TOK_EQ) node->cmp_op = 0;
+    else if (tok->type == TOK_LT) node->cmp_op = 1;
+    else if (tok->type == TOK_GT) node->cmp_op = 2;
+    else if (tok->type == TOK_LE) node->cmp_op = 3;
+    else if (tok->type == TOK_GE) node->cmp_op = 4;
+    else if (tok->type == TOK_NE) node->cmp_op = 5;
+    else {
+        where_free(node);
+        return NULL;
+    }
+
+    *tok = sql_next_token(lex);
+    if (!where_parse_literal(lex, tok, &node->literal)) {
+        where_free(node);
+        return NULL;
+    }
+    return node;
+}
+
+static WhereNode* where_parse_not(SqlLexer* lex, SqlToken* tok) {
+    if (tok->type == TOK_NOT) {
+        *tok = sql_next_token(lex);
+        WhereNode* operand = where_parse_not(lex, tok);
+        if (operand == NULL) return NULL;
+        WhereNode* node = where_node_new(WHERE_NOT);
+        if (node == NULL) {
+            where_free(operand);
+            return NULL;
+        }
+        node->left = operand;
+        return node;
+    }
+    return where_parse_primary(lex, tok);
+}
+
+static WhereNode* where_parse_and(SqlLexer* lex, SqlToken* tok) {
+    WhereNode* left = where_parse_not(lex, tok);
+    if (left == NULL) return NULL;
+    while (tok->type == TOK_AND) {
+        *tok = sql_next_token(lex);
+        WhereNode* right = where_parse_not(lex, tok);
+        if (right == NULL) {
+            where_free(left);
+            return NULL;
+        }
+        WhereNode* node = where_node_new(WHERE_AND);
+        if (node == NULL) {
+            where_free(left);
+            where_free(right);
+            return NULL;
+        }
+        node->left = left;
+        node->right = right;
+        left = node;
+    }
+    return left;
+}
+
+static WhereNode* where_parse_or(SqlLexer* lex, SqlToken* tok) {
+    WhereNode* left = where_parse_and(lex, tok);
+    if (left == NULL) return NULL;
+    while (tok->type == TOK_OR) {
+        *tok = sql_next_token(lex);
+        WhereNode* right = where_parse_and(lex, tok);
+        if (right == NULL) {
+            where_free(left);
+            return NULL;
+        }
+        WhereNode* node = where_node_new(WHERE_OR);
+        if (node == NULL) {
+            where_free(left);
+            where_free(right);
+            return NULL;
+        }
+        node->left = left;
+        node->right = right;
+        left = node;
+    }
+    return left;
+}
+
+/* LIKE matcher: '%' matches any (possibly empty) sequence, '_' matches
+   exactly one character. Matching is case-sensitive. */
+static int like_match(const char* pattern, const char* text) {
+    while (*pattern != '\0') {
+        if (*pattern == '%') {
+            pattern++;
+            if (*pattern == '\0') return 1;
+            for (;;) {
+                if (like_match(pattern, text)) return 1;
+                if (*text == '\0') return 0;
+                text++;
+            }
+        }
+        if (*text == '\0') return 0;
+        if (*pattern != '_' && *pattern != *text) return 0;
+        pattern++;
+        text++;
+    }
+    return *text == '\0';
+}
+
+static Cell* where_resolve(Row* row, WhereNode* node, SelectStmt* stmt) {
+    if (stmt != NULL) {
+        return resolve_field(row, node->table_prefix, node->column, stmt);
+    }
+    /* UPDATE/DELETE rows come from a single table; resolve by name only. */
+    return row_find_field(row, node->column);
+}
+
+/* Three-valued evaluation: 1 = true, 0 = false, -1 = unknown.
+   Rows only pass a WHERE filter when the result is 1. */
+static int where_eval(Row* row, WhereNode* node, SelectStmt* stmt) {
+    switch (node->type) {
+        case WHERE_AND: {
+            int l = where_eval(row, node->left, stmt);
+            if (l == 0) return 0;
+            int r = where_eval(row, node->right, stmt);
+            if (r == 0) return 0;
+            if (l < 0 || r < 0) return -1;
+            return 1;
+        }
+        case WHERE_OR: {
+            int l = where_eval(row, node->left, stmt);
+            if (l == 1) return 1;
+            int r = where_eval(row, node->right, stmt);
+            if (r == 1) return 1;
+            if (l < 0 || r < 0) return -1;
+            return 0;
+        }
+        case WHERE_NOT: {
+            int v = where_eval(row, node->left, stmt);
+            if (v < 0) return -1;
+            return !v;
+        }
+        case WHERE_IS_NULL:
+        case WHERE_IS_NOT_NULL: {
+            Cell* value = where_resolve(row, node, stmt);
+            if (value == NULL) return -1;
+            int is_null = value->type == VAL_NULL;
+            return node->type == WHERE_IS_NULL ? is_null : !is_null;
+        }
+        case WHERE_CMP: {
+            Cell* value = where_resolve(row, node, stmt);
+            if (value == NULL) return -1;
+            /* Three-valued logic: any comparison against NULL is unknown. */
+            if (value->type == VAL_NULL || node->literal.type == VAL_NULL) return -1;
+            int cmp = cell_compare(value, &node->literal);
+            switch (node->cmp_op) {
+                case 0: return cmp == 0;
+                case 1: return cmp < 0;
+                case 2: return cmp > 0;
+                case 3: return cmp <= 0;
+                case 4: return cmp >= 0;
+                case 5: return cmp != 0;
+                default: return -1;
+            }
+        }
+        case WHERE_IN: {
+            Cell* value = where_resolve(row, node, stmt);
+            if (value == NULL || value->type == VAL_NULL) return -1;
+            int saw_null = 0;
+            for (int i = 0; i < node->list_count; i++) {
+                if (node->list[i].type == VAL_NULL) {
+                    saw_null = 1;
+                    continue;
+                }
+                if (cell_compare(value, &node->list[i]) == 0) {
+                    return node->negate ? 0 : 1;
+                }
+            }
+            if (saw_null) return -1;
+            return node->negate ? 1 : 0;
+        }
+        case WHERE_LIKE: {
+            Cell* value = where_resolve(row, node, stmt);
+            if (value == NULL || value->type == VAL_NULL) return -1;
+            if (value->type != VAL_STRING) return -1;
+            int matched = like_match(node->literal.as.as_string, value->as.as_string);
+            return node->negate ? !matched : matched;
+        }
+    }
+    return -1;
+}
+
 
 static int sql_parse_select(const char* query, SelectStmt* stmt) {
     memset(stmt, 0, sizeof(*stmt));
-    stmt->where_op = -1;
 
     SqlLexer lex;
     sql_lexer_init(&lex, query);
@@ -916,66 +1309,8 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
 
     if (tok.type == TOK_WHERE) {
         tok = sql_next_token(&lex);
-        if (tok.type != TOK_IDENT) return 0;
-        char where_prefix_buf[MAX_NAME_LEN + 1] = "";
-        char where_name_buf[MAX_NAME_LEN + 1];
-        sql_token_text(&tok, where_name_buf, sizeof(where_name_buf));
-
-        tok = sql_next_token(&lex);
-        if (tok.type == TOK_DOT) {
-            SqlToken col_tok = sql_next_token(&lex);
-            if (col_tok.type != TOK_IDENT) return 0;
-            strcpy(where_prefix_buf, where_name_buf);
-            sql_token_text(&col_tok, where_name_buf, sizeof(where_name_buf));
-            tok = sql_next_token(&lex);
-        }
-        strcpy(stmt->where_table_prefix, where_prefix_buf);
-        strcpy(stmt->where_column, where_name_buf);
-
-        if (tok.type == TOK_IS) {
-            /* WHERE col IS [NOT] NULL */
-            tok = sql_next_token(&lex);
-            int is_not = 0;
-            if (tok.type == TOK_NOT) {
-                is_not = 1;
-                tok = sql_next_token(&lex);
-            }
-            if (tok.type != TOK_NULL) return 0;
-            stmt->where_op = is_not ? 7 : 6;
-            stmt->has_where = 1;
-            tok = sql_next_token(&lex);
-        } else {
-            if (tok.type == TOK_EQ) stmt->where_op = 0;
-            else if (tok.type == TOK_LT) stmt->where_op = 1;
-            else if (tok.type == TOK_GT) stmt->where_op = 2;
-            else if (tok.type == TOK_LE) stmt->where_op = 3;
-            else if (tok.type == TOK_GE) stmt->where_op = 4;
-            else if (tok.type == TOK_NE) stmt->where_op = 5;
-            else return 0;
-
-            tok = sql_next_token(&lex);
-            if (tok.type == TOK_NUMBER) {
-                char buf[64];
-                sql_token_text(&tok, buf, sizeof(buf));
-                if (strchr(buf, '.') != NULL) {
-                    stmt->where_value.type = VAL_FLOAT;
-                    stmt->where_value.as.as_float = strtod(buf, NULL);
-                } else {
-                    stmt->where_value.type = VAL_INT;
-                    stmt->where_value.as.as_int = atoi(buf);
-                }
-            } else if (tok.type == TOK_STRING) {
-                stmt->where_value.type = VAL_STRING;
-                stmt->where_value.as.as_string = malloc((size_t)tok.length + 1);
-                if (stmt->where_value.as.as_string == NULL) return 0;
-                memcpy(stmt->where_value.as.as_string, tok.text, (size_t)tok.length);
-                stmt->where_value.as.as_string[tok.length] = '\0';
-            } else {
-                return 0;
-            }
-            stmt->has_where = 1;
-            tok = sql_next_token(&lex);
-        }
+        stmt->where = where_parse_or(&lex, &tok);
+        if (stmt->where == NULL) return 0;
     }
 
     if (tok.type == TOK_GROUP) {
@@ -1044,9 +1379,8 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
 }
 
 static void sql_free_select_stmt(SelectStmt* stmt) {
-    if (stmt->has_where && stmt->where_value.type == VAL_STRING) {
-        free(stmt->where_value.as.as_string);
-    }
+    where_free(stmt->where);
+    stmt->where = NULL;
 }
 
 static Cell cell_from_int(int v) {
@@ -1087,26 +1421,7 @@ static int cell_compare(Cell* a, Cell* b) {
 }
 
 static int evaluate_where(Row* row, SelectStmt* stmt) {
-    Cell* value = resolve_field(row, stmt->where_table_prefix, stmt->where_column, stmt);
-    if (value == NULL) return 0;
-
-    if (stmt->where_op == 6) return value->type == VAL_NULL; /* IS NULL */
-    if (stmt->where_op == 7) return value->type != VAL_NULL; /* IS NOT NULL */
-
-    /* Three-valued logic: any comparison against NULL is unknown, so the
-       row does not match. */
-    if (value->type == VAL_NULL || stmt->where_value.type == VAL_NULL) return 0;
-
-    int cmp = cell_compare(value, &stmt->where_value);
-    switch (stmt->where_op) {
-        case 0: return cmp == 0;
-        case 1: return cmp < 0;
-        case 2: return cmp > 0;
-        case 3: return cmp <= 0;
-        case 4: return cmp >= 0;
-        case 5: return cmp != 0;
-        default: return 0;
-    }
+    return where_eval(row, stmt->where, stmt) == 1;
 }
 
 static void free_rows(Row* rows, int count) {
@@ -1578,7 +1893,7 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
     }
     int filtered_count = 0;
     for (int i = 0; i < source_count; i++) {
-        if (stmt->has_where && !evaluate_where(&source_rows[i], stmt)) {
+        if (stmt->where != NULL && !evaluate_where(&source_rows[i], stmt)) {
             continue;
         }
         filtered[filtered_count++] = &source_rows[i];
@@ -1804,18 +2119,12 @@ typedef struct {
     char table_name[MAX_NAME_LEN + 1];
     char set_column[MAX_NAME_LEN + 1];
     Cell set_value;
-    int has_where;
-    char where_column[MAX_NAME_LEN + 1];
-    int where_op;
-    Cell where_value;
+    WhereNode* where;
 } UpdateStmt;
 
 typedef struct {
     char table_name[MAX_NAME_LEN + 1];
-    int has_where;
-    char where_column[MAX_NAME_LEN + 1];
-    int where_op;
-    Cell where_value;
+    WhereNode* where;
 } DeleteStmt;
 
 static int sql_parse_update(const char* query, UpdateStmt* stmt);
@@ -1948,10 +2257,8 @@ int sql_exec_ddl(const char* query, Context* ctx) {
 /* UPDATE / DELETE parsing and execution                                      */
 /* -------------------------------------------------------------------------- */
 
-static int parse_where_clause(SqlLexer* lex, int* has_where,
-                               char* where_column, size_t where_column_size,
-                               int* where_op, Cell* where_value) {
-    *has_where = 0;
+static int parse_where_clause(SqlLexer* lex, WhereNode** out) {
+    *out = NULL;
     SqlToken tok = sql_next_token(lex);
     if (tok.type == TOK_EOF) {
         return 1;
@@ -1959,73 +2266,28 @@ static int parse_where_clause(SqlLexer* lex, int* has_where,
     if (tok.type != TOK_WHERE) return 0;
 
     tok = sql_next_token(lex);
-    if (tok.type != TOK_IDENT) return 0;
-    sql_token_text(&tok, where_column, (int)where_column_size);
-
-    tok = sql_next_token(lex);
-    if (tok.type == TOK_IS) {
-        /* WHERE col IS [NOT] NULL */
-        tok = sql_next_token(lex);
-        int is_not = 0;
-        if (tok.type == TOK_NOT) {
-            is_not = 1;
-            tok = sql_next_token(lex);
-        }
-        if (tok.type != TOK_NULL) return 0;
-        *where_op = is_not ? 7 : 6;
-        tok = sql_next_token(lex);
-        if (tok.type != TOK_EOF) return 0;
-        *has_where = 1;
-        return 1;
-    }
-    if (tok.type == TOK_EQ) *where_op = 0;
-    else if (tok.type == TOK_LT) *where_op = 1;
-    else if (tok.type == TOK_GT) *where_op = 2;
-    else if (tok.type == TOK_LE) *where_op = 3;
-    else if (tok.type == TOK_GE) *where_op = 4;
-    else if (tok.type == TOK_NE) *where_op = 5;
-    else return 0;
-
-    tok = sql_next_token(lex);
-    if (tok.type == TOK_NUMBER) {
-        char buf[64];
-        sql_token_text(&tok, buf, sizeof(buf));
-        if (strchr(buf, '.') != NULL) {
-            where_value->type = VAL_FLOAT;
-            where_value->as.as_float = strtod(buf, NULL);
-        } else {
-            where_value->type = VAL_INT;
-            where_value->as.as_int = atoi(buf);
-        }
-    } else if (tok.type == TOK_STRING) {
-        where_value->type = VAL_STRING;
-        where_value->as.as_string = malloc((size_t)tok.length + 1);
-        if (where_value->as.as_string == NULL) return 0;
-        memcpy(where_value->as.as_string, tok.text, (size_t)tok.length);
-        where_value->as.as_string[tok.length] = '\0';
-    } else {
+    WhereNode* node = where_parse_or(lex, &tok);
+    if (node == NULL) return 0;
+    if (tok.type != TOK_EOF) {
+        where_free(node);
         return 0;
     }
-
-    tok = sql_next_token(lex);
-    if (tok.type != TOK_EOF) return 0;
-
-    *has_where = 1;
+    *out = node;
     return 1;
 }
 
 static void sql_free_update_stmt(UpdateStmt* stmt) {
-    if (stmt->where_value.type == VAL_STRING) {
-        free(stmt->where_value.as.as_string);
-        stmt->where_value.as.as_string = NULL;
+    if (stmt->set_value.type == VAL_STRING && stmt->set_value.as.as_string != NULL) {
+        free(stmt->set_value.as.as_string);
+        stmt->set_value.as.as_string = NULL;
     }
+    where_free(stmt->where);
+    stmt->where = NULL;
 }
 
 static void sql_free_delete_stmt(DeleteStmt* stmt) {
-    if (stmt->where_value.type == VAL_STRING) {
-        free(stmt->where_value.as.as_string);
-        stmt->where_value.as.as_string = NULL;
-    }
+    where_free(stmt->where);
+    stmt->where = NULL;
 }
 
 static int sql_parse_update(const char* query, UpdateStmt* stmt) {
@@ -2074,9 +2336,7 @@ static int sql_parse_update(const char* query, UpdateStmt* stmt) {
         return 0;
     }
 
-    return parse_where_clause(&lex, &stmt->has_where,
-                              stmt->where_column, sizeof(stmt->where_column),
-                              &stmt->where_op, &stmt->where_value);
+    return parse_where_clause(&lex, &stmt->where);
 }
 
 static int sql_parse_delete(const char* query, DeleteStmt* stmt) {
@@ -2093,37 +2353,11 @@ static int sql_parse_delete(const char* query, DeleteStmt* stmt) {
     if (tok.type != TOK_IDENT) return 0;
     sql_token_text(&tok, stmt->table_name, sizeof(stmt->table_name));
 
-    return parse_where_clause(&lex, &stmt->has_where,
-                              stmt->where_column, sizeof(stmt->where_column),
-                              &stmt->where_op, &stmt->where_value);
+    return parse_where_clause(&lex, &stmt->where);
 }
 
-static int row_matches_where(Row* row, const char* where_column, int where_op, Cell* where_value) {
-    Cell* value = NULL;
-    for (int i = 0; i < row->field_count; i++) {
-        if (strcmp(row->fields[i].name, where_column) == 0) {
-            value = &row->fields[i].value;
-            break;
-        }
-    }
-    if (value == NULL) return 0;
-
-    if (where_op == 6) return value->type == VAL_NULL; /* IS NULL */
-    if (where_op == 7) return value->type != VAL_NULL; /* IS NOT NULL */
-
-    /* Three-valued logic: comparisons against NULL never match. */
-    if (value->type == VAL_NULL || where_value->type == VAL_NULL) return 0;
-
-    int cmp = cell_compare(value, where_value);
-    switch (where_op) {
-        case 0: return cmp == 0;
-        case 1: return cmp < 0;
-        case 2: return cmp > 0;
-        case 3: return cmp <= 0;
-        case 4: return cmp >= 0;
-        case 5: return cmp != 0;
-        default: return 0;
-    }
+static int row_matches_where(Row* row, WhereNode* where) {
+    return where_eval(row, where, NULL) == 1;
 }
 
 static void free_row_pages(Context* ctx, Table* table) {
@@ -2171,7 +2405,7 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
     }
 
     for (int i = 0; i < row_count; i++) {
-        if (stmt->has_where && !row_matches_where(&rows[i], stmt->where_column, stmt->where_op, &stmt->where_value)) {
+        if (stmt->where != NULL && !row_matches_where(&rows[i], stmt->where)) {
             continue;
         }
         Cell* cell = &rows[i].fields[set_col_index].value;
@@ -2238,7 +2472,7 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
 
     free_row_pages(ctx, table);
     for (int i = 0; i < row_count; i++) {
-        if (stmt->has_where && !row_matches_where(&rows[i], stmt->where_column, stmt->where_op, &stmt->where_value)) {
+        if (stmt->where != NULL && !row_matches_where(&rows[i], stmt->where)) {
             Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
             if (cells == NULL) {
                 for (int k = i; k < row_count; k++) {
@@ -2578,6 +2812,9 @@ Result* sql_exec(const char* query, Context* ctx) {
 
     SelectStmt stmt;
     if (!sql_parse_select(query, &stmt)) {
+        /* The statement was zeroed on entry; free any WHERE tree that was
+           built before the parse failed. */
+        sql_free_select_stmt(&stmt);
         return result_create(0);
     }
 

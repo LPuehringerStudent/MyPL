@@ -1,0 +1,74 @@
+// Phase 11: rich WHERE clauses in the custom SQL engine.
+//
+// WHERE now supports AND / OR / NOT (precedence NOT > AND > OR),
+// parentheses, [NOT] IN (...), and [NOT] LIKE 'pattern'.
+// LIKE is case-sensitive: '%' matches any sequence, '_' one character.
+// NULL keeps three-valued semantics: rows whose predicate is unknown
+// are filtered out.
+//
+// Rows: (1, "apple", 0.5, 100), (2, "banana", 0.3, 0),
+//       (3, "cherry", 2.5, 25), (4, "avocado", 1.5, 0), (5, "plum", 1.0, null)
+
+proc main() -> int {
+    drop table if exists products;
+    create table products (id int, name string, price float, stock int);
+    insert into products values (1, "apple", 0.5, 100);
+    insert into products values (2, "banana", 0.3, 0);
+    insert into products values (3, "cherry", 2.5, 25);
+    insert into products values (4, "avocado", 1.5, 0);
+    insert into products values (5, "plum", 1.0, null);
+
+    int n = -1;
+
+    print "-- AND / OR with precedence (AND binds tighter) --";
+    select count(*) into n from products
+        where stock = 0 or stock >= 25 and price < 1.0;
+    print n;
+    select count(*) into n from products
+        where (stock = 0 or stock >= 25) and price < 1.0;
+    print n;
+
+    print "-- NOT --";
+    select count(*) into n from products where not (stock = 0);
+    print n;
+
+    print "-- IN / NOT IN --";
+    select count(*) into n from products where id in (1, 3, 5);
+    print n;
+    select count(*) into n from products where id not in (1, 3, 5);
+    print n;
+    select count(*) into n from products where name in ("apple", "plum");
+    print n;
+
+    print "-- LIKE / NOT LIKE (case-sensitive) --";
+    select count(*) into n from products where name like "a%";
+    print n;
+    select count(*) into n from products where name like "_pple";
+    print n;
+    select count(*) into n from products where name like "A%";
+    print n;
+    select count(*) into n from products where name not like "%an%";
+    print n;
+
+    print "-- NULL stays three-valued under compound predicates --";
+    select count(*) into n from products where not (stock >= 25);
+    print n;
+    select count(*) into n from products where id not in (1, null);
+    print n;
+
+    print "-- compound WHERE in UPDATE and DELETE --";
+    update products set stock = 5 where name like "a%" and stock = 0;
+    select count(*) into n from products where stock = 5;
+    print n;
+    delete from products where id in (2, 4) or stock is null;
+    select count(*) into n from products;
+    print n;
+
+    print "-- compound WHERE with ORDER BY and LIMIT --";
+    string cheapest = "?";
+    select name into cheapest from products
+        where not (price >= 1.0) order by price asc limit 1;
+    print cheapest;
+
+    return 0;
+}
