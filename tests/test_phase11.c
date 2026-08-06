@@ -416,6 +416,348 @@ TEST(phase11_alter_missing_table_errors) {
     ASSERT_INT_EQ(1, rc);
 }
 
+/* Shared setup for the rich-WHERE tests: rows are
+   (1, "apple", 10), (2, "banana", 20), (3, "cherry", 30),
+   (4, "avocado", 40), (5, "plum", null). */
+#define PHASE11_W_T_SETUP \
+    "    create table w_t (id int, name string, qty int);\n" \
+    "    insert into w_t values (1, \"apple\", 10);\n" \
+    "    insert into w_t values (2, \"banana\", 20);\n" \
+    "    insert into w_t values (3, \"cherry\", 30);\n" \
+    "    insert into w_t values (4, \"avocado\", 40);\n" \
+    "    insert into w_t values (5, \"plum\", null);\n"
+
+TEST(phase11_where_and_filters) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where qty >= 20 and qty < 40;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Only rows 2 (qty 20) and 3 (qty 30) match. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_where_or_filters) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where id = 1 or id = 3 or id = 5;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+}
+
+TEST(phase11_where_and_or_precedence) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n1 = -1;\n"
+        "    select count(*) into n1 from w_t where id = 1 or id = 2 and qty = 20;\n"
+        "    print n1;\n"
+        "    int n2 = -1;\n"
+        "    select count(*) into n2 from w_t where (id = 1 or id = 2) and qty = 20;\n"
+        "    print n2;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* AND binds tighter: id=1 OR (id=2 AND qty=20) matches rows 1 and 2. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    /* Parenthesized: (id=1 OR id=2) AND qty=20 matches only row 2. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_where_not_filters) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where not (id = 1 or id = 2);\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Rows 3, 4, 5 remain. */
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+}
+
+TEST(phase11_where_not_binds_tighter_than_and) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where not id = 1 and id = 2;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* (NOT (id=1)) AND (id=2) matches only row 2. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_where_in_list) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where id in (1, 3, 5);\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t where name in (\"apple\", \"plum\");\n"
+        "    print m;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_where_not_in_list) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where id not in (1, 3, 5);\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Rows 2 and 4 remain. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_where_in_with_null_is_three_valued) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where id in (1, null);\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t where id not in (1, null);\n"
+        "    print m;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* IN (1, null): row 1 matches; every other row is unknown -> filtered. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    /* NOT IN (1, null): row 1 is false, every other row unknown -> none pass. */
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase11_where_like_percent) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where name like \"a%\";\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t where name like \"%an%\";\n"
+        "    print m;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* 'a%' matches apple and avocado; '%an%' matches banana. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_where_like_underscore) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where name like \"_pple\";\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t where name like \"_____\";\n"
+        "    print m;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* '_pple' matches apple; '_____' matches only the 5-letter apple. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_where_like_is_case_sensitive) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where name like \"A%\";\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* LIKE is case-sensitive in the custom engine: 'A%' matches nothing. */
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase11_where_not_like) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where name not like \"a%\";\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* banana, cherry, plum do not start with 'a'. */
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+}
+
+TEST(phase11_where_null_comparison_stays_unknown) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where qty <> 20;\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t where not (qty >= 20);\n"
+        "    print m;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* qty <> 20: rows 1, 3, 4 (row 5 is NULL -> unknown -> filtered). */
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+    /* NOT (qty >= 20): only row 1; row 5 stays unknown even under NOT. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_update_compound_where) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    update w_t set qty = 99 where id = 1 or id = 2;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t where qty = 99;\n"
+        "    print n;\n"
+        "    update w_t set qty = 7 where id >= 3 and qty is not null;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t where qty = 7;\n"
+        "    print m;\n"
+        "    int q3 = -1;\n"
+        "    select qty into q3 from w_t where id = 3;\n"
+        "    print q3;\n"
+        "    int k = -1;\n"
+        "    select qty into k from w_t where id = 5;\n"
+        "    print k;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* OR update touched rows 1 and 2; AND update touched rows 3 and 4
+       (row 5 qty is NULL -> filtered), so both counts are 2. */
+    ASSERT_INT_EQ(2, count_occurrences(out, "2"));
+    /* Row 3 now has qty 7. */
+    ASSERT_INT_EQ(1, output_contains(out, "7"));
+    /* Row 5 keeps its NULL qty. */
+    ASSERT_INT_EQ(1, output_contains(out, "null"));
+}
+
+TEST(phase11_delete_compound_where) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        PHASE11_W_T_SETUP
+        "    delete from w_t where id in (2, 4) or qty is null;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from w_t;\n"
+        "    print n;\n"
+        "    delete from w_t where id = 1 and name = \"apple\";\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from w_t;\n"
+        "    print m;\n"
+        "    int x = -1;\n"
+        "    select id into x from w_t;\n"
+        "    print x;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* IN/OR delete removed rows 2, 4, 5; rows 1 and 3 remain. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    /* AND delete removed row 1; only row 3 remains. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+}
+
+TEST(phase11_join_compound_where) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table j_a (id int, k int);\n"
+        "    create table j_b (k int, tag string);\n"
+        "    insert into j_a values (1, 100);\n"
+        "    insert into j_a values (2, 200);\n"
+        "    insert into j_a values (3, 300);\n"
+        "    insert into j_b values (100, \"x\");\n"
+        "    insert into j_b values (200, \"y\");\n"
+        "    insert into j_b values (300, \"z\");\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from j_a join j_b on j_a.k = j_b.k "
+        "        where j_a.id = 1 or j_b.tag = \"z\";\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Rows for id 1 and id 3 (tag 'z') match. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -434,5 +776,21 @@ int main(void) {
     RUN_TEST(phase11_alter_add_column_insert_needs_new_column);
     RUN_TEST(phase11_alter_drop_column);
     RUN_TEST(phase11_alter_missing_table_errors);
+    RUN_TEST(phase11_where_and_filters);
+    RUN_TEST(phase11_where_or_filters);
+    RUN_TEST(phase11_where_and_or_precedence);
+    RUN_TEST(phase11_where_not_filters);
+    RUN_TEST(phase11_where_not_binds_tighter_than_and);
+    RUN_TEST(phase11_where_in_list);
+    RUN_TEST(phase11_where_not_in_list);
+    RUN_TEST(phase11_where_in_with_null_is_three_valued);
+    RUN_TEST(phase11_where_like_percent);
+    RUN_TEST(phase11_where_like_underscore);
+    RUN_TEST(phase11_where_like_is_case_sensitive);
+    RUN_TEST(phase11_where_not_like);
+    RUN_TEST(phase11_where_null_comparison_stays_unknown);
+    RUN_TEST(phase11_update_compound_where);
+    RUN_TEST(phase11_delete_compound_where);
+    RUN_TEST(phase11_join_compound_where);
     TEST_SUMMARY();
 }
