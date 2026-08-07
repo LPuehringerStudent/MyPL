@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,7 @@
 /* -------------------------------------------------------------------------- */
 
 #define MAX_CATALOG_TABLES 64
+#define MAX_TABLE_INDEXES 8
 
 static Table* g_catalog[MAX_CATALOG_TABLES];
 static int    g_catalog_count = 0;
@@ -22,6 +24,11 @@ static void free_table(Table* t) {
         free(t->columns[i].name);
     }
     free(t->columns);
+    for (int i = 0; i < t->index_count; i++) {
+        free(t->indexes[i].name);
+        free(t->indexes[i].column_name);
+    }
+    free(t->indexes);
     free(t->name);
     free(t);
 }
@@ -40,6 +47,44 @@ void catalog_clear(Context* ctx) {
 /* Catalog serialization                                                      */
 /* -------------------------------------------------------------------------- */
 
+/* Catalog page formats. V1 (legacy): u32 table_count followed by per-table
+   records with no index data. V2: magic marker, then table_count, then
+   per-table records each carrying their index list. V1 files still load —
+   they simply have no indexes; the page is rewritten as V2 on the next save. */
+#define CATALOG_MAGIC_V2 0x4D594932u /* "MYI2" */
+
+static int catalog_read_indexes(uint8_t* page, int* offset, Table* table) {
+    uint8_t index_count = page[(*offset)++];
+    if (index_count > MAX_TABLE_INDEXES) index_count = MAX_TABLE_INDEXES;
+    if (index_count == 0) return 1;
+
+    table->indexes = calloc(index_count, sizeof(TableIndex));
+    if (table->indexes == NULL) return 0;
+
+    for (int i = 0; i < (int)index_count; i++) {
+        uint8_t name_len = page[(*offset)++];
+        if (*offset + name_len + 1 > PAGE_SIZE) return 0;
+        table->indexes[i].name = malloc((size_t)name_len + 1);
+        if (table->indexes[i].name == NULL) return 0;
+        memcpy(table->indexes[i].name, page + *offset, name_len);
+        table->indexes[i].name[name_len] = '\0';
+        *offset += name_len;
+
+        uint8_t col_len = page[(*offset)++];
+        if (*offset + col_len + 4 > PAGE_SIZE) return 0;
+        table->indexes[i].column_name = malloc((size_t)col_len + 1);
+        if (table->indexes[i].column_name == NULL) return 0;
+        memcpy(table->indexes[i].column_name, page + *offset, col_len);
+        table->indexes[i].column_name[col_len] = '\0';
+        *offset += col_len;
+
+        memcpy(&table->indexes[i].root_page, page + *offset, sizeof(int32_t));
+        *offset += 4;
+        table->index_count++;
+    }
+    return 1;
+}
+
 static int catalog_read_page(Context* ctx) {
     Pager* pager = ctx->pager;
     /* Page 1 is reserved for the catalog. */
@@ -52,6 +97,13 @@ static int catalog_read_page(Context* ctx) {
     uint32_t table_count = 0;
     memcpy(&table_count, page + offset, sizeof(table_count));
     offset += 4;
+
+    int has_indexes = 0;
+    if (table_count == CATALOG_MAGIC_V2) {
+        has_indexes = 1;
+        memcpy(&table_count, page + offset, sizeof(table_count));
+        offset += 4;
+    }
 
     for (uint32_t t = 0; t < table_count && g_catalog_count < MAX_CATALOG_TABLES; t++) {
         Table* table = calloc(1, sizeof(Table));
@@ -92,6 +144,13 @@ static int catalog_read_page(Context* ctx) {
         offset += 4;
         table->last_row_page = table->first_row_page;
 
+        if (has_indexes) {
+            if (!catalog_read_indexes(page, &offset, table)) {
+                free_table(table);
+                return 0;
+            }
+        }
+
         g_catalog[g_catalog_count++] = table;
     }
 
@@ -107,6 +166,9 @@ static int catalog_write_page(Context* ctx) {
     memset(page, 0, PAGE_SIZE);
 
     int offset = 0;
+    uint32_t magic = CATALOG_MAGIC_V2;
+    memcpy(page + offset, &magic, sizeof(magic));
+    offset += 4;
     uint32_t table_count = (uint32_t)g_catalog_count;
     memcpy(page + offset, &table_count, sizeof(table_count));
     offset += 4;
@@ -132,6 +194,29 @@ static int catalog_write_page(Context* ctx) {
 
         memcpy(page + offset, &table->first_row_page, sizeof(table->first_row_page));
         offset += 4;
+
+        page[offset++] = (uint8_t)table->index_count;
+        for (int i = 0; i < table->index_count; i++) {
+            /* Index metadata is an optimization hint: if the catalog page is
+               nearly full, drop the remaining entries rather than overflow.
+               A lost index only costs a full scan after reopen. */
+            size_t idx_name_len = strlen(table->indexes[i].name);
+            size_t idx_col_len = strlen(table->indexes[i].column_name);
+            if (idx_name_len > MAX_NAME_LEN) idx_name_len = MAX_NAME_LEN;
+            if (idx_col_len > MAX_NAME_LEN) idx_col_len = MAX_NAME_LEN;
+            if (offset + 2 + (int)idx_name_len + (int)idx_col_len + 4 > PAGE_SIZE) {
+                page[offset - 1] = (uint8_t)i;
+                break;
+            }
+            page[offset++] = (uint8_t)idx_name_len;
+            memcpy(page + offset, table->indexes[i].name, idx_name_len);
+            offset += (int)idx_name_len;
+            page[offset++] = (uint8_t)idx_col_len;
+            memcpy(page + offset, table->indexes[i].column_name, idx_col_len);
+            offset += (int)idx_col_len;
+            memcpy(page + offset, &table->indexes[i].root_page, sizeof(int32_t));
+            offset += 4;
+        }
     }
 
     pager_write_page(pager, g_catalog_page, page);
@@ -375,7 +460,8 @@ static void row_page_init(uint8_t* page) {
     memcpy(page + 4, &free_ptr, sizeof(free_ptr));
 }
 
-static int row_page_append(Context* ctx, Table* table, Cell* cells) {
+static int row_page_append(Context* ctx, Table* table, Cell* cells,
+                           int* out_page, int* out_offset) {
     Pager* pager = ctx->pager;
     int record_size = row_record_size(table, cells);
     if (record_size > ROW_PAGE_DATA_SIZE) return 0;
@@ -425,6 +511,8 @@ static int row_page_append(Context* ctx, Table* table, Cell* cells) {
 
     memcpy(page + free_ptr, record, (size_t)record_size);
     free(record);
+    if (out_page != NULL) *out_page = page_num;
+    if (out_offset != NULL) *out_offset = (int)free_ptr;
     free_ptr += record_size;
     count++;
 
@@ -436,9 +524,35 @@ static int row_page_append(Context* ctx, Table* table, Cell* cells) {
     return 1;
 }
 
+static int table_column_index(Table* table, const char* name) {
+    for (int i = 0; i < table->column_count; i++) {
+        if (strcmp(table->columns[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+/* Adds (cells[column], locator) to every index defined on the table. */
+static void indexes_add_row(Context* ctx, Table* table, Cell* cells,
+                            int row_page, int row_offset) {
+    for (int i = 0; i < table->index_count; i++) {
+        TableIndex* idx = &table->indexes[i];
+        int col = table_column_index(table, idx->column_name);
+        if (col < 0 || col >= table->column_count) continue;
+        BTree* tree = btree_open(ctx->pager, idx->root_page);
+        if (tree == NULL) continue;
+        if (btree_insert(tree, &cells[col], row_page, row_offset)) {
+            idx->root_page = btree_root_page(tree);
+        }
+        btree_destroy(tree);
+    }
+}
+
 void catalog_insert(Context* ctx, Table* table, Cell* cells) {
     if (ctx == NULL || ctx->pager == NULL || table == NULL || cells == NULL) return;
-    row_page_append(ctx, table, cells);
+    int row_page = 0;
+    int row_offset = 0;
+    if (!row_page_append(ctx, table, cells, &row_page, &row_offset)) return;
+    indexes_add_row(ctx, table, cells, row_page, row_offset);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -584,7 +698,8 @@ typedef enum {
     TOK_ADD,
     TOK_IF,
     TOK_EXISTS,
-    TOK_COLUMN
+    TOK_COLUMN,
+    TOK_INDEX
 } SqlTokenType;
 
 typedef struct {
@@ -664,6 +779,7 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 2 && strncasecmp(start, "IF", 2) == 0) return TOK_IF;
     if (length == 6 && strncasecmp(start, "EXISTS", 6) == 0) return TOK_EXISTS;
     if (length == 6 && strncasecmp(start, "COLUMN", 6) == 0) return TOK_COLUMN;
+    if (length == 5 && strncasecmp(start, "INDEX", 5) == 0) return TOK_INDEX;
     return TOK_IDENT;
 }
 
@@ -1803,6 +1919,211 @@ static void result_append_aggregate(Result* res, SelectStmt* stmt,
     }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Index-assisted row lookup                                                  */
+/*                                                                            */
+/* When a top-level AND-term of the WHERE clause compares an indexed column   */
+/* against a literal, the index supplies candidate rows instead of a full     */
+/* scan. The complete WHERE clause is still evaluated on every candidate,     */
+/* so the result is identical to a full scan. Supported cases:                */
+/*   - string column  = string literal (equality only)                        */
+/*   - numeric column <cmp> numeric literal (=, <, <=, >, >=)                 */
+/* Numeric lookups scan the int and float key spaces separately; bounds are   */
+/* widened conservatively for float literals, so candidates are a superset    */
+/* of the matches. Anything else falls back to a full scan.                   */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    Context* ctx;
+    Table*   table;
+    Row*     rows;
+    int      count;
+    int      capacity;
+    int      failed;
+} IndexScanCtx;
+
+static void index_scan_collect(int row_page, int row_offset, void* user) {
+    IndexScanCtx* scan = (IndexScanCtx*)user;
+    if (scan->failed) return;
+    if (row_offset < ROW_PAGE_HEADER_SIZE || row_offset >= PAGE_SIZE) {
+        scan->failed = 1;
+        return;
+    }
+    uint8_t page[PAGE_SIZE];
+    pager_read_page(scan->ctx->pager, row_page, page);
+    int16_t record_size;
+    memcpy(&record_size, page + row_offset, sizeof(record_size));
+    if (record_size <= 0 || row_offset + (int)record_size > PAGE_SIZE) {
+        scan->failed = 1;
+        return;
+    }
+    Row* row = deserialize_row(scan->table, page + row_offset);
+    if (row == NULL) {
+        scan->failed = 1;
+        return;
+    }
+    if (scan->count >= scan->capacity) {
+        int new_capacity = scan->capacity == 0 ? 8 : scan->capacity * 2;
+        Row* new_rows = realloc(scan->rows, (size_t)new_capacity * sizeof(Row));
+        if (new_rows == NULL) {
+            free_row(row);
+            free(row);
+            scan->failed = 1;
+            return;
+        }
+        scan->rows = new_rows;
+        scan->capacity = new_capacity;
+    }
+    scan->rows[scan->count++] = *row;
+    free(row);
+}
+
+#define MAX_INDEX_CONJUNCTS 16
+
+static void collect_and_terms(WhereNode* node, WhereNode** out, int* count) {
+    if (node == NULL || *count >= MAX_INDEX_CONJUNCTS) return;
+    if (node->type == WHERE_AND) {
+        collect_and_terms(node->left, out, count);
+        collect_and_terms(node->right, out, count);
+        return;
+    }
+    out[(*count)++] = node;
+}
+
+static int conjunct_matches_index(WhereNode* node, Table* table, TableIndex* idx) {
+    if (node->type != WHERE_CMP) return 0;
+    if (node->cmp_op == 5) return 0; /* <> cannot be served by an index scan */
+    if (strcmp(node->column, idx->column_name) != 0) return 0;
+    if (node->table_prefix[0] != '\0' && strcmp(node->table_prefix, table->name) != 0) {
+        return 0;
+    }
+    if (node->literal.type == VAL_NULL) return 0; /* three-valued: matches nothing */
+    int column = table_column_index(table, idx->column_name);
+    if (column < 0) return 0;
+    int col_type = table->columns[column].type;
+    if (node->literal.type == VAL_STRING) {
+        /* String keys are truncated at 36 bytes: equality only gains extra
+           candidates, but a truncated range bound could lose rows. */
+        return col_type == VAL_STRING && node->cmp_op == 0;
+    }
+    return col_type == VAL_INT || col_type == VAL_FLOAT;
+}
+
+/* Runs one pass over the int key space and one over the float key space.
+   Each pass is bounded inside its own space so no cell is reported twice:
+   the int space spans [INT32_MIN, INT32_MAX], the float space [-inf, +inf]. */
+static int index_scan_numeric(BTree* tree, WhereNode* node, IndexScanCtx* scan) {
+    Cell* lit = &node->literal;
+    double dval = lit->type == VAL_FLOAT ? lit->as.as_float : (double)lit->as.as_int;
+    int    ival = lit->type == VAL_INT ? lit->as.as_int : (int)dval;
+
+    for (int space = 0; space < 2; space++) {
+        Cell key;
+        Cell lo_bound;
+        Cell hi_bound;
+        if (space == 0) {
+            key.type = VAL_INT;
+            key.as.as_int = ival;
+            lo_bound.type = VAL_INT;
+            lo_bound.as.as_int = INT32_MIN;
+            hi_bound.type = VAL_INT;
+            hi_bound.as.as_int = INT32_MAX;
+        } else {
+            key.type = VAL_FLOAT;
+            key.as.as_float = dval;
+            lo_bound.type = VAL_FLOAT;
+            lo_bound.as.as_float = -INFINITY;
+            hi_bound.type = VAL_FLOAT;
+            hi_bound.as.as_float = INFINITY;
+        }
+
+        if (node->cmp_op == 0) {
+            if (space == 0 && lit->type == VAL_FLOAT && dval != (double)ival) {
+                continue; /* no int cell can equal a non-integral float */
+            }
+            if (btree_scan_eq(tree, &key, index_scan_collect, scan) < 0) return 0;
+            continue;
+        }
+
+        Cell* lo = &lo_bound;
+        Cell* hi = &hi_bound;
+        int lo_inc = 1;
+        int hi_inc = 1;
+        switch (node->cmp_op) {
+            case 1: hi = &key; hi_inc = 0; break; /* <  */
+            case 2: lo = &key; lo_inc = 0; break; /* >  */
+            case 3: hi = &key; hi_inc = 1; break; /* <= */
+            case 4: lo = &key; lo_inc = 1; break; /* >= */
+            default: return 0;
+        }
+        /* Widen float-literal bounds in the int space so no satisfying int
+           cell can be missed (truncation of the bound would be exact only
+           for integral literals). */
+        if (space == 0 && lit->type == VAL_FLOAT) {
+            if (lo == &key) {
+                key.as.as_int = ival - 1;
+                lo_inc = 1;
+            }
+            if (hi == &key) {
+                key.as.as_int = ival + 1;
+                hi_inc = 1;
+            }
+        }
+        if (btree_scan_range(tree, lo, lo_inc, hi, hi_inc,
+                             index_scan_collect, scan) < 0) return 0;
+    }
+    return 1;
+}
+
+/* Returns 1 when an index produced the candidate rows, 0 to fall back to a
+   full scan. */
+static int try_index_lookup(Context* ctx, Table* table, WhereNode* where,
+                            Row** out_rows, int* out_count) {
+    if (where == NULL || table->index_count == 0) return 0;
+
+    WhereNode* terms[MAX_INDEX_CONJUNCTS];
+    int term_count = 0;
+    collect_and_terms(where, terms, &term_count);
+
+    for (int t = 0; t < term_count; t++) {
+        WhereNode* node = terms[t];
+        for (int i = 0; i < table->index_count; i++) {
+            TableIndex* idx = &table->indexes[i];
+            if (!conjunct_matches_index(node, table, idx)) continue;
+            if (idx->root_page <= 0) continue;
+
+            BTree* tree = btree_open(ctx->pager, idx->root_page);
+            if (tree == NULL) continue;
+
+            IndexScanCtx scan;
+            memset(&scan, 0, sizeof(scan));
+            scan.ctx = ctx;
+            scan.table = table;
+
+            int ok;
+            if (node->literal.type == VAL_STRING) {
+                ok = btree_scan_eq(tree, &node->literal, index_scan_collect, &scan) >= 0;
+            } else {
+                ok = index_scan_numeric(tree, node, &scan);
+            }
+            btree_destroy(tree);
+
+            if (!ok || scan.failed) {
+                free_rows(scan.rows, scan.count);
+                return 0; /* corrupt index: full scan is still correct */
+            }
+            if (getenv("MYPL_INDEX_DEBUG") != NULL) {
+                fprintf(stderr, "index lookup on %s(%s): %d candidates\n",
+                        table->name, idx->column_name, scan.count);
+            }
+            *out_rows = scan.rows;
+            *out_count = scan.count;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static Result* execute_select(Context* ctx, SelectStmt* stmt) {
     Row* source_rows = NULL;
     int source_count = 0;
@@ -1881,7 +2202,8 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
         if (table == NULL) {
             return result_create(0);
         }
-        if (!read_all_rows(ctx, table, &source_rows, &source_count)) {
+        if (!try_index_lookup(ctx, table, stmt->where, &source_rows, &source_count) &&
+            !read_all_rows(ctx, table, &source_rows, &source_count)) {
             return result_create(0);
         }
     }
@@ -2143,6 +2465,16 @@ static int execute_alter_add_column(Context* ctx, const char* table_name,
                                     const char* column_name, int column_type);
 static int execute_alter_drop_column(Context* ctx, const char* table_name,
                                      const char* column_name);
+static int sql_parse_create_index(const char* query, char* index_name, size_t index_name_size,
+                                  char* table_name, size_t table_name_size,
+                                  char* column_name, size_t column_name_size);
+static int sql_parse_drop_index(const char* query, char* index_name, size_t index_name_size,
+                                char* table_name, size_t table_name_size);
+static int execute_create_index(Context* ctx, const char* index_name,
+                                const char* table_name, const char* column_name);
+static int execute_drop_index(Context* ctx, const char* index_name, const char* table_name);
+static void table_drop_index_at(Context* ctx, Table* table, int i);
+static void indexes_reset(Context* ctx, Table* table);
 
 static int execute_insert_select(Context* ctx, Table* table, const char* select_query) {
     Result* res = sql_exec(select_query, ctx);
@@ -2213,6 +2545,23 @@ int sql_exec_ddl(const char* query, Context* ctx) {
                 return execute_alter_add_column(ctx, table_name, column_name, column_type);
             }
             return execute_alter_drop_column(ctx, table_name, column_name);
+        }
+    }
+
+    {
+        char index_name[MAX_NAME_LEN + 1];
+        char table_name[MAX_NAME_LEN + 1];
+        char column_name[MAX_NAME_LEN + 1];
+        if (sql_parse_create_index(query, index_name, sizeof(index_name),
+                                   table_name, sizeof(table_name),
+                                   column_name, sizeof(column_name))) {
+            return execute_create_index(ctx, index_name, table_name, column_name);
+        }
+        table_name[0] = '\0';
+        if (sql_parse_drop_index(query, index_name, sizeof(index_name),
+                                 table_name, sizeof(table_name))) {
+            return execute_drop_index(ctx, index_name,
+                                      table_name[0] != '\0' ? table_name : NULL);
         }
     }
 
@@ -2425,6 +2774,7 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
     }
 
     free_row_pages(ctx, table);
+    indexes_reset(ctx, table);
     for (int i = 0; i < row_count; i++) {
         Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
         if (cells == NULL) {
@@ -2471,6 +2821,7 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
     if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
 
     free_row_pages(ctx, table);
+    indexes_reset(ctx, table);
     for (int i = 0; i < row_count; i++) {
         if (stmt->where != NULL && !row_matches_where(&rows[i], stmt->where)) {
             Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
@@ -2584,6 +2935,9 @@ static int execute_drop_table(Context* ctx, const char* table_name, int if_exist
         if (g_catalog[i] != NULL && strcmp(g_catalog[i]->name, table_name) == 0) {
             Table* table = g_catalog[i];
             free_row_pages(ctx, table);
+            while (table->index_count > 0) {
+                table_drop_index_at(ctx, table, table->index_count - 1);
+            }
             free_table(table);
             for (int j = i + 1; j < g_catalog_count; j++) {
                 g_catalog[j - 1] = g_catalog[j];
@@ -2629,6 +2983,7 @@ static int execute_alter_add_column(Context* ctx, const char* table_name,
 
     /* Rebuild the row chain; pre-existing rows get NULL for the new column. */
     free_row_pages(ctx, table);
+    indexes_reset(ctx, table);
     for (int i = 0; i < row_count; i++) {
         Cell cells[MAX_COLUMNS];
         for (int j = 0; j < rows[i].field_count; j++) {
@@ -2686,8 +3041,17 @@ static int execute_alter_drop_column(Context* ctx, const char* table_name,
         k++;
     }
 
+    /* Indexes on the dropped column go away with it. */
+    for (int i = 0; i < table->index_count; i++) {
+        if (strcmp(table->indexes[i].column_name, column_name) == 0) {
+            table_drop_index_at(ctx, table, i);
+            i--;
+        }
+    }
+
     /* Rebuild the row chain without the dropped column. */
     free_row_pages(ctx, table);
+    indexes_reset(ctx, table);
     for (int i = 0; i < table->column_count; i++) {
         free(table->columns[i].name);
     }
@@ -2708,6 +3072,201 @@ static int execute_alter_drop_column(Context* ctx, const char* table_name,
 
     catalog_write_page(ctx);
     return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* CREATE INDEX / DROP INDEX                                                  */
+/* -------------------------------------------------------------------------- */
+
+/* Frees the B-tree pages of one index and removes its metadata slot. */
+static void table_drop_index_at(Context* ctx, Table* table, int i) {
+    BTree* tree = btree_open(ctx->pager, table->indexes[i].root_page);
+    if (tree != NULL) {
+        btree_free_pages(tree);
+        btree_destroy(tree);
+    }
+    free(table->indexes[i].name);
+    free(table->indexes[i].column_name);
+    for (int j = i + 1; j < table->index_count; j++) {
+        table->indexes[j - 1] = table->indexes[j];
+    }
+    table->index_count--;
+}
+
+/* Empties every index on the table. Used when the row chain is about to be
+   rebuilt (UPDATE/DELETE/ALTER): the rebuild re-inserts every surviving row
+   through catalog_insert, which re-populates the indexes. */
+static void indexes_reset(Context* ctx, Table* table) {
+    for (int i = 0; i < table->index_count; i++) {
+        TableIndex* idx = &table->indexes[i];
+        BTree* old = btree_open(ctx->pager, idx->root_page);
+        if (old != NULL) {
+            btree_free_pages(old);
+            btree_destroy(old);
+        }
+        BTree* fresh = btree_create(ctx->pager);
+        idx->root_page = fresh != NULL ? btree_root_page(fresh) : 0;
+        btree_destroy(fresh);
+    }
+}
+
+static int sql_parse_create_index(const char* query, char* index_name, size_t index_name_size,
+                                  char* table_name, size_t table_name_size,
+                                  char* column_name, size_t column_name_size) {
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_CREATE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_INDEX) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, index_name, index_name_size);
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_ON) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, table_name, table_name_size);
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_LPAREN) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, column_name, column_name_size);
+
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_RPAREN) return 0;
+    tok = sql_next_token(&lex);
+    return tok.type == TOK_EOF;
+}
+
+static int sql_parse_drop_index(const char* query, char* index_name, size_t index_name_size,
+                                char* table_name, size_t table_name_size) {
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_DROP) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_INDEX) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, index_name, index_name_size);
+    table_name[0] = '\0';
+
+    tok = sql_next_token(&lex);
+    if (tok.type == TOK_ON) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_IDENT) return 0;
+        sql_token_text(&tok, table_name, table_name_size);
+        tok = sql_next_token(&lex);
+    }
+    return tok.type == TOK_EOF;
+}
+
+/* Populates a fresh index tree by walking the table's row chain. */
+static int index_build_from_rows(Context* ctx, Table* table, int column, BTree* tree) {
+    Pager* pager = ctx->pager;
+    int page_num = table->first_row_page;
+    while (page_num != 0) {
+        uint8_t page[PAGE_SIZE];
+        pager_read_page(pager, page_num, page);
+
+        int16_t record_count;
+        memcpy(&record_count, page + 2, sizeof(record_count));
+
+        int offset = ROW_PAGE_HEADER_SIZE;
+        for (int r = 0; r < (int)record_count; r++) {
+            int16_t record_size;
+            memcpy(&record_size, page + offset, sizeof(record_size));
+            if (record_size <= 0 || offset + (int)record_size > PAGE_SIZE) return 0;
+
+            Row* row = deserialize_row(table, page + offset);
+            if (row == NULL) return 0;
+            if (column < row->field_count) {
+                if (!btree_insert(tree, &row->fields[column].value, page_num, offset)) {
+                    free_row(row);
+                    return 0;
+                }
+            }
+            free_row(row);
+            offset += (int)record_size;
+        }
+
+        int32_t next_page;
+        memcpy(&next_page, page, sizeof(next_page));
+        page_num = (int)next_page;
+    }
+    return 1;
+}
+
+static int execute_create_index(Context* ctx, const char* index_name,
+                                const char* table_name, const char* column_name) {
+    Table* table = catalog_find_table(ctx, table_name);
+    if (table == NULL) return 0;
+    int column = table_column_index(table, column_name);
+    if (column < 0) return 0;
+    for (int i = 0; i < table->index_count; i++) {
+        if (strcmp(table->indexes[i].name, index_name) == 0) return 0;
+    }
+    if (table->index_count >= MAX_TABLE_INDEXES) return 0;
+
+    BTree* tree = btree_create(ctx->pager);
+    if (tree == NULL) return 0;
+    if (!index_build_from_rows(ctx, table, column, tree)) {
+        btree_free_pages(tree);
+        btree_destroy(tree);
+        return 0;
+    }
+    int root_page = btree_root_page(tree);
+    btree_destroy(tree);
+
+    TableIndex* new_indexes = realloc(table->indexes,
+                                      sizeof(TableIndex) * (size_t)(table->index_count + 1));
+    if (new_indexes == NULL) {
+        BTree* cleanup = btree_open(ctx->pager, root_page);
+        if (cleanup != NULL) {
+            btree_free_pages(cleanup);
+            btree_destroy(cleanup);
+        }
+        return 0;
+    }
+    table->indexes = new_indexes;
+    TableIndex* idx = &table->indexes[table->index_count];
+    idx->name = strdup(index_name);
+    idx->column_name = strdup(column_name);
+    idx->root_page = root_page;
+    if (idx->name == NULL || idx->column_name == NULL) {
+        free(idx->name);
+        free(idx->column_name);
+        BTree* cleanup = btree_open(ctx->pager, root_page);
+        if (cleanup != NULL) {
+            btree_free_pages(cleanup);
+            btree_destroy(cleanup);
+        }
+        return 0;
+    }
+    table->index_count++;
+
+    catalog_write_page(ctx);
+    return 1;
+}
+
+static int execute_drop_index(Context* ctx, const char* index_name, const char* table_name) {
+    for (int i = 0; i < g_catalog_count; i++) {
+        Table* table = g_catalog[i];
+        if (table_name != NULL && strcmp(table->name, table_name) != 0) continue;
+        for (int j = 0; j < table->index_count; j++) {
+            if (strcmp(table->indexes[j].name, index_name) == 0) {
+                table_drop_index_at(ctx, table, j);
+                catalog_write_page(ctx);
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 /* -------------------------------------------------------------------------- */

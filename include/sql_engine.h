@@ -38,12 +38,22 @@ typedef struct Column {
     int   type;
 } Column;
 
+/* Secondary index metadata. The B-tree itself lives in pager pages;
+   root_page is its entry point and is persisted in the catalog. */
+typedef struct TableIndex {
+    char* name;
+    char* column_name;
+    int   root_page;
+} TableIndex;
+
 typedef struct Table {
-    char*    name;
-    Column*  columns;
-    int      column_count;
-    int      first_row_page;
-    int      last_row_page;
+    char*       name;
+    Column*     columns;
+    int         column_count;
+    int         first_row_page;
+    int         last_row_page;
+    TableIndex* indexes;
+    int         index_count;
 } Table;
 
 struct Context {
@@ -126,7 +136,27 @@ void   pager_read_page(Pager* pager, int page_num, uint8_t* out);
 void   pager_write_page(Pager* pager, int page_num, const uint8_t* data);
 
 BTree* btree_create(Pager* pager);
+BTree* btree_open(Pager* pager, int root_page);
 void   btree_destroy(BTree* tree);
+/* Returns every page owned by the tree to the pager free list. */
+void   btree_free_pages(BTree* tree);
+int    btree_root_page(BTree* tree);
+
+/* Keys are Cells (VAL_INT / VAL_FLOAT / VAL_STRING / VAL_NULL). Ordering:
+   NULL < int < float < string; ints and floats compare numerically within
+   their own key space, strings bytewise (only the first 36 bytes are
+   significant). The locator (row_page, row_offset) identifies one row record. */
+int    btree_insert(BTree* tree, const Cell* key, int row_page, int row_offset);
+/* Removes a single (key, locator) pair. No rebalancing: nodes may underflow,
+   searches stay correct. Returns 1 when an entry was removed. */
+int    btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset);
+
+typedef void (*BTreeScanFn)(int row_page, int row_offset, void* user);
+/* Scans return the number of matching entries, or -1 on tree corruption.
+   NULL lo/hi bounds are unbounded. */
+int    btree_scan_eq(BTree* tree, const Cell* key, BTreeScanFn fn, void* user);
+int    btree_scan_range(BTree* tree, const Cell* lo, int lo_inclusive,
+                        const Cell* hi, int hi_inclusive, BTreeScanFn fn, void* user);
 
 int    os_open(const char* path);
 int    os_close(int fd);
