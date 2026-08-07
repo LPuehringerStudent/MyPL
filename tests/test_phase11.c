@@ -1100,6 +1100,274 @@ TEST(phase11_index_survives_alter_rebuild) {
     ASSERT_INT_EQ(1, output_contains(out, "alice"));
 }
 
+/* -------------------------------------------------------------------------- */
+/* Column constraints: NOT NULL / PRIMARY KEY / UNIQUE / DEFAULT              */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_not_null_rejects_null_insert) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table nn_t (id int, name string not null);\n"
+        "    insert into nn_t values (1, null);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "NOT NULL constraint"));
+}
+
+TEST(phase11_not_null_accepts_values) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table nn2_t (id int not null, name string not null);\n"
+        "    insert into nn2_t values (1, \"alice\");\n"
+        "    insert into nn2_t values (2, \"bob\");\n"
+        "    string s = \"?\";\n"
+        "    select name into s from nn2_t where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+}
+
+TEST(phase11_unique_rejects_duplicate_insert) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table uq_t (id int, email string unique);\n"
+        "    insert into uq_t values (1, \"a@x\");\n"
+        "    insert into uq_t values (2, \"a@x\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "UNIQUE constraint"));
+}
+
+TEST(phase11_unique_allows_multiple_nulls) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table uq2_t (id int, email string unique);\n"
+        "    insert into uq2_t values (1, null);\n"
+        "    insert into uq2_t values (2, null);\n"
+        "    insert into uq2_t values (3, \"a@x\");\n"
+        "    print \"ok\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "ok"));
+}
+
+TEST(phase11_primary_key_rejects_duplicate) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table pk_t (id int primary key, name string);\n"
+        "    insert into pk_t values (1, \"alice\");\n"
+        "    insert into pk_t values (1, \"bob\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "PRIMARY KEY constraint"));
+}
+
+TEST(phase11_primary_key_rejects_null) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table pk2_t (id int primary key, name string);\n"
+        "    insert into pk2_t values (null, \"alice\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "PRIMARY KEY constraint"));
+}
+
+TEST(phase11_second_primary_key_rejected) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table pk3_t (id int primary key, code int primary key);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "PRIMARY KEY"));
+}
+
+TEST(phase11_default_type_mismatch_rejected) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dm_t (id int, qty int default \"seven\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "DEFAULT"));
+}
+
+TEST(phase11_default_backfills_alter_add_column) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table d_t (id int);\n"
+        "    insert into d_t values (1);\n"
+        "    insert into d_t values (2);\n"
+        "    alter table d_t add column tag string default \"new\";\n"
+        "    string s = \"?\";\n"
+        "    select tag into s from d_t where id = 1;\n"
+        "    print s;\n"
+        "    insert into d_t values (3, \"custom\");\n"
+        "    select tag into s from d_t where id = 3;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "new"));
+    ASSERT_INT_EQ(1, output_contains(out, "custom"));
+}
+
+TEST(phase11_default_fills_null_insert) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table d2_t (id int, qty int default 7);\n"
+        "    insert into d2_t values (1, null);\n"
+        "    insert into d2_t values (2, 3);\n"
+        "    int q = -1;\n"
+        "    select qty into q from d2_t where id = 1;\n"
+        "    print q;\n"
+        "    select qty into q from d2_t where id = 2;\n"
+        "    print q;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "7"));
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+}
+
+TEST(phase11_constraints_persist_across_restarts) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table p_t (id int primary key, name string not null);\n"
+        "    insert into p_t values (1, \"alice\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: the PRIMARY KEY constraint is still enforced. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    insert into p_t values (1, \"bob\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "PRIMARY KEY constraint"));
+
+    /* New process: the NOT NULL constraint is still enforced. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    insert into p_t values (2, null);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "NOT NULL constraint"));
+
+    /* New process: a valid row still inserts and reads back. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    insert into p_t values (2, \"bob\");\n"
+        "    string s = \"?\";\n"
+        "    select name into s from p_t where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+}
+
+TEST(phase11_not_null_rejects_null_update) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table un_t (id int, name string not null);\n"
+        "    insert into un_t values (1, \"alice\");\n"
+        "    update un_t set name = null where id = 1;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "NOT NULL constraint"));
+
+    /* New process: the rejected UPDATE left the row unchanged. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string s = \"?\";\n"
+        "    select name into s from un_t where id = 1;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "alice"));
+}
+
+TEST(phase11_unique_rejects_duplicate_update) {
+    remove("mypl.db");
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table uq3_t (id int, email string unique);\n"
+        "    insert into uq3_t values (1, \"a@x\");\n"
+        "    insert into uq3_t values (2, \"b@x\");\n"
+        "    update uq3_t set email = \"a@x\" where id = 2;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "UNIQUE constraint"));
+
+    /* New process: the rejected UPDATE left the row unchanged. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string s = \"?\";\n"
+        "    select email into s from uq3_t where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "b@x"));
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -1149,5 +1417,18 @@ int main(void) {
     RUN_TEST(phase11_index_range_lookup);
     RUN_TEST(phase11_index_string_lookup);
     RUN_TEST(phase11_index_survives_alter_rebuild);
+    RUN_TEST(phase11_not_null_rejects_null_insert);
+    RUN_TEST(phase11_not_null_accepts_values);
+    RUN_TEST(phase11_unique_rejects_duplicate_insert);
+    RUN_TEST(phase11_unique_allows_multiple_nulls);
+    RUN_TEST(phase11_primary_key_rejects_duplicate);
+    RUN_TEST(phase11_primary_key_rejects_null);
+    RUN_TEST(phase11_second_primary_key_rejected);
+    RUN_TEST(phase11_default_type_mismatch_rejected);
+    RUN_TEST(phase11_default_backfills_alter_add_column);
+    RUN_TEST(phase11_default_fills_null_insert);
+    RUN_TEST(phase11_constraints_persist_across_restarts);
+    RUN_TEST(phase11_not_null_rejects_null_update);
+    RUN_TEST(phase11_unique_rejects_duplicate_update);
     TEST_SUMMARY();
 }

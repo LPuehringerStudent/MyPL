@@ -33,9 +33,17 @@ struct Result {
     Row*  rows;
 };
 
+/* Column constraint flags (persisted in the V3 catalog format). */
+#define COL_FLAG_NOT_NULL    1
+#define COL_FLAG_PRIMARY_KEY 2 /* implies NOT NULL + UNIQUE */
+#define COL_FLAG_UNIQUE      4
+#define COL_FLAG_HAS_DEFAULT 8 /* default_value holds the DEFAULT literal */
+
 typedef struct Column {
     char* name;
     int   type;
+    int   flags;
+    Cell  default_value; /* only meaningful when COL_FLAG_HAS_DEFAULT is set */
 } Column;
 
 /* Secondary index metadata. The B-tree itself lives in pager pages;
