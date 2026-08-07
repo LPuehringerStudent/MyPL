@@ -758,6 +758,348 @@ TEST(phase11_join_compound_where) {
     ASSERT_INT_EQ(1, output_contains(out, "2"));
 }
 
+TEST(phase11_create_index_and_indexed_select) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix_t (id int, name string);\n"
+        "    insert into ix_t values (1, \"alice\");\n"
+        "    insert into ix_t values (2, \"bob\");\n"
+        "    insert into ix_t values (3, \"carol\");\n"
+        "    create index ix_id on ix_t (id);\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix_t where id = 2;\n"
+        "    print s;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix_t where id = 99;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase11_index_covers_preexisting_rows) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix2_t (id int, name string);\n"
+        "    insert into ix2_t values (1, \"alice\");\n"
+        "    insert into ix2_t values (2, \"bob\");\n"
+        "    insert into ix2_t values (3, \"carol\");\n"
+        "    create index ix2_id on ix2_t (id);\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix2_t where id = 1 or id = 3;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Rows inserted before CREATE INDEX are found through the index. */
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_index_maintained_on_insert) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix3_t (id int, name string);\n"
+        "    insert into ix3_t values (1, \"alice\");\n"
+        "    create index ix3_id on ix3_t (id);\n"
+        "    insert into ix3_t values (2, \"bob\");\n"
+        "    insert into ix3_t values (3, \"carol\");\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix3_t where id = 3;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Rows inserted after CREATE INDEX are indexed too. */
+    ASSERT_INT_EQ(1, output_contains(out, "carol"));
+}
+
+TEST(phase11_index_maintained_on_update_and_delete) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix4_t (id int, name string);\n"
+        "    insert into ix4_t values (1, \"alice\");\n"
+        "    insert into ix4_t values (2, \"bob\");\n"
+        "    insert into ix4_t values (3, \"carol\");\n"
+        "    create index ix4_id on ix4_t (id);\n"
+        "    update ix4_t set id = 5 where id = 2;\n"
+        "    delete from ix4_t where id = 1;\n"
+        "    int gone = -1;\n"
+        "    select count(*) into gone from ix4_t where id = 2;\n"
+        "    print gone;\n"
+        "    int moved = -1;\n"
+        "    select count(*) into moved from ix4_t where id = 5;\n"
+        "    print moved;\n"
+        "    int deleted = -1;\n"
+        "    select count(*) into deleted from ix4_t where id = 1;\n"
+        "    print deleted;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* id 2 moved to 5 (count 0 then 1); id 1 deleted (count 0). The CLI
+       also prints main's return value, a fourth line with 0. */
+    ASSERT_INT_EQ(3, count_occurrences(out, "0"));
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_index_persists_across_restarts) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix5_t (id int, name string);\n"
+        "    insert into ix5_t values (1, \"alice\");\n"
+        "    insert into ix5_t values (2, \"bob\");\n"
+        "    create index ix5_id on ix5_t (id);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: index metadata and tree pages are reloaded. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix5_t where id = 2;\n"
+        "    print s;\n"
+        "    insert into ix5_t values (3, \"carol\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+
+    /* Third process: the row inserted after reopen is indexed. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix5_t where id = 3;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "carol"));
+}
+
+TEST(phase11_drop_index_keeps_scan_correct) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix6_t (id int, name string);\n"
+        "    insert into ix6_t values (1, \"alice\");\n"
+        "    insert into ix6_t values (2, \"bob\");\n"
+        "    create index ix6_id on ix6_t (id);\n"
+        "    drop index ix6_id;\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix6_t where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+}
+
+TEST(phase11_index_on_other_column_still_correct) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix7_t (id int, name string);\n"
+        "    insert into ix7_t values (1, \"alice\");\n"
+        "    insert into ix7_t values (2, \"bob\");\n"
+        "    insert into ix7_t values (3, \"carol\");\n"
+        "    create index ix7_id on ix7_t (id);\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix7_t where name = \"carol\";\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from ix7_t where name <> \"bob\";\n"
+        "    print m;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* name is not indexed: full-scan semantics must be unchanged. */
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_create_index_missing_table_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create index ix_no on nope (id);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_create_index_missing_column_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix8_t (id int);\n"
+        "    create index ix8_no on ix8_t (nope);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_create_duplicate_index_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix9_t (id int);\n"
+        "    create index ix9_id on ix9_t (id);\n"
+        "    create index ix9_id on ix9_t (id);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_drop_missing_index_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix10_t (id int);\n"
+        "    drop index ix10_no;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_drop_table_removes_its_indexes) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix11_t (id int, name string);\n"
+        "    insert into ix11_t values (1, \"alice\");\n"
+        "    create index ix11_id on ix11_t (id);\n"
+        "    drop table ix11_t;\n"
+        "    create table ix11_t (id int, name string);\n"
+        "    insert into ix11_t values (2, \"bob\");\n"
+        "    create index ix11_id on ix11_t (id);\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix11_t where id = 2;\n"
+        "    print s;\n"
+        "    int stale = -1;\n"
+        "    select count(*) into stale from ix11_t where id = 1;\n"
+        "    print stale;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Index name reusable after drop; no stale entries from the old table. */
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase11_index_range_lookup) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix12_t (id int, name string);\n"
+        "    insert into ix12_t values (1, \"a\");\n"
+        "    insert into ix12_t values (2, \"b\");\n"
+        "    insert into ix12_t values (3, \"c\");\n"
+        "    insert into ix12_t values (4, \"d\");\n"
+        "    insert into ix12_t values (5, \"e\");\n"
+        "    create index ix12_id on ix12_t (id);\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix12_t where id >= 2 and id < 5;\n"
+        "    print n;\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from ix12_t where id > 4;\n"
+        "    print m;\n"
+        "    int k = -1;\n"
+        "    select count(*) into k from ix12_t where id <= 2;\n"
+        "    print k;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* 2..4 -> 3 rows; >4 -> 1 row; <=2 -> 2 rows. */
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_index_string_lookup) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix13_t (id int, name string);\n"
+        "    insert into ix13_t values (1, \"alice\");\n"
+        "    insert into ix13_t values (2, \"bob\");\n"
+        "    insert into ix13_t values (3, \"carol\");\n"
+        "    create index ix13_name on ix13_t (name);\n"
+        "    int id = -1;\n"
+        "    select id into id from ix13_t where name = \"bob\";\n"
+        "    print id;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix13_t where name = \"nobody\";\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase11_index_survives_alter_rebuild) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix14_t (id int, name string);\n"
+        "    insert into ix14_t values (1, \"alice\");\n"
+        "    insert into ix14_t values (2, \"bob\");\n"
+        "    create index ix14_id on ix14_t (id);\n"
+        "    alter table ix14_t add column tag string;\n"
+        "    string s = \"?\";\n"
+        "    select name into s from ix14_t where id = 2;\n"
+        "    print s;\n"
+        "    alter table ix14_t drop column tag;\n"
+        "    string t = \"?\";\n"
+        "    select name into t from ix14_t where id = 1;\n"
+        "    print t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Row-chain rebuilds (ALTER) keep the index in sync. */
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+    ASSERT_INT_EQ(1, output_contains(out, "alice"));
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -792,5 +1134,20 @@ int main(void) {
     RUN_TEST(phase11_update_compound_where);
     RUN_TEST(phase11_delete_compound_where);
     RUN_TEST(phase11_join_compound_where);
+    RUN_TEST(phase11_create_index_and_indexed_select);
+    RUN_TEST(phase11_index_covers_preexisting_rows);
+    RUN_TEST(phase11_index_maintained_on_insert);
+    RUN_TEST(phase11_index_maintained_on_update_and_delete);
+    RUN_TEST(phase11_index_persists_across_restarts);
+    RUN_TEST(phase11_drop_index_keeps_scan_correct);
+    RUN_TEST(phase11_index_on_other_column_still_correct);
+    RUN_TEST(phase11_create_index_missing_table_errors);
+    RUN_TEST(phase11_create_index_missing_column_errors);
+    RUN_TEST(phase11_create_duplicate_index_errors);
+    RUN_TEST(phase11_drop_missing_index_errors);
+    RUN_TEST(phase11_drop_table_removes_its_indexes);
+    RUN_TEST(phase11_index_range_lookup);
+    RUN_TEST(phase11_index_string_lookup);
+    RUN_TEST(phase11_index_survives_alter_rebuild);
     TEST_SUMMARY();
 }

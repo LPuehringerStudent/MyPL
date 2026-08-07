@@ -1,0 +1,49 @@
+/* Phase 11 capabilities demo: B-tree indexes in the custom SQL engine.
+ *
+ * - CREATE INDEX idx ON tbl (col) / DROP INDEX idx
+ * - Indexes are page-based B+ trees persisted in the database file
+ * - INSERT/UPDATE/DELETE/ALTER keep every index on a table in sync
+ * - WHERE terms like "indexed_col = literal" (and numeric ranges) read
+ *   candidate rows through the index instead of scanning the whole table;
+ *   results are identical to a full scan
+ */
+
+proc main() -> int {
+    print "=== create index ===";
+    drop table if exists people;
+    create table people (id int, name string);
+    insert into people values (1, "alice");
+    insert into people values (2, "bob");
+    insert into people values (3, "carol");
+    create index people_id on people (id);
+
+    /* Equality on the indexed column reads through the index. */
+    string s = "?";
+    select name into s from people where id = 2;
+    print s;              /* bob */
+
+    /* Numeric ranges on the indexed column use the index too. */
+    int n = -1;
+    select count(*) into n from people where id >= 2 and id < 3;
+    print n;              /* 1 */
+
+    print "=== index maintenance ===";
+    insert into people values (4, "dave");
+    update people set id = 5 where id = 1;
+    delete from people where id = 3;
+    int moved = -1;
+    select count(*) into moved from people where id = 5;
+    print moved;          /* 1 */
+    int gone = -1;
+    select count(*) into gone from people where id = 1;
+    print gone;           /* 0 */
+
+    print "=== drop index ===";
+    drop index people_id;
+    /* Falls back to a full scan; results are unchanged. */
+    select name into s from people where id = 4;
+    print s;              /* dave */
+
+    drop table people;
+    return 0;
+}

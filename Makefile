@@ -42,6 +42,7 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_chunk tests/test_chunk.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_compiler tests/test_compiler.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_pager tests/test_pager.c $(LIB_OBJECTS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_btree tests/test_btree.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_vm tests/test_vm.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sql tests/test_sql.c $(LIB_OBJECTS) $(LDFLAGS)
 	$(CC) $(CFLAGS) -Itests -o $(BINDIR)/test_sql_engine tests/test_sql_engine.c $(LIB_OBJECTS) $(LDFLAGS)
@@ -73,6 +74,7 @@ endif
 	$(BINDIR)/test_chunk
 	$(BINDIR)/test_compiler
 	$(BINDIR)/test_pager
+	$(BINDIR)/test_btree
 	$(BINDIR)/test_vm
 	$(BINDIR)/test_sql
 	$(BINDIR)/test_sql_engine
