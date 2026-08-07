@@ -1,0 +1,51 @@
+/* Phase 11 capabilities demo: column constraints in the custom SQL engine.
+ *
+ * - NOT NULL      rejects NULL writes on INSERT and UPDATE
+ * - PRIMARY KEY   implies NOT NULL + UNIQUE (one per table)
+ * - UNIQUE        rejects duplicate non-NULL values (multiple NULLs allowed)
+ * - DEFAULT lit   fills NULL-valued inserts and backfills old rows on
+ *                 ALTER TABLE ... ADD COLUMN
+ * Constraints are persisted in the database catalog and survive restarts.
+ * A violating statement aborts the program with a runtime error naming the
+ * constraint, so this demo only exercises the accepted paths.
+ */
+
+proc main() -> int {
+    print "=== primary key + not null ===";
+    drop table if exists users;
+    create table users (id int primary key, name string not null, email string unique);
+    insert into users values (1, "alice", "alice@example.com");
+    insert into users values (2, "bob", null);        /* NULLs allowed in UNIQUE */
+    insert into users values (3, "carol", null);      /* ... even more than one */
+
+    string s = "?";
+    select name into s from users where id = 2;
+    print s;              /* bob */
+
+    print "=== default on insert ===";
+    drop table if exists orders;
+    create table orders (id int primary key, qty int default 1, note string default "none");
+    insert into orders values (1, null, null);        /* defaults kick in */
+    insert into orders values (2, 5, "gift");
+    int q = -1;
+    select qty into q from orders where id = 1;
+    print q;              /* 1 */
+    select note into s from orders where id = 1;
+    print s;              /* none */
+
+    print "=== default backfill on alter ===";
+    alter table orders add column status string default "new";
+    select status into s from orders where id = 2;    /* old row backfilled */
+    print s;              /* new */
+
+    /* Violations are runtime errors, e.g.:
+     *   insert into users values (1, "dup", "x@x");   -- PRIMARY KEY constraint violated
+     *   insert into users values (4, null, "x@x");    -- NOT NULL constraint violated
+     *   insert into users values (4, "dan", "alice@example.com");  -- UNIQUE constraint violated
+     *   update users set name = null where id = 1;    -- NOT NULL constraint violated
+     */
+
+    drop table users;
+    drop table orders;
+    return 0;
+}

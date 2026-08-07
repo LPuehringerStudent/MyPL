@@ -18,10 +18,17 @@ static Table* g_catalog[MAX_CATALOG_TABLES];
 static int    g_catalog_count = 0;
 static int    g_catalog_page  = -1;
 
+static void free_column(Column* col) {
+    free(col->name);
+    if ((col->flags & COL_FLAG_HAS_DEFAULT) && col->default_value.type == VAL_STRING) {
+        free(col->default_value.as.as_string);
+    }
+}
+
 static void free_table(Table* t) {
     if (t == NULL) return;
     for (int i = 0; i < t->column_count; i++) {
-        free(t->columns[i].name);
+        free_column(&t->columns[i]);
     }
     free(t->columns);
     for (int i = 0; i < t->index_count; i++) {
@@ -49,9 +56,92 @@ void catalog_clear(Context* ctx) {
 
 /* Catalog page formats. V1 (legacy): u32 table_count followed by per-table
    records with no index data. V2: magic marker, then table_count, then
-   per-table records each carrying their index list. V1 files still load —
-   they simply have no indexes; the page is rewritten as V2 on the next save. */
+   per-table records each carrying their index list. V3: like V2, plus
+   per-column constraint flags and an optional DEFAULT literal. V1/V2 files
+   still load — they simply have no indexes and/or no constraints; the page
+   is rewritten as V3 on the next save. */
 #define CATALOG_MAGIC_V2 0x4D594932u /* "MYI2" */
+#define CATALOG_MAGIC_V3 0x4D594333u /* "MYC3" */
+
+/* Reads a serialized cell (type tag + payload) from the catalog page. */
+static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
+    cell->type = page[(*offset)++];
+    switch (cell->type) {
+        case VAL_NULL:
+            cell->as.as_int = 0;
+            return 1;
+        case VAL_INT: {
+            int32_t v = 0;
+            if (*offset + 4 > PAGE_SIZE) return 0;
+            memcpy(&v, page + *offset, sizeof(v));
+            *offset += 4;
+            cell->as.as_int = (int)v;
+            return 1;
+        }
+        case VAL_FLOAT: {
+            double v = 0;
+            if (*offset + 8 > PAGE_SIZE) return 0;
+            memcpy(&v, page + *offset, sizeof(v));
+            *offset += 8;
+            cell->as.as_float = v;
+            return 1;
+        }
+        case VAL_STRING: {
+            int32_t len = 0;
+            if (*offset + 4 > PAGE_SIZE) return 0;
+            memcpy(&len, page + *offset, sizeof(len));
+            *offset += 4;
+            if (len < 0 || *offset + len > PAGE_SIZE) return 0;
+            cell->as.as_string = malloc((size_t)len + 1);
+            if (cell->as.as_string == NULL) return 0;
+            memcpy(cell->as.as_string, page + *offset, (size_t)len);
+            cell->as.as_string[len] = '\0';
+            *offset += len;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+}
+
+/* Writes a cell (type tag + payload) to the catalog page. */
+static int catalog_cell_size(const Cell* cell) {
+    switch (cell->type) {
+        case VAL_INT:    return 1 + 4;
+        case VAL_FLOAT:  return 1 + 8;
+        case VAL_STRING: return 1 + 4 + (int)strlen(cell->as.as_string != NULL ? cell->as.as_string : "");
+        default:         return 1; /* VAL_NULL: tag only */
+    }
+}
+
+static void catalog_write_cell(uint8_t* page, int* offset, const Cell* cell) {
+    page[(*offset)++] = (uint8_t)cell->type;
+    switch (cell->type) {
+        case VAL_INT: {
+            int32_t v = (int32_t)cell->as.as_int;
+            memcpy(page + *offset, &v, sizeof(v));
+            *offset += 4;
+            break;
+        }
+        case VAL_FLOAT: {
+            double v = cell->as.as_float;
+            memcpy(page + *offset, &v, sizeof(v));
+            *offset += 8;
+            break;
+        }
+        case VAL_STRING: {
+            const char* s = cell->as.as_string != NULL ? cell->as.as_string : "";
+            int32_t len = (int32_t)strlen(s);
+            memcpy(page + *offset, &len, sizeof(len));
+            *offset += 4;
+            memcpy(page + *offset, s, (size_t)len);
+            *offset += len;
+            break;
+        }
+        default:
+            break;
+    }
+}
 
 static int catalog_read_indexes(uint8_t* page, int* offset, Table* table) {
     uint8_t index_count = page[(*offset)++];
@@ -98,9 +188,13 @@ static int catalog_read_page(Context* ctx) {
     memcpy(&table_count, page + offset, sizeof(table_count));
     offset += 4;
 
-    int has_indexes = 0;
+    int catalog_version = 1;
     if (table_count == CATALOG_MAGIC_V2) {
-        has_indexes = 1;
+        catalog_version = 2;
+        memcpy(&table_count, page + offset, sizeof(table_count));
+        offset += 4;
+    } else if (table_count == CATALOG_MAGIC_V3) {
+        catalog_version = 3;
         memcpy(&table_count, page + offset, sizeof(table_count));
         offset += 4;
     }
@@ -138,13 +232,25 @@ static int catalog_read_page(Context* ctx) {
             table->columns[c].name[col_name_len] = '\0';
             offset += col_name_len;
             table->columns[c].type = page[offset++];
+            table->columns[c].flags = 0;
+            table->columns[c].default_value.type = VAL_NULL;
+            table->columns[c].default_value.as.as_int = 0;
+            if (catalog_version >= 3) {
+                table->columns[c].flags = page[offset++];
+                if (table->columns[c].flags & COL_FLAG_HAS_DEFAULT) {
+                    if (!catalog_read_cell(page, &offset, &table->columns[c].default_value)) {
+                        free_table(table);
+                        return 0;
+                    }
+                }
+            }
         }
 
         memcpy(&table->first_row_page, page + offset, sizeof(table->first_row_page));
         offset += 4;
         table->last_row_page = table->first_row_page;
 
-        if (has_indexes) {
+        if (catalog_version >= 2) {
             if (!catalog_read_indexes(page, &offset, table)) {
                 free_table(table);
                 return 0;
@@ -166,7 +272,7 @@ static int catalog_write_page(Context* ctx) {
     memset(page, 0, PAGE_SIZE);
 
     int offset = 0;
-    uint32_t magic = CATALOG_MAGIC_V2;
+    uint32_t magic = CATALOG_MAGIC_V3;
     memcpy(page + offset, &magic, sizeof(magic));
     offset += 4;
     uint32_t table_count = (uint32_t)g_catalog_count;
@@ -186,10 +292,18 @@ static int catalog_write_page(Context* ctx) {
         for (int c = 0; c < table->column_count; c++) {
             size_t col_name_len = strlen(table->columns[c].name);
             if (col_name_len > MAX_NAME_LEN) col_name_len = MAX_NAME_LEN;
+            int default_size = (table->columns[c].flags & COL_FLAG_HAS_DEFAULT)
+                ? catalog_cell_size(&table->columns[c].default_value)
+                : 0;
+            if (offset + 3 + (int)col_name_len + default_size > PAGE_SIZE) break;
             page[offset++] = (uint8_t)col_name_len;
             memcpy(page + offset, table->columns[c].name, col_name_len);
             offset += (int)col_name_len;
             page[offset++] = (uint8_t)table->columns[c].type;
+            page[offset++] = (uint8_t)table->columns[c].flags;
+            if (table->columns[c].flags & COL_FLAG_HAS_DEFAULT) {
+                catalog_write_cell(page, &offset, &table->columns[c].default_value);
+            }
         }
 
         memcpy(page + offset, &table->first_row_page, sizeof(table->first_row_page));
@@ -699,7 +813,11 @@ typedef enum {
     TOK_IF,
     TOK_EXISTS,
     TOK_COLUMN,
-    TOK_INDEX
+    TOK_INDEX,
+    TOK_PRIMARY,
+    TOK_KEY,
+    TOK_UNIQUE,
+    TOK_DEFAULT
 } SqlTokenType;
 
 typedef struct {
@@ -711,11 +829,14 @@ typedef struct {
 typedef struct {
     const char* start;
     const char* current;
+    int         has_pushback;
+    SqlToken    pushback;
 } SqlLexer;
 
 static void sql_lexer_init(SqlLexer* lex, const char* query) {
     lex->start = query;
     lex->current = query;
+    lex->has_pushback = 0;
 }
 
 static void sql_skip_whitespace(SqlLexer* lex) {
@@ -780,10 +901,23 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 6 && strncasecmp(start, "EXISTS", 6) == 0) return TOK_EXISTS;
     if (length == 6 && strncasecmp(start, "COLUMN", 6) == 0) return TOK_COLUMN;
     if (length == 5 && strncasecmp(start, "INDEX", 5) == 0) return TOK_INDEX;
+    if (length == 7 && strncasecmp(start, "PRIMARY", 7) == 0) return TOK_PRIMARY;
+    if (length == 3 && strncasecmp(start, "KEY", 3) == 0) return TOK_KEY;
+    if (length == 6 && strncasecmp(start, "UNIQUE", 6) == 0) return TOK_UNIQUE;
+    if (length == 7 && strncasecmp(start, "DEFAULT", 7) == 0) return TOK_DEFAULT;
     return TOK_IDENT;
 }
 
+static void sql_lexer_pushback(SqlLexer* lex, SqlToken tok) {
+    lex->pushback = tok;
+    lex->has_pushback = 1;
+}
+
 static SqlToken sql_next_token(SqlLexer* lex) {
+    if (lex->has_pushback) {
+        lex->has_pushback = 0;
+        return lex->pushback;
+    }
     sql_skip_whitespace(lex);
     lex->start = lex->current;
 
@@ -2282,6 +2416,8 @@ typedef struct {
     char        table_name[MAX_NAME_LEN + 1];
     char*       column_names[MAX_COLUMNS];
     int         column_types[MAX_COLUMNS];
+    int         column_flags[MAX_COLUMNS];
+    Cell        column_defaults[MAX_COLUMNS];
     int         column_count;
     Cell        values[MAX_COLUMNS];
     int         value_count;
@@ -2289,6 +2425,72 @@ typedef struct {
     char*       select_query;
     int         if_not_exists;
 } DdlStmt;
+
+/* Error detail for DDL/constraint failures, consumed by custom_exec so the
+   runtime error message can name the violated constraint. */
+static char g_sql_ddl_error[256];
+
+/* Parses a literal (number, string, or NULL) into a Cell. */
+static int sql_parse_literal_cell(SqlToken* tok, Cell* out) {
+    if (tok->type == TOK_NUMBER) {
+        char buf[64];
+        sql_token_text(tok, buf, sizeof(buf));
+        if (strchr(buf, '.') != NULL) {
+            out->type = VAL_FLOAT;
+            out->as.as_float = strtod(buf, NULL);
+        } else {
+            out->type = VAL_INT;
+            out->as.as_int = atoi(buf);
+        }
+        return 1;
+    }
+    if (tok->type == TOK_NULL) {
+        out->type = VAL_NULL;
+        out->as.as_int = 0;
+        return 1;
+    }
+    if (tok->type == TOK_STRING) {
+        out->type = VAL_STRING;
+        out->as.as_string = malloc((size_t)tok->length + 1);
+        if (out->as.as_string == NULL) return 0;
+        memcpy(out->as.as_string, tok->text, (size_t)tok->length);
+        out->as.as_string[tok->length] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+/* Parses zero or more column constraint clauses after a column type:
+   NOT NULL, PRIMARY KEY, UNIQUE, DEFAULT <literal>. The first token that
+   does not start a clause is pushed back. */
+static int sql_parse_column_constraints(SqlLexer* lex, int* out_flags, Cell* out_default) {
+    int flags = 0;
+    out_default->type = VAL_NULL;
+    out_default->as.as_int = 0;
+    while (1) {
+        SqlToken tok = sql_next_token(lex);
+        if (tok.type == TOK_NOT) {
+            tok = sql_next_token(lex);
+            if (tok.type != TOK_NULL) return 0;
+            flags |= COL_FLAG_NOT_NULL;
+        } else if (tok.type == TOK_PRIMARY) {
+            tok = sql_next_token(lex);
+            if (tok.type != TOK_KEY) return 0;
+            flags |= COL_FLAG_PRIMARY_KEY;
+        } else if (tok.type == TOK_UNIQUE) {
+            flags |= COL_FLAG_UNIQUE;
+        } else if (tok.type == TOK_DEFAULT) {
+            tok = sql_next_token(lex);
+            if (!sql_parse_literal_cell(&tok, out_default)) return 0;
+            flags |= COL_FLAG_HAS_DEFAULT;
+        } else {
+            sql_lexer_pushback(lex, tok);
+            break;
+        }
+    }
+    *out_flags = flags;
+    return 1;
+}
 
 static int sql_parse_type(SqlToken* tok, int* out_type) {
     if (tok->type == TOK_INT) {
@@ -2331,28 +2533,43 @@ static int sql_parse_create_table(const char* query, DdlStmt* stmt) {
     tok = sql_next_token(&lex);
     if (tok.type != TOK_LPAREN) return 0;
 
-    tok = sql_next_token(&lex);
-    if (tok.type != TOK_IDENT) return 0;
-    char buf[MAX_NAME_LEN + 1];
-    sql_token_text(&tok, buf, sizeof(buf));
-    stmt->column_names[stmt->column_count] = strdup(buf);
-    if (stmt->column_names[stmt->column_count] == NULL) return 0;
-    tok = sql_next_token(&lex);
-    if (!sql_parse_type(&tok, &stmt->column_types[stmt->column_count])) return 0;
-    stmt->column_count++;
-
+    int pk_count = 0;
     while (1) {
-        tok = sql_next_token(&lex);
-        if (tok.type == TOK_RPAREN) break;
-        if (tok.type != TOK_COMMA) return 0;
+        if (stmt->column_count >= MAX_COLUMNS) return 0;
         tok = sql_next_token(&lex);
         if (tok.type != TOK_IDENT) return 0;
+        char buf[MAX_NAME_LEN + 1];
         sql_token_text(&tok, buf, sizeof(buf));
         stmt->column_names[stmt->column_count] = strdup(buf);
         if (stmt->column_names[stmt->column_count] == NULL) return 0;
         tok = sql_next_token(&lex);
         if (!sql_parse_type(&tok, &stmt->column_types[stmt->column_count])) return 0;
+        stmt->column_defaults[stmt->column_count].type = VAL_NULL;
+        stmt->column_defaults[stmt->column_count].as.as_int = 0;
+        if (!sql_parse_column_constraints(&lex, &stmt->column_flags[stmt->column_count],
+                                          &stmt->column_defaults[stmt->column_count])) {
+            return 0;
+        }
+        if (stmt->column_flags[stmt->column_count] & COL_FLAG_PRIMARY_KEY) {
+            pk_count++;
+            if (pk_count > 1) {
+                snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                         "only one PRIMARY KEY column allowed per table");
+                return 0;
+            }
+        }
+        if ((stmt->column_flags[stmt->column_count] & COL_FLAG_HAS_DEFAULT) &&
+            stmt->column_defaults[stmt->column_count].type != VAL_NULL &&
+            stmt->column_defaults[stmt->column_count].type != stmt->column_types[stmt->column_count]) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "DEFAULT value type does not match type of column '%.200s'", buf);
+            return 0;
+        }
         stmt->column_count++;
+
+        tok = sql_next_token(&lex);
+        if (tok.type == TOK_RPAREN) break;
+        if (tok.type != TOK_COMMA) return 0;
     }
 
     tok = sql_next_token(&lex);
@@ -2425,6 +2642,11 @@ static void sql_free_ddl_stmt(DdlStmt* stmt) {
     for (int i = 0; i < stmt->column_count; i++) {
         free(stmt->column_names[i]);
         stmt->column_names[i] = NULL;
+        if ((stmt->column_flags[i] & COL_FLAG_HAS_DEFAULT) &&
+            stmt->column_defaults[i].type == VAL_STRING) {
+            free(stmt->column_defaults[i].as.as_string);
+            stmt->column_defaults[i].type = VAL_NULL;
+        }
     }
     for (int i = 0; i < stmt->value_count; i++) {
         if (stmt->values[i].type == VAL_STRING) {
@@ -2459,10 +2681,11 @@ static int sql_parse_drop_table(const char* query, char* table_name, size_t tabl
                                 int* if_exists);
 static int sql_parse_alter_table(const char* query, char* table_name, size_t table_name_size,
                                  int* action, char* column_name, size_t column_name_size,
-                                 int* column_type);
+                                 int* column_type, int* column_flags, Cell* column_default);
 static int execute_drop_table(Context* ctx, const char* table_name, int if_exists);
 static int execute_alter_add_column(Context* ctx, const char* table_name,
-                                    const char* column_name, int column_type);
+                                    const char* column_name, int column_type,
+                                    int column_flags, const Cell* column_default);
 static int execute_alter_drop_column(Context* ctx, const char* table_name,
                                      const char* column_name);
 static int sql_parse_create_index(const char* query, char* index_name, size_t index_name_size,
@@ -2475,6 +2698,109 @@ static int execute_create_index(Context* ctx, const char* index_name,
 static int execute_drop_index(Context* ctx, const char* index_name, const char* table_name);
 static void table_drop_index_at(Context* ctx, Table* table, int i);
 static void indexes_reset(Context* ctx, Table* table);
+
+/* -------------------------------------------------------------------------- */
+/* Column constraint enforcement                                              */
+/* -------------------------------------------------------------------------- */
+
+static const char* constraint_label(int flags) {
+    if (flags & COL_FLAG_PRIMARY_KEY) return "PRIMARY KEY";
+    if (flags & COL_FLAG_UNIQUE) return "UNIQUE";
+    return "NOT NULL";
+}
+
+/* Applies DEFAULT values to NULL cells, then enforces NOT NULL / PRIMARY KEY.
+   Returns 1 when the row is valid; on failure sets g_sql_ddl_error. */
+static int constraints_apply_row(Table* table, Cell* cells) {
+    for (int c = 0; c < table->column_count; c++) {
+        if (cells[c].type != VAL_NULL) continue;
+        if (table->columns[c].flags & COL_FLAG_HAS_DEFAULT) {
+            cells[c] = cell_dup(&table->columns[c].default_value);
+        }
+    }
+    for (int c = 0; c < table->column_count; c++) {
+        int flags = table->columns[c].flags;
+        if (cells[c].type == VAL_NULL && (flags & (COL_FLAG_NOT_NULL | COL_FLAG_PRIMARY_KEY))) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "%s constraint violated: %s.%s",
+                     constraint_label(flags), table->name, table->columns[c].name);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Checks UNIQUE / PRIMARY KEY for a new row against the rows already stored.
+   NULL values never conflict (SQL-standard UNIQUE semantics). */
+static int constraints_check_new_row(Context* ctx, Table* table, Cell* cells) {
+    int needs_scan = 0;
+    for (int c = 0; c < table->column_count; c++) {
+        if ((table->columns[c].flags & (COL_FLAG_UNIQUE | COL_FLAG_PRIMARY_KEY)) &&
+            cells[c].type != VAL_NULL) {
+            needs_scan = 1;
+            break;
+        }
+    }
+    if (!needs_scan) return 1;
+
+    Row* rows = NULL;
+    int row_count = 0;
+    if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
+    for (int r = 0; r < row_count; r++) {
+        for (int c = 0; c < table->column_count; c++) {
+            int flags = table->columns[c].flags;
+            if (!(flags & (COL_FLAG_UNIQUE | COL_FLAG_PRIMARY_KEY))) continue;
+            if (cells[c].type == VAL_NULL) continue;
+            Cell* existing = &rows[r].fields[c].value;
+            if (existing->type == VAL_NULL) continue;
+            if (cell_compare(existing, &cells[c]) == 0) {
+                snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                         "%s constraint violated: %s.%s",
+                         constraint_label(flags), table->name, table->columns[c].name);
+                free_rows(rows, row_count);
+                return 0;
+            }
+        }
+    }
+    free_rows(rows, row_count);
+    return 1;
+}
+
+/* Validates a full in-memory row set (used by UPDATE after mutation, before
+   the row chain is rewritten). */
+static int constraints_check_row_set(Table* table, Row* rows, int row_count) {
+    for (int r = 0; r < row_count; r++) {
+        for (int c = 0; c < table->column_count; c++) {
+            int flags = table->columns[c].flags;
+            if (rows[r].fields[c].value.type == VAL_NULL &&
+                (flags & (COL_FLAG_NOT_NULL | COL_FLAG_PRIMARY_KEY))) {
+                snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                         "%s constraint violated: %s.%s",
+                         constraint_label(flags), table->name, table->columns[c].name);
+                return 0;
+            }
+        }
+    }
+    for (int c = 0; c < table->column_count; c++) {
+        int flags = table->columns[c].flags;
+        if (!(flags & (COL_FLAG_UNIQUE | COL_FLAG_PRIMARY_KEY))) continue;
+        for (int i = 0; i < row_count; i++) {
+            Cell* a = &rows[i].fields[c].value;
+            if (a->type == VAL_NULL) continue;
+            for (int j = i + 1; j < row_count; j++) {
+                Cell* b = &rows[j].fields[c].value;
+                if (b->type == VAL_NULL) continue;
+                if (cell_compare(a, b) == 0) {
+                    snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                             "%s constraint violated: %s.%s",
+                             constraint_label(flags), table->name, table->columns[c].name);
+                    return 0;
+                }
+            }
+        }
+    }
+    return 1;
+}
 
 static int execute_insert_select(Context* ctx, Table* table, const char* select_query) {
     Result* res = sql_exec(select_query, ctx);
@@ -2498,11 +2824,19 @@ static int execute_insert_select(Context* ctx, Table* table, const char* select_
                 }
             }
         }
-        catalog_insert(ctx, table, cells);
+        int ok = constraints_apply_row(table, cells) &&
+                 constraints_check_new_row(ctx, table, cells);
+        if (ok) {
+            catalog_insert(ctx, table, cells);
+        }
         for (int c = 0; c < table->column_count && c < MAX_COLUMNS; c++) {
             if (cells[c].type == VAL_STRING) {
                 free(cells[c].as.as_string);
             }
+        }
+        if (!ok) {
+            result_free(res);
+            return 0;
         }
     }
 
@@ -2512,6 +2846,7 @@ static int execute_insert_select(Context* ctx, Table* table, const char* select_
 }
 
 int sql_exec_ddl(const char* query, Context* ctx) {
+    g_sql_ddl_error[0] = '\0';
     DdlStmt stmt;
     if (sql_parse_create_table(query, &stmt)) {
         if (stmt.if_not_exists && catalog_find_table(ctx, stmt.table_name) != NULL) {
@@ -2522,6 +2857,13 @@ int sql_exec_ddl(const char* query, Context* ctx) {
                                         (const char**)stmt.column_names,
                                         stmt.column_types,
                                         stmt.column_count);
+        if (t != NULL) {
+            for (int i = 0; i < stmt.column_count; i++) {
+                t->columns[i].flags = stmt.column_flags[i];
+                t->columns[i].default_value = cell_dup(&stmt.column_defaults[i]);
+            }
+            catalog_write_page(ctx);
+        }
         sql_free_ddl_stmt(&stmt);
         return t != NULL ? 1 : 0;
     }
@@ -2539,12 +2881,24 @@ int sql_exec_ddl(const char* query, Context* ctx) {
         char column_name[MAX_NAME_LEN + 1];
         int action = 0;
         int column_type = 0;
+        int column_flags = 0;
+        Cell column_default;
+        column_default.type = VAL_NULL;
+        column_default.as.as_int = 0;
         if (sql_parse_alter_table(query, table_name, sizeof(table_name),
-                                  &action, column_name, sizeof(column_name), &column_type)) {
+                                  &action, column_name, sizeof(column_name), &column_type,
+                                  &column_flags, &column_default)) {
+            int ok;
             if (action == 1) {
-                return execute_alter_add_column(ctx, table_name, column_name, column_type);
+                ok = execute_alter_add_column(ctx, table_name, column_name, column_type,
+                                              column_flags, &column_default);
+            } else {
+                ok = execute_alter_drop_column(ctx, table_name, column_name);
             }
-            return execute_alter_drop_column(ctx, table_name, column_name);
+            if (column_default.type == VAL_STRING) {
+                free(column_default.as.as_string);
+            }
+            return ok;
         }
     }
 
@@ -2577,6 +2931,11 @@ int sql_exec_ddl(const char* query, Context* ctx) {
             return ok;
         }
         if (t->column_count != stmt.value_count) {
+            sql_free_ddl_stmt(&stmt);
+            return 0;
+        }
+        if (!constraints_apply_row(t, stmt.values) ||
+            !constraints_check_new_row(ctx, t, stmt.values)) {
             sql_free_ddl_stmt(&stmt);
             return 0;
         }
@@ -2773,6 +3132,13 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
         }
     }
 
+    /* Validate the mutated row set before the row chain is rewritten, so a
+       rejected UPDATE leaves the stored data untouched. */
+    if (!constraints_check_row_set(table, rows, row_count)) {
+        free_rows(rows, row_count);
+        return 0;
+    }
+
     free_row_pages(ctx, table);
     indexes_reset(ctx, table);
     for (int i = 0; i < row_count; i++) {
@@ -2893,9 +3259,13 @@ static int sql_parse_drop_table(const char* query, char* table_name, size_t tabl
 /* action: 1 = ADD COLUMN, 2 = DROP COLUMN */
 static int sql_parse_alter_table(const char* query, char* table_name, size_t table_name_size,
                                  int* action, char* column_name, size_t column_name_size,
-                                 int* column_type) {
+                                 int* column_type, int* column_flags, Cell* column_default) {
     SqlLexer lex;
     sql_lexer_init(&lex, query);
+
+    *column_flags = 0;
+    column_default->type = VAL_NULL;
+    column_default->as.as_int = 0;
 
     SqlToken tok = sql_next_token(&lex);
     if (tok.type != TOK_ALTER) return 0;
@@ -2924,6 +3294,14 @@ static int sql_parse_alter_table(const char* query, char* table_name, size_t tab
     if (*action == 1) {
         tok = sql_next_token(&lex);
         if (!sql_parse_type(&tok, column_type)) return 0;
+        if (!sql_parse_column_constraints(&lex, column_flags, column_default)) return 0;
+        if ((*column_flags & COL_FLAG_HAS_DEFAULT) &&
+            column_default->type != VAL_NULL &&
+            column_default->type != *column_type) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "DEFAULT value type does not match type of column '%s'", column_name);
+            return 0;
+        }
     }
 
     tok = sql_next_token(&lex);
@@ -2952,7 +3330,8 @@ static int execute_drop_table(Context* ctx, const char* table_name, int if_exist
 }
 
 static int execute_alter_add_column(Context* ctx, const char* table_name,
-                                    const char* column_name, int column_type) {
+                                    const char* column_name, int column_type,
+                                    int column_flags, const Cell* column_default) {
     Table* table = catalog_find_table(ctx, table_name);
     if (table == NULL) return 0;
     if (table->column_count >= MAX_COLUMNS) return 0;
@@ -2964,6 +3343,28 @@ static int execute_alter_add_column(Context* ctx, const char* table_name,
     Row* rows = NULL;
     int row_count = 0;
     if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
+
+    /* Old rows are backfilled with the DEFAULT literal, or NULL when the new
+       column has no DEFAULT. Reject combinations that would violate the new
+       column's own constraints. */
+    int has_default = (column_flags & COL_FLAG_HAS_DEFAULT) != 0;
+    if (row_count > 0 && !has_default &&
+        (column_flags & (COL_FLAG_NOT_NULL | COL_FLAG_PRIMARY_KEY))) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "%s constraint violated: %s.%s",
+                 constraint_label(column_flags), table_name, column_name);
+        free_rows(rows, row_count);
+        return 0;
+    }
+    if (row_count > 1 && has_default && column_default->type != VAL_NULL &&
+        (column_flags & (COL_FLAG_UNIQUE | COL_FLAG_PRIMARY_KEY))) {
+        /* Every old row would be backfilled with the same value. */
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "%s constraint violated: %s.%s",
+                 constraint_label(column_flags), table_name, column_name);
+        free_rows(rows, row_count);
+        return 0;
+    }
 
     Column* new_columns = realloc(table->columns,
                                   sizeof(Column) * (size_t)(table->column_count + 1));
@@ -2979,9 +3380,16 @@ static int execute_alter_add_column(Context* ctx, const char* table_name,
     }
     table->columns[table->column_count].name = name_copy;
     table->columns[table->column_count].type = column_type;
+    table->columns[table->column_count].flags = column_flags;
+    if (has_default) {
+        table->columns[table->column_count].default_value = cell_dup((Cell*)column_default);
+    } else {
+        table->columns[table->column_count].default_value.type = VAL_NULL;
+        table->columns[table->column_count].default_value.as.as_int = 0;
+    }
     table->column_count++;
 
-    /* Rebuild the row chain; pre-existing rows get NULL for the new column. */
+    /* Rebuild the row chain; pre-existing rows get the DEFAULT (or NULL). */
     free_row_pages(ctx, table);
     indexes_reset(ctx, table);
     for (int i = 0; i < row_count; i++) {
@@ -2989,9 +3397,17 @@ static int execute_alter_add_column(Context* ctx, const char* table_name,
         for (int j = 0; j < rows[i].field_count; j++) {
             cells[j] = rows[i].fields[j].value;
         }
-        cells[table->column_count - 1].type = VAL_NULL;
-        cells[table->column_count - 1].as.as_int = 0;
+        int last = table->column_count - 1;
+        if (has_default) {
+            cells[last] = cell_dup((Cell*)column_default);
+        } else {
+            cells[last].type = VAL_NULL;
+            cells[last].as.as_int = 0;
+        }
         catalog_insert(ctx, table, cells);
+        if (cells[last].type == VAL_STRING) {
+            free(cells[last].as.as_string);
+        }
     }
     free_rows(rows, row_count);
 
@@ -3031,13 +3447,15 @@ static int execute_alter_drop_column(Context* ctx, const char* table_name,
         new_columns[k].name = strdup(table->columns[i].name);
         if (new_columns[k].name == NULL) {
             for (int j = 0; j < k; j++) {
-                free(new_columns[j].name);
+                free_column(&new_columns[j]);
             }
             free(new_columns);
             free_rows(rows, row_count);
             return 0;
         }
         new_columns[k].type = table->columns[i].type;
+        new_columns[k].flags = table->columns[i].flags;
+        new_columns[k].default_value = cell_dup(&table->columns[i].default_value);
         k++;
     }
 
@@ -3053,7 +3471,7 @@ static int execute_alter_drop_column(Context* ctx, const char* table_name,
     free_row_pages(ctx, table);
     indexes_reset(ctx, table);
     for (int i = 0; i < table->column_count; i++) {
-        free(table->columns[i].name);
+        free_column(&table->columns[i]);
     }
     free(table->columns);
     table->columns = new_columns;
@@ -3463,8 +3881,13 @@ static int custom_exec(DBDriver* driver, const char* sql, Value* params, int par
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
     int row_count = sql_exec_ddl(sql, &impl->ctx);
     if (!row_count) {
-        snprintf(driver->error_message, sizeof(driver->error_message),
-                 "custom engine: could not execute '%s'", sql);
+        if (g_sql_ddl_error[0] != '\0') {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "%s", g_sql_ddl_error);
+        } else {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "custom engine: could not execute '%s'", sql);
+        }
         return -1;
     }
     driver->error_message[0] = '\0';
