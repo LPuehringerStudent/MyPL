@@ -1,11 +1,10 @@
 # MyPL — Next Steps
 
-This document tracks the remaining roadmap for MyPL. Phases 1–10 are complete (see git history and the closed issues #1–#16 for details). The phases below address the known gaps that remain after Phase 10.
+This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete (see git history and the closed issues #1–#22 for details). The phases below address the known gaps that remain after Phase 11.
 
-## Known Gaps (as of Phase 10 completion)
+## Known Gaps (as of Phase 11 completion)
 
-- The custom SQL engine has no indexes (`src/btree.c` is a stub), no `DROP TABLE`/`ALTER TABLE`, single-condition `WHERE`, three column types, and no views or constraints.
-- There is no NULL semantics anywhere (`VAL_NULL` does not exist; SQLite NULLs map to `0`).
+- The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
 - Phase 9/10 features are first cuts: statement-level triggers on static SQL only, session-only sequences, simplified `dbms_sql`/`utl_file`, single-signature FFI, line-flag-only conditional compilation.
 - Fixed ceilings everywhere (`STACK_MAX`, `MAX_LOCALS`, handle counts), full-recompile REPL, no package init for imported modules, non-overridable built-in packages, ref-count-only GC.
 - No fuzzing, examples not covered by CI, no install target, README lags the feature set, POSIX-only.
@@ -13,12 +12,12 @@ This document tracks the remaining roadmap for MyPL. Phases 1–10 are complete 
 ## Phased Roadmap
 
 ### Phase 11 — SQL Engine Depth
-- [ ] NULL semantics: `VAL_NULL`, `IS NULL` / `IS NOT NULL`, three-valued logic in `WHERE`, `COALESCE`/`NVL` natives, correct NULL mapping in both drivers
-- [ ] `DROP TABLE` and `ALTER TABLE` (`ADD COLUMN`, `DROP COLUMN`)
-- [ ] Rich `WHERE` for SELECT/UPDATE/DELETE: `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`
-- [ ] Real B-tree storage in `src/btree.c` plus `CREATE INDEX` / `DROP INDEX` and index-assisted lookups
-- [ ] Column constraints: `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `DEFAULT`
-- [ ] `CREATE VIEW` / `DROP VIEW` with view resolution in SELECT
+- [x] NULL semantics: `VAL_NULL`, `IS NULL` / `IS NOT NULL`, three-valued logic in `WHERE`, `COALESCE`/`NVL` natives, correct NULL mapping in both drivers
+- [x] `DROP TABLE` and `ALTER TABLE` (`ADD COLUMN`, `DROP COLUMN`)
+- [x] Rich `WHERE` for SELECT/UPDATE/DELETE: `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`
+- [x] Real B-tree storage in `src/btree.c` plus `CREATE INDEX` / `DROP INDEX` and index-assisted lookups
+- [x] Column constraints: `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `DEFAULT`
+- [x] `CREATE VIEW` / `DROP VIEW` with view resolution in SELECT
 
 ### Phase 12 — Persistence & Runtime Completeness
 - [ ] Persist sequences in the database catalog (survive process restarts)

@@ -79,6 +79,11 @@ Table* catalog_create_table(Context* ctx, const char* name, const char** columns
 Table* catalog_find_table(Context* ctx, const char* name);
 void   catalog_insert(Context* ctx, Table* table, Cell* cells);
 
+/* Views (catalog format V4): a view stores a SELECT text and acts as a
+   read-only row source. Returns the stored SELECT, or NULL when no view
+   with that name exists. */
+const char* catalog_view_query(Context* ctx, const char* name);
+
 /* Catalog introspection */
 int         catalog_table_count(Context* ctx);
 const char* catalog_table_name(Context* ctx, int index);

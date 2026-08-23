@@ -1,0 +1,61 @@
+/* Phase 11 capabilities demo: CREATE VIEW / DROP VIEW in the custom SQL
+ * engine.
+ *
+ * - CREATE VIEW name AS SELECT ...   stores the SELECT text in the catalog
+ * - SELECT ... FROM view             runs the stored SELECT and applies the
+ *                                    outer WHERE / ORDER BY / LIMIT on top
+ * - DROP VIEW name [IF EXISTS]       removes the definition
+ * Views are read-only (INSERT/UPDATE/DELETE on a view is a runtime error)
+ * and persist in the database catalog across process restarts.
+ */
+
+proc main() -> int {
+    print "=== create view ===";
+    drop view if exists big_orders;
+    drop table if exists orders;
+    create table orders (id int, customer string, total int);
+    insert into orders values (1, "alice", 10);
+    insert into orders values (2, "bob", 20);
+    insert into orders values (3, "carol", 30);
+    insert into orders values (4, "dan", 40);
+
+    create view big_orders as select id, customer, total from orders where total >= 20;
+
+    int n = -1;
+    select count(*) into n from big_orders;
+    print n;              /* 3 (the view's own WHERE filtered out order 1) */
+
+    print "=== outer where/order/limit over a view ===";
+    int top = -1;
+    select id into top from big_orders where total > 15 order by total desc limit 1;
+    print top;            /* 4 */
+
+    string cust = "?";
+    select customer into cust from big_orders where id = 2;
+    print cust;           /* bob */
+    select customer into cust from big_orders where total = 30;
+    print cust;           /* carol */
+
+    /* Note: `for row in select ... from <view>` also works once the view
+       exists in the catalog (e.g. in a later run) — the typechecker resolves
+       row fields through the view definition. */
+
+    print "=== view over a view ===";
+    drop view if exists huge_orders;
+    create view huge_orders as select id, total from big_orders where total >= 30;
+    int m = -1;
+    select count(*) into m from huge_orders;
+    print m;              /* 2 */
+
+    print "=== drop view ===";
+    drop view huge_orders;
+    drop view big_orders;
+    drop table orders;
+
+    /* Errors, not exercised here:
+     *   insert into big_orders values (5, "eve", 50);  -- cannot insert into view
+     *   drop table big_orders;                         -- 'big_orders' is a view
+     */
+
+    return 0;
+}

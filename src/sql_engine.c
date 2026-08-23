@@ -13,10 +13,21 @@
 
 #define MAX_CATALOG_TABLES 64
 #define MAX_TABLE_INDEXES 8
+#define MAX_CATALOG_VIEWS 16
+/* Stored view SELECT text is capped so several views fit the catalog page. */
+#define MAX_VIEW_QUERY_LEN 768
 
 static Table* g_catalog[MAX_CATALOG_TABLES];
 static int    g_catalog_count = 0;
 static int    g_catalog_page  = -1;
+
+typedef struct {
+    char* name;
+    char* select_query;
+} ViewDef;
+
+static ViewDef g_views[MAX_CATALOG_VIEWS];
+static int     g_view_count = 0;
 
 static void free_column(Column* col) {
     free(col->name);
@@ -48,6 +59,13 @@ void catalog_clear(Context* ctx) {
     }
     g_catalog_count = 0;
     g_catalog_page = -1;
+    for (int i = 0; i < g_view_count; i++) {
+        free(g_views[i].name);
+        free(g_views[i].select_query);
+        g_views[i].name = NULL;
+        g_views[i].select_query = NULL;
+    }
+    g_view_count = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -57,11 +75,14 @@ void catalog_clear(Context* ctx) {
 /* Catalog page formats. V1 (legacy): u32 table_count followed by per-table
    records with no index data. V2: magic marker, then table_count, then
    per-table records each carrying their index list. V3: like V2, plus
-   per-column constraint flags and an optional DEFAULT literal. V1/V2 files
-   still load — they simply have no indexes and/or no constraints; the page
-   is rewritten as V3 on the next save. */
+   per-column constraint flags and an optional DEFAULT literal. V4: like V3,
+   plus a view section after the table records (u8 view_count, then per view
+   a u8 name + u16 SELECT text). V1–V3 files still load — they simply have
+   no indexes and/or no constraints and/or no views; the page is rewritten
+   as V4 on the next save. */
 #define CATALOG_MAGIC_V2 0x4D594932u /* "MYI2" */
 #define CATALOG_MAGIC_V3 0x4D594333u /* "MYC3" */
+#define CATALOG_MAGIC_V4 0x4D595634u /* "MYV4" */
 
 /* Reads a serialized cell (type tag + payload) from the catalog page. */
 static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
@@ -197,6 +218,10 @@ static int catalog_read_page(Context* ctx) {
         catalog_version = 3;
         memcpy(&table_count, page + offset, sizeof(table_count));
         offset += 4;
+    } else if (table_count == CATALOG_MAGIC_V4) {
+        catalog_version = 4;
+        memcpy(&table_count, page + offset, sizeof(table_count));
+        offset += 4;
     }
 
     for (uint32_t t = 0; t < table_count && g_catalog_count < MAX_CATALOG_TABLES; t++) {
@@ -260,6 +285,41 @@ static int catalog_read_page(Context* ctx) {
         g_catalog[g_catalog_count++] = table;
     }
 
+    /* V4 appends the view section after the table records. */
+    if (catalog_version >= 4 && offset < PAGE_SIZE) {
+        uint8_t view_count = page[offset++];
+        if (view_count > MAX_CATALOG_VIEWS) view_count = MAX_CATALOG_VIEWS;
+        for (int i = 0; i < (int)view_count; i++) {
+            uint8_t name_len = page[offset++];
+            if (offset + name_len + 2 > PAGE_SIZE) return 0;
+            char* name = malloc((size_t)name_len + 1);
+            if (name == NULL) return 0;
+            memcpy(name, page + offset, name_len);
+            name[name_len] = '\0';
+            offset += name_len;
+
+            uint16_t query_len = 0;
+            memcpy(&query_len, page + offset, sizeof(query_len));
+            offset += 2;
+            if (offset + (int)query_len > PAGE_SIZE) {
+                free(name);
+                return 0;
+            }
+            char* select_query = malloc((size_t)query_len + 1);
+            if (select_query == NULL) {
+                free(name);
+                return 0;
+            }
+            memcpy(select_query, page + offset, query_len);
+            select_query[query_len] = '\0';
+            offset += (int)query_len;
+
+            g_views[g_view_count].name = name;
+            g_views[g_view_count].select_query = select_query;
+            g_view_count++;
+        }
+    }
+
     return 1;
 }
 
@@ -272,7 +332,7 @@ static int catalog_write_page(Context* ctx) {
     memset(page, 0, PAGE_SIZE);
 
     int offset = 0;
-    uint32_t magic = CATALOG_MAGIC_V3;
+    uint32_t magic = CATALOG_MAGIC_V4;
     memcpy(page + offset, &magic, sizeof(magic));
     offset += 4;
     uint32_t table_count = (uint32_t)g_catalog_count;
@@ -332,6 +392,30 @@ static int catalog_write_page(Context* ctx) {
             offset += 4;
         }
     }
+
+    /* V4 appends the view section after the table records: u8 view_count,
+       then per view a u8 name length + name and a u16 length + SELECT text.
+       Unlike index metadata, view definitions are user data — if they do not
+       fit the page the write fails (without touching the page) so the caller
+       can roll back instead of silently losing definitions. */
+    if (offset + 1 > PAGE_SIZE) return 0;
+    int view_count_pos = offset++;
+    for (int i = 0; i < g_view_count; i++) {
+        size_t view_name_len = strlen(g_views[i].name);
+        size_t view_query_len = strlen(g_views[i].select_query);
+        if (offset + 3 + (int)view_name_len + (int)view_query_len > PAGE_SIZE) {
+            return 0;
+        }
+        page[offset++] = (uint8_t)view_name_len;
+        memcpy(page + offset, g_views[i].name, view_name_len);
+        offset += (int)view_name_len;
+        uint16_t view_query_len16 = (uint16_t)view_query_len;
+        memcpy(page + offset, &view_query_len16, sizeof(view_query_len16));
+        offset += 2;
+        memcpy(page + offset, g_views[i].select_query, view_query_len);
+        offset += (int)view_query_len;
+    }
+    page[view_count_pos] = (uint8_t)g_view_count;
 
     pager_write_page(pager, g_catalog_page, page);
     return 1;
@@ -395,6 +479,17 @@ Table* catalog_find_table(Context* ctx, const char* name) {
     for (int i = 0; i < g_catalog_count; i++) {
         if (g_catalog[i] != NULL && strcmp(g_catalog[i]->name, name) == 0) {
             return g_catalog[i];
+        }
+    }
+    return NULL;
+}
+
+const char* catalog_view_query(Context* ctx, const char* name) {
+    (void)ctx;
+    if (name == NULL) return NULL;
+    for (int i = 0; i < g_view_count; i++) {
+        if (g_views[i].name != NULL && strcmp(g_views[i].name, name) == 0) {
+            return g_views[i].select_query;
         }
     }
     return NULL;
@@ -817,7 +912,9 @@ typedef enum {
     TOK_PRIMARY,
     TOK_KEY,
     TOK_UNIQUE,
-    TOK_DEFAULT
+    TOK_DEFAULT,
+    TOK_VIEW,
+    TOK_AS
 } SqlTokenType;
 
 typedef struct {
@@ -905,6 +1002,8 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 3 && strncasecmp(start, "KEY", 3) == 0) return TOK_KEY;
     if (length == 6 && strncasecmp(start, "UNIQUE", 6) == 0) return TOK_UNIQUE;
     if (length == 7 && strncasecmp(start, "DEFAULT", 7) == 0) return TOK_DEFAULT;
+    if (length == 4 && strncasecmp(start, "VIEW", 4) == 0) return TOK_VIEW;
+    if (length == 2 && strncasecmp(start, "AS", 2) == 0) return TOK_AS;
     return TOK_IDENT;
 }
 
@@ -2258,6 +2357,21 @@ static int try_index_lookup(Context* ctx, Table* table, WhereNode* where,
     return 0;
 }
 
+/* A FROM source is usable when it names an existing table or view. A view
+   definition is only valid when its sources exist: the main source may be a
+   table or another view; JOIN targets must be tables (views in JOINs are not
+   resolved). */
+static int view_source_exists(Context* ctx, SelectStmt* stmt) {
+    if (catalog_find_table(ctx, stmt->table_name) == NULL &&
+        catalog_view_query(ctx, stmt->table_name) == NULL) {
+        return 0;
+    }
+    if (stmt->has_join && catalog_find_table(ctx, stmt->join_table_name) == NULL) {
+        return 0;
+    }
+    return 1;
+}
+
 static Result* execute_select(Context* ctx, SelectStmt* stmt) {
     Row* source_rows = NULL;
     int source_count = 0;
@@ -2333,12 +2447,42 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
         free_rows(right_rows, right_count);
     } else {
         Table* table = catalog_find_table(ctx, stmt->table_name);
-        if (table == NULL) {
-            return result_create(0);
-        }
-        if (!try_index_lookup(ctx, table, stmt->where, &source_rows, &source_count) &&
-            !read_all_rows(ctx, table, &source_rows, &source_count)) {
-            return result_create(0);
+        if (table != NULL) {
+            if (!try_index_lookup(ctx, table, stmt->where, &source_rows, &source_count) &&
+                !read_all_rows(ctx, table, &source_rows, &source_count)) {
+                return result_create(0);
+            }
+        } else {
+            /* View resolution: a view is materialized by executing its stored
+               SELECT recursively (so views over views work) and using the
+               result rows as a read-only source set. The outer WHERE/ORDER
+               BY/LIMIT then run over those rows, composing with the view's
+               own clauses. */
+            const char* view_query = catalog_view_query(ctx, stmt->table_name);
+            if (view_query == NULL) {
+                return result_create(0);
+            }
+            SelectStmt view_stmt;
+            if (!sql_parse_select(view_query, &view_stmt)) {
+                sql_free_select_stmt(&view_stmt);
+                return NULL;
+            }
+            if (!view_source_exists(ctx, &view_stmt)) {
+                /* e.g. the base table was dropped after CREATE VIEW */
+                sql_free_select_stmt(&view_stmt);
+                return NULL;
+            }
+            Result* inner = execute_select(ctx, &view_stmt);
+            sql_free_select_stmt(&view_stmt);
+            if (inner == NULL) {
+                return NULL;
+            }
+            /* Steal the inner row array; it is freed via free_rows below. */
+            source_rows = inner->rows;
+            source_count = inner->row_count;
+            inner->rows = NULL;
+            inner->row_count = 0;
+            free(inner);
         }
     }
 
@@ -2679,6 +2823,13 @@ static int execute_update(Context* ctx, UpdateStmt* stmt);
 static int execute_delete(Context* ctx, DeleteStmt* stmt);
 static int sql_parse_drop_table(const char* query, char* table_name, size_t table_name_size,
                                 int* if_exists);
+static int sql_parse_create_view(const char* query, char* view_name, size_t view_name_size,
+                                 const char** select_text, int* select_len);
+static int sql_parse_drop_view(const char* query, char* view_name, size_t view_name_size,
+                               int* if_exists);
+static int execute_create_view(Context* ctx, const char* view_name,
+                               const char* select_text, int select_len);
+static int execute_drop_view(Context* ctx, const char* view_name, int if_exists);
 static int sql_parse_alter_table(const char* query, char* table_name, size_t table_name_size,
                                  int* action, char* column_name, size_t column_name_size,
                                  int* column_type, int* column_flags, Cell* column_default);
@@ -2919,9 +3070,28 @@ int sql_exec_ddl(const char* query, Context* ctx) {
         }
     }
 
+    {
+        char view_name[MAX_NAME_LEN + 1];
+        const char* select_text = NULL;
+        int select_len = 0;
+        if (sql_parse_create_view(query, view_name, sizeof(view_name),
+                                  &select_text, &select_len)) {
+            return execute_create_view(ctx, view_name, select_text, select_len);
+        }
+        int if_exists = 0;
+        if (sql_parse_drop_view(query, view_name, sizeof(view_name), &if_exists)) {
+            return execute_drop_view(ctx, view_name, if_exists);
+        }
+    }
+
     if (sql_parse_insert(query, &stmt)) {
         Table* t = catalog_find_table(ctx, stmt.table_name);
         if (t == NULL) {
+            if (catalog_view_query(ctx, stmt.table_name) != NULL) {
+                snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                         "cannot insert into view '%.200s' (views are read-only)",
+                         stmt.table_name);
+            }
             sql_free_ddl_stmt(&stmt);
             return 0;
         }
@@ -3085,7 +3255,13 @@ static void free_row_pages(Context* ctx, Table* table) {
 
 static int execute_update(Context* ctx, UpdateStmt* stmt) {
     Table* table = catalog_find_table(ctx, stmt->table_name);
-    if (table == NULL) return 0;
+    if (table == NULL) {
+        if (catalog_view_query(ctx, stmt->table_name) != NULL) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "cannot update view '%.200s' (views are read-only)", stmt->table_name);
+        }
+        return 0;
+    }
 
     Row* rows = NULL;
     int row_count = 0;
@@ -3180,7 +3356,13 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
 
 static int execute_delete(Context* ctx, DeleteStmt* stmt) {
     Table* table = catalog_find_table(ctx, stmt->table_name);
-    if (table == NULL) return 0;
+    if (table == NULL) {
+        if (catalog_view_query(ctx, stmt->table_name) != NULL) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "cannot delete from view '%.200s' (views are read-only)", stmt->table_name);
+        }
+        return 0;
+    }
 
     Row* rows = NULL;
     int row_count = 0;
@@ -3326,7 +3508,163 @@ static int execute_drop_table(Context* ctx, const char* table_name, int if_exist
             return 1;
         }
     }
+    if (catalog_view_query(ctx, table_name) != NULL) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "'%.200s' is a view, not a table (use DROP VIEW)", table_name);
+        return 0;
+    }
     return if_exists;
+}
+
+/* -------------------------------------------------------------------------- */
+/* CREATE VIEW / DROP VIEW                                                    */
+/*                                                                            */
+/* A view stores its SELECT text (trimmed, verbatim) in the V4 catalog. At    */
+/* query time the stored SELECT is executed recursively and its rows become   */
+/* a read-only source set (see execute_select). Views are validated at        */
+/* CREATE time: the SELECT must parse and its FROM sources must exist.        */
+/* -------------------------------------------------------------------------- */
+
+/* Parses "CREATE VIEW <name> AS <select text>". On success *select_text
+   points into query (not a copy) and *select_len is its trimmed length. */
+static int sql_parse_create_view(const char* query, char* view_name, size_t view_name_size,
+                                 const char** select_text, int* select_len) {
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_CREATE) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_VIEW) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, view_name, view_name_size);
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_AS) return 0;
+
+    /* The SELECT text is the remainder of the statement, trimmed. */
+    const char* start = lex.current;
+    while (*start != '\0' && isspace((unsigned char)*start)) start++;
+    const char* end = start + strlen(start);
+    while (end > start && isspace((unsigned char)end[-1])) end--;
+    if (end == start) return 0;
+    *select_text = start;
+    *select_len = (int)(end - start);
+    return 1;
+}
+
+static int sql_parse_drop_view(const char* query, char* view_name, size_t view_name_size,
+                               int* if_exists) {
+    SqlLexer lex;
+    sql_lexer_init(&lex, query);
+
+    SqlToken tok = sql_next_token(&lex);
+    if (tok.type != TOK_DROP) return 0;
+    tok = sql_next_token(&lex);
+    if (tok.type != TOK_VIEW) return 0;
+
+    *if_exists = 0;
+    tok = sql_next_token(&lex);
+    if (tok.type == TOK_IF) {
+        tok = sql_next_token(&lex);
+        if (tok.type != TOK_EXISTS) return 0;
+        *if_exists = 1;
+        tok = sql_next_token(&lex);
+    }
+    if (tok.type != TOK_IDENT) return 0;
+    sql_token_text(&tok, view_name, view_name_size);
+
+    tok = sql_next_token(&lex);
+    return tok.type == TOK_EOF;
+}
+
+static int execute_create_view(Context* ctx, const char* view_name,
+                               const char* select_text, int select_len) {
+    if (catalog_find_table(ctx, view_name) != NULL) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "cannot create view '%.200s': a table with that name exists", view_name);
+        return 0;
+    }
+    if (catalog_view_query(ctx, view_name) != NULL) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "view '%.200s' already exists", view_name);
+        return 0;
+    }
+    if (g_view_count >= MAX_CATALOG_VIEWS) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "too many views (max %d)", MAX_CATALOG_VIEWS);
+        return 0;
+    }
+    if (select_len > MAX_VIEW_QUERY_LEN) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "view '%.200s' query too long (max %d bytes)", view_name, MAX_VIEW_QUERY_LEN);
+        return 0;
+    }
+
+    char* query_copy = malloc((size_t)select_len + 1);
+    if (query_copy == NULL) return 0;
+    memcpy(query_copy, select_text, (size_t)select_len);
+    query_copy[select_len] = '\0';
+
+    /* Validate the definition: it must parse as a SELECT whose FROM sources
+       name existing tables or views. */
+    SelectStmt stmt;
+    int valid = sql_parse_select(query_copy, &stmt) && view_source_exists(ctx, &stmt);
+    sql_free_select_stmt(&stmt);
+    if (!valid) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "view '%.180s' has an invalid SELECT (unknown base table or view)",
+                 view_name);
+        free(query_copy);
+        return 0;
+    }
+
+    g_views[g_view_count].name = strdup(view_name);
+    if (g_views[g_view_count].name == NULL) {
+        free(query_copy);
+        return 0;
+    }
+    g_views[g_view_count].select_query = query_copy;
+    g_view_count++;
+
+    if (!catalog_write_page(ctx)) {
+        /* The catalog page is full: roll back so memory and disk agree. */
+        g_view_count--;
+        free(g_views[g_view_count].name);
+        free(g_views[g_view_count].select_query);
+        g_views[g_view_count].name = NULL;
+        g_views[g_view_count].select_query = NULL;
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "catalog page full: cannot persist view '%.200s'", view_name);
+        return 0;
+    }
+    return 1;
+}
+
+static int execute_drop_view(Context* ctx, const char* view_name, int if_exists) {
+    for (int i = 0; i < g_view_count; i++) {
+        if (g_views[i].name != NULL && strcmp(g_views[i].name, view_name) == 0) {
+            free(g_views[i].name);
+            free(g_views[i].select_query);
+            for (int j = i + 1; j < g_view_count; j++) {
+                g_views[j - 1] = g_views[j];
+            }
+            g_view_count--;
+            g_views[g_view_count].name = NULL;
+            g_views[g_view_count].select_query = NULL;
+            catalog_write_page(ctx);
+            return 1;
+        }
+    }
+    if (catalog_find_table(ctx, view_name) != NULL) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "'%.200s' is a table, not a view (use DROP TABLE)", view_name);
+        return 0;
+    }
+    if (if_exists) return 1;
+    snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+             "view '%.200s' does not exist", view_name);
+    return 0;
 }
 
 static int execute_alter_add_column(Context* ctx, const char* table_name,
@@ -3704,6 +4042,61 @@ static int starts_with_ci(const char* p, const char* word) {
     return 1;
 }
 
+/* Resolves the type of a column exposed by a view definition, recursing into
+   nested views (views may be defined over other views). The depth bound is a
+   safety net; the catalog cannot contain reference cycles because a view's
+   sources must exist when it is created. */
+static int view_column_type(Context* ctx, const char* view_query,
+                            const char* column_name, int* out_type, int depth) {
+    if (depth > MAX_CATALOG_VIEWS) return 0;
+
+    SelectStmt stmt;
+    if (!sql_parse_select(view_query, &stmt)) {
+        sql_free_select_stmt(&stmt);
+        return 0;
+    }
+
+    int star = stmt.column_count == 0;
+    int col_index = -1;
+    for (int i = 0; i < stmt.column_count; i++) {
+        if (stmt.column_table_prefix[i][0] == '\0' &&
+            strcasecmp(stmt.column_names[i], column_name) == 0) {
+            col_index = i;
+            break;
+        }
+    }
+    if (!star && col_index < 0) {
+        sql_free_select_stmt(&stmt);
+        return 0;
+    }
+
+    int result = 0;
+    Table* table = catalog_find_table(ctx, stmt.table_name);
+    if (table != NULL) {
+        if (col_index >= 0 && stmt.column_aggregates[col_index] != AGG_NONE) {
+            /* Aggregate output: COUNT is an int, the rest are numeric. */
+            *out_type = stmt.column_aggregates[col_index] == AGG_COUNT ? VAL_INT : VAL_FLOAT;
+            result = 1;
+        } else {
+            for (int c = 0; c < table->column_count; c++) {
+                if (strcasecmp(table->columns[c].name, column_name) == 0) {
+                    *out_type = table->columns[c].type;
+                    result = 1;
+                    break;
+                }
+            }
+        }
+    } else {
+        const char* inner = catalog_view_query(ctx, stmt.table_name);
+        if (inner != NULL) {
+            result = view_column_type(ctx, inner, column_name, out_type, depth + 1);
+        }
+    }
+
+    sql_free_select_stmt(&stmt);
+    return result;
+}
+
 int sql_query_column_type(Context* ctx, const char* query, const char* column_name, int* out_type) {
     if (ctx == NULL || query == NULL || column_name == NULL || out_type == NULL) return 0;
 
@@ -3768,7 +4161,14 @@ int sql_query_column_type(Context* ctx, const char* query, const char* column_na
     if (table_name[0] == '\0') return 0;
 
     Table* table = catalog_find_table(ctx, table_name);
-    if (table == NULL) return 0;
+    if (table == NULL) {
+        /* The FROM clause may name a view: resolve the column through the
+           view's stored SELECT (views may nest). */
+        const char* view_query = catalog_view_query(ctx, table_name);
+        if (view_query == NULL) return 0;
+        if (!has_star && !selected) return 0;
+        return view_column_type(ctx, view_query, column_name, out_type, 0);
+    }
     if (!has_star && !selected) return 0;
 
     for (int c = 0; c < table->column_count; c++) {
