@@ -1,0 +1,24 @@
+// Phase 12: persistent sequences.
+//
+// Sequences created with create_sequence are stored in the database catalog
+// (custom engine: V5 catalog page; SQLite: _mypl_sequences table), so they
+// survive process restarts — running this example twice continues the
+// sequence instead of starting over.
+proc main() -> int {
+    // create_sequence on an existing (persisted) name throws, so tolerate
+    // re-runs: the sequence from the previous run is reused.
+    try {
+        create_sequence("order_seq", 1000, 10);
+    } catch (err) {
+        print "reusing persisted sequence";
+    }
+
+    print nextval("order_seq");
+    print nextval("order_seq");
+    print currval("order_seq");
+
+    // Run the example again: nextval continues at 1030, 1040, ... To start
+    // fresh, drop the sequence (drop_sequence persists too):
+    //   drop_sequence("order_seq");
+    return 0;
+}

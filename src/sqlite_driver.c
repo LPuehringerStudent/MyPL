@@ -334,6 +334,108 @@ static int sqlite_release_savepoint(DBDriver* driver, const char* name) {
     return sqlite_exec(driver, sql, NULL, 0) >= 0 ? 1 : 0;
 }
 
+/* Sequences persist in a plain table, mirroring _mypl_packages. */
+static const char* SEQUENCES_TABLE_SQL =
+    "CREATE TABLE IF NOT EXISTS _mypl_sequences ("
+    "    name TEXT PRIMARY KEY,"
+    "    has_value INTEGER NOT NULL,"
+    "    current INTEGER NOT NULL,"
+    "    increment INTEGER NOT NULL"
+    ")";
+
+static int sqlite_sequence_ensure_table(DBDriver* driver) {
+    SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
+    char* err = NULL;
+    if (sqlite3_exec(impl->db, SEQUENCES_TABLE_SQL, NULL, NULL, &err) != SQLITE_OK) {
+        if (err != NULL) {
+            snprintf(driver->error_message, sizeof(driver->error_message), "%s", err);
+            sqlite3_free(err);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int sqlite_sequence_load(DBDriver* driver, DBSequence* out, int max, int* out_count) {
+    SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
+    if (out == NULL || out_count == NULL) return 0;
+    *out_count = 0;
+    if (!sqlite_sequence_ensure_table(driver)) return 0;
+    sqlite3_stmt* stmt = NULL;
+    if (sqlite3_prepare_v2(impl->db,
+                           "SELECT name, has_value, current, increment FROM _mypl_sequences",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    int count = 0;
+    while (count < max && sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* name = (const char*)sqlite3_column_text(stmt, 0);
+        snprintf(out[count].name, sizeof(out[count].name), "%s", name != NULL ? name : "");
+        out[count].has_value = sqlite3_column_int(stmt, 1);
+        out[count].current = sqlite3_column_int(stmt, 2);
+        out[count].increment = sqlite3_column_int(stmt, 3);
+        count++;
+    }
+    sqlite3_finalize(stmt);
+    *out_count = count;
+    driver->error_message[0] = '\0';
+    return 1;
+}
+
+static int sqlite_sequence_save(DBDriver* driver, const DBSequence* seq) {
+    SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
+    if (seq == NULL) return 0;
+    if (!sqlite_sequence_ensure_table(driver)) return 0;
+    sqlite3_stmt* stmt = NULL;
+    const char* sql =
+        "INSERT INTO _mypl_sequences (name, has_value, current, increment) "
+        "VALUES (?1, ?2, ?3, ?4) "
+        "ON CONFLICT(name) DO UPDATE SET has_value = ?2, current = ?3, increment = ?4";
+    if (sqlite3_prepare_v2(impl->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    sqlite3_bind_text(stmt, 1, seq->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, seq->has_value);
+    sqlite3_bind_int(stmt, 3, seq->current);
+    sqlite3_bind_int(stmt, 4, seq->increment);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    driver->error_message[0] = '\0';
+    return 1;
+}
+
+static int sqlite_sequence_drop(DBDriver* driver, const char* name) {
+    SQLiteImpl* impl = (SQLiteImpl*)driver->impl;
+    if (name == NULL) return 0;
+    if (!sqlite_sequence_ensure_table(driver)) return 0;
+    sqlite3_stmt* stmt = NULL;
+    if (sqlite3_prepare_v2(impl->db, "DELETE FROM _mypl_sequences WHERE name = ?1",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(impl->db));
+        return 0;
+    }
+    driver->error_message[0] = '\0';
+    return 1;
+}
+
 void sqlite_driver_init(DBDriver* driver) {
     driver->impl = NULL;
     driver->is_sqlite = 1;
@@ -355,4 +457,7 @@ void sqlite_driver_init(DBDriver* driver) {
     driver->savepoint = sqlite_savepoint;
     driver->rollback_to_savepoint = sqlite_rollback_to_savepoint;
     driver->release_savepoint = sqlite_release_savepoint;
+    driver->sequence_load = sqlite_sequence_load;
+    driver->sequence_save = sqlite_sequence_save;
+    driver->sequence_drop = sqlite_sequence_drop;
 }

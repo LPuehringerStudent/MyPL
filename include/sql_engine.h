@@ -84,6 +84,25 @@ void   catalog_insert(Context* ctx, Table* table, Cell* cells);
    with that name exists. */
 const char* catalog_view_query(Context* ctx, const char* name);
 
+/* Sequences (catalog format V5). A sequence persists its name, increment,
+   last-issued value, and whether a value was ever issued (has_value). */
+#define DB_SEQUENCE_NAME_MAX 64
+
+typedef struct {
+    char name[DB_SEQUENCE_NAME_MAX];
+    int  has_value;
+    int  current;
+    int  increment;
+} DBSequence;
+
+/* Copies up to `max` catalog sequences into `out`; returns the count. */
+int catalog_sequence_list(Context* ctx, DBSequence* out, int max);
+/* Creates or updates a sequence and rewrites the catalog page. Returns 0
+   (and sets the DDL error) when the catalog page would overflow; the
+   in-memory state is left unchanged in that case. */
+int catalog_sequence_save(Context* ctx, const DBSequence* seq);
+int catalog_sequence_drop(Context* ctx, const char* name);
+
 /* Catalog introspection */
 int         catalog_table_count(Context* ctx);
 const char* catalog_table_name(Context* ctx, int index);
@@ -129,6 +148,12 @@ struct DBDriver {
     int (*savepoint)(DBDriver* driver, const char* name);
     int (*rollback_to_savepoint)(DBDriver* driver, const char* name);
     int (*release_savepoint)(DBDriver* driver, const char* name);
+    /* Sequence persistence. Loads copy every stored sequence into `out`
+       (up to `max`) and set *out_count. save creates or updates by name;
+       drop removes by name. All return 1 on success, 0 on error. */
+    int (*sequence_load)(DBDriver* driver, DBSequence* out, int max, int* out_count);
+    int (*sequence_save)(DBDriver* driver, const DBSequence* seq);
+    int (*sequence_drop)(DBDriver* driver, const char* name);
 };
 
 void custom_driver_init(DBDriver* driver);
