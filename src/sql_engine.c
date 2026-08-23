@@ -16,6 +16,7 @@
 #define MAX_CATALOG_VIEWS 16
 /* Stored view SELECT text is capped so several views fit the catalog page. */
 #define MAX_VIEW_QUERY_LEN 768
+#define MAX_CATALOG_SEQUENCES 16
 
 static Table* g_catalog[MAX_CATALOG_TABLES];
 static int    g_catalog_count = 0;
@@ -28,6 +29,16 @@ typedef struct {
 
 static ViewDef g_views[MAX_CATALOG_VIEWS];
 static int     g_view_count = 0;
+
+typedef struct {
+    char* name;
+    int   has_value;
+    int   current;
+    int   increment;
+} SequenceDef;
+
+static SequenceDef g_sequences[MAX_CATALOG_SEQUENCES];
+static int         g_sequence_count = 0;
 
 static void free_column(Column* col) {
     free(col->name);
@@ -66,6 +77,11 @@ void catalog_clear(Context* ctx) {
         g_views[i].select_query = NULL;
     }
     g_view_count = 0;
+    for (int i = 0; i < g_sequence_count; i++) {
+        free(g_sequences[i].name);
+        g_sequences[i].name = NULL;
+    }
+    g_sequence_count = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -77,12 +93,15 @@ void catalog_clear(Context* ctx) {
    per-table records each carrying their index list. V3: like V2, plus
    per-column constraint flags and an optional DEFAULT literal. V4: like V3,
    plus a view section after the table records (u8 view_count, then per view
-   a u8 name + u16 SELECT text). V1–V3 files still load — they simply have
-   no indexes and/or no constraints and/or no views; the page is rewritten
-   as V4 on the next save. */
+   a u8 name + u16 SELECT text). V5: like V4, plus a sequence section after
+   the view section (u8 sequence_count, then per sequence a u8 name, u8
+   has_value, i32 current, i32 increment). V1–V4 files still load — they
+   simply have no indexes and/or no constraints and/or no views and/or no
+   sequences; the page is rewritten as V5 on the next save. */
 #define CATALOG_MAGIC_V2 0x4D594932u /* "MYI2" */
 #define CATALOG_MAGIC_V3 0x4D594333u /* "MYC3" */
 #define CATALOG_MAGIC_V4 0x4D595634u /* "MYV4" */
+#define CATALOG_MAGIC_V5 0x4D595635u /* "MYV5" */
 
 /* Reads a serialized cell (type tag + payload) from the catalog page. */
 static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
@@ -222,6 +241,10 @@ static int catalog_read_page(Context* ctx) {
         catalog_version = 4;
         memcpy(&table_count, page + offset, sizeof(table_count));
         offset += 4;
+    } else if (table_count == CATALOG_MAGIC_V5) {
+        catalog_version = 5;
+        memcpy(&table_count, page + offset, sizeof(table_count));
+        offset += 4;
     }
 
     for (uint32_t t = 0; t < table_count && g_catalog_count < MAX_CATALOG_TABLES; t++) {
@@ -320,6 +343,37 @@ static int catalog_read_page(Context* ctx) {
         }
     }
 
+    /* V5 appends the sequence section after the view section: u8
+       sequence_count, then per sequence a u8 name, u8 has_value, i32
+       current, i32 increment. */
+    if (catalog_version >= 5 && offset < PAGE_SIZE) {
+        uint8_t sequence_count = page[offset++];
+        if (sequence_count > MAX_CATALOG_SEQUENCES) sequence_count = MAX_CATALOG_SEQUENCES;
+        for (int i = 0; i < (int)sequence_count; i++) {
+            uint8_t name_len = page[offset++];
+            if (offset + name_len + 9 > PAGE_SIZE) return 0;
+            char* name = malloc((size_t)name_len + 1);
+            if (name == NULL) return 0;
+            memcpy(name, page + offset, name_len);
+            name[name_len] = '\0';
+            offset += name_len;
+
+            int has_value = page[offset++];
+            int32_t current = 0;
+            memcpy(&current, page + offset, sizeof(current));
+            offset += 4;
+            int32_t increment = 0;
+            memcpy(&increment, page + offset, sizeof(increment));
+            offset += 4;
+
+            g_sequences[g_sequence_count].name = name;
+            g_sequences[g_sequence_count].has_value = has_value;
+            g_sequences[g_sequence_count].current = (int)current;
+            g_sequences[g_sequence_count].increment = (int)increment;
+            g_sequence_count++;
+        }
+    }
+
     return 1;
 }
 
@@ -332,7 +386,7 @@ static int catalog_write_page(Context* ctx) {
     memset(page, 0, PAGE_SIZE);
 
     int offset = 0;
-    uint32_t magic = CATALOG_MAGIC_V4;
+    uint32_t magic = CATALOG_MAGIC_V5;
     memcpy(page + offset, &magic, sizeof(magic));
     offset += 4;
     uint32_t table_count = (uint32_t)g_catalog_count;
@@ -416,6 +470,31 @@ static int catalog_write_page(Context* ctx) {
         offset += (int)view_query_len;
     }
     page[view_count_pos] = (uint8_t)g_view_count;
+
+    /* V5 appends the sequence section after the view section: u8
+       sequence_count, then per sequence a u8 name length + name, u8
+       has_value, i32 current, i32 increment. Like views, sequences are user
+       data — if they do not fit the page the write fails (without touching
+       the page) so the caller can roll back. */
+    if (offset + 1 > PAGE_SIZE) return 0;
+    int seq_count_pos = offset++;
+    for (int i = 0; i < g_sequence_count; i++) {
+        size_t seq_name_len = strlen(g_sequences[i].name);
+        if (offset + 10 + (int)seq_name_len > PAGE_SIZE) {
+            return 0;
+        }
+        page[offset++] = (uint8_t)seq_name_len;
+        memcpy(page + offset, g_sequences[i].name, seq_name_len);
+        offset += (int)seq_name_len;
+        page[offset++] = (uint8_t)g_sequences[i].has_value;
+        int32_t v32 = (int32_t)g_sequences[i].current;
+        memcpy(page + offset, &v32, sizeof(v32));
+        offset += 4;
+        v32 = (int32_t)g_sequences[i].increment;
+        memcpy(page + offset, &v32, sizeof(v32));
+        offset += 4;
+    }
+    page[seq_count_pos] = (uint8_t)g_sequence_count;
 
     pager_write_page(pager, g_catalog_page, page);
     return 1;
@@ -4237,6 +4316,100 @@ Cell row_get_field(Row* row, const char* name) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Sequence persistence (catalog V5 sequence section)                         */
+/* -------------------------------------------------------------------------- */
+
+int catalog_sequence_list(Context* ctx, DBSequence* out, int max) {
+    (void)ctx;
+    if (out == NULL || max <= 0) return 0;
+    int n = g_sequence_count < max ? g_sequence_count : max;
+    for (int i = 0; i < n; i++) {
+        snprintf(out[i].name, sizeof(out[i].name), "%s", g_sequences[i].name);
+        out[i].has_value = g_sequences[i].has_value;
+        out[i].current = g_sequences[i].current;
+        out[i].increment = g_sequences[i].increment;
+    }
+    return n;
+}
+
+int catalog_sequence_save(Context* ctx, const DBSequence* seq) {
+    if (ctx == NULL || ctx->pager == NULL || seq == NULL || seq->name[0] == '\0') return 0;
+    /* Snapshot for rollback: the catalog write fails cleanly when the page
+       would overflow, and the in-memory state must stay unchanged then. */
+    SequenceDef backup[MAX_CATALOG_SEQUENCES];
+    int backup_count = g_sequence_count;
+    memcpy(backup, g_sequences, sizeof(backup));
+
+    int found = 0;
+    for (int i = 0; i < g_sequence_count; i++) {
+        if (strcmp(g_sequences[i].name, seq->name) == 0) {
+            g_sequences[i].has_value = seq->has_value;
+            g_sequences[i].current = seq->current;
+            g_sequences[i].increment = seq->increment;
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        if (g_sequence_count >= MAX_CATALOG_SEQUENCES) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "too many sequences (max %d)", MAX_CATALOG_SEQUENCES);
+            return 0;
+        }
+        g_sequences[g_sequence_count].name = strdup(seq->name);
+        if (g_sequences[g_sequence_count].name == NULL) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error), "out of memory");
+            return 0;
+        }
+        g_sequences[g_sequence_count].has_value = seq->has_value;
+        g_sequences[g_sequence_count].current = seq->current;
+        g_sequences[g_sequence_count].increment = seq->increment;
+        g_sequence_count++;
+    }
+    if (!catalog_write_page(ctx)) {
+        /* Roll back. On the append path the backup still owns the name
+           pointer, so free the copy that was just added. */
+        if (!found) {
+            free(g_sequences[g_sequence_count - 1].name);
+        }
+        memcpy(g_sequences, backup, sizeof(backup));
+        g_sequence_count = backup_count;
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "catalog page full: could not persist sequence '%s'", seq->name);
+        return 0;
+    }
+    return 1;
+}
+
+int catalog_sequence_drop(Context* ctx, const char* name) {
+    if (ctx == NULL || ctx->pager == NULL || name == NULL) return 0;
+    for (int i = 0; i < g_sequence_count; i++) {
+        if (strcmp(g_sequences[i].name, name) == 0) {
+            SequenceDef backup[MAX_CATALOG_SEQUENCES];
+            int backup_count = g_sequence_count;
+            memcpy(backup, g_sequences, sizeof(backup));
+
+            char* removed = g_sequences[i].name;
+            for (int j = i + 1; j < g_sequence_count; j++) {
+                g_sequences[j - 1] = g_sequences[j];
+            }
+            g_sequence_count--;
+            g_sequences[g_sequence_count].name = NULL;
+            if (!catalog_write_page(ctx)) {
+                memcpy(g_sequences, backup, sizeof(backup));
+                g_sequence_count = backup_count;
+                snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                         "catalog page full: could not persist sequence drop '%s'", name);
+                return 0;
+            }
+            free(removed);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Custom engine DBDriver implementation                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -4407,6 +4580,45 @@ static int custom_release_savepoint(DBDriver* driver, const char* name) {
     return 0; /* not supported by custom engine */
 }
 
+static int custom_sequence_load(DBDriver* driver, DBSequence* out, int max, int* out_count) {
+    if (out_count == NULL) return 0;
+    *out_count = catalog_sequence_list(NULL, out, max);
+    driver->error_message[0] = '\0';
+    return 1;
+}
+
+static int custom_sequence_save(DBDriver* driver, const DBSequence* seq) {
+    CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
+    if (!catalog_sequence_save(&impl->ctx, seq)) {
+        if (g_sql_ddl_error[0] != '\0') {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "%s", g_sql_ddl_error);
+        } else {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "could not persist sequence");
+        }
+        return 0;
+    }
+    driver->error_message[0] = '\0';
+    return 1;
+}
+
+static int custom_sequence_drop(DBDriver* driver, const char* name) {
+    CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
+    if (!catalog_sequence_drop(&impl->ctx, name)) {
+        if (g_sql_ddl_error[0] != '\0') {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "%s", g_sql_ddl_error);
+        } else {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "could not drop sequence '%s'", name);
+        }
+        return 0;
+    }
+    driver->error_message[0] = '\0';
+    return 1;
+}
+
 void custom_driver_init(DBDriver* driver) {
     driver->impl = NULL;
     driver->is_sqlite = 0;
@@ -4428,4 +4640,7 @@ void custom_driver_init(DBDriver* driver) {
     driver->savepoint = custom_savepoint;
     driver->rollback_to_savepoint = custom_rollback_to_savepoint;
     driver->release_savepoint = custom_release_savepoint;
+    driver->sequence_load = custom_sequence_load;
+    driver->sequence_save = custom_sequence_save;
+    driver->sequence_drop = custom_sequence_drop;
 }

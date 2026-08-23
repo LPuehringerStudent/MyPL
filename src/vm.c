@@ -69,6 +69,7 @@ struct VM {
     ArrayObj*     dbms_output_buffer;
     FILE*         utl_file_handles[UTL_FILE_MAX_HANDLES];
     SequenceSlot  sequences[SEQUENCE_MAX];
+    int           sequences_loaded;
 };
 
 VM* vm_init(void) {
@@ -110,6 +111,7 @@ VM* vm_init(void) {
         vm->sequences[i].increment = 1;
         vm->sequences[i].name[0] = '\0';
     }
+    vm->sequences_loaded = 0;
     return vm;
 }
 
@@ -417,8 +419,65 @@ static SequenceSlot* sequence_find(VM* vm, const char* name) {
     return NULL;
 }
 
+/* Sequences persist through the active storage backend: the custom engine
+   keeps them in the V5 catalog page, the SQLite driver in the
+   _mypl_sequences table. The VM slots are a cache, populated lazily on the
+   first sequence op after a driver/context is attached, and every mutation
+   is written through immediately so a later process resumes where the
+   previous one stopped. */
+static void sequence_ensure_loaded(VM* vm) {
+    if (vm->sequences_loaded) return;
+    vm->sequences_loaded = 1;
+    DBSequence stored[SEQUENCE_MAX];
+    int count = 0;
+    if (vm->driver != NULL && vm->driver->sequence_load != NULL) {
+        if (!vm->driver->sequence_load(vm->driver, stored, SEQUENCE_MAX, &count)) {
+            return;
+        }
+    } else if (vm->driver == NULL && vm->context != NULL) {
+        count = catalog_sequence_list(vm->context, stored, SEQUENCE_MAX);
+    } else {
+        return;
+    }
+    for (int i = 0; i < count && i < SEQUENCE_MAX; i++) {
+        SequenceSlot* slot = &vm->sequences[i];
+        slot->used = 1;
+        slot->has_value = stored[i].has_value;
+        slot->current = stored[i].current;
+        slot->increment = stored[i].increment;
+        snprintf(slot->name, sizeof(slot->name), "%s", stored[i].name);
+    }
+}
+
+static int sequence_persist_save(VM* vm, const SequenceSlot* slot) {
+    DBSequence seq;
+    memset(&seq, 0, sizeof(seq));
+    snprintf(seq.name, sizeof(seq.name), "%s", slot->name);
+    seq.has_value = slot->has_value;
+    seq.current = slot->current;
+    seq.increment = slot->increment;
+    if (vm->driver != NULL && vm->driver->sequence_save != NULL) {
+        return vm->driver->sequence_save(vm->driver, &seq);
+    }
+    if (vm->driver == NULL && vm->context != NULL) {
+        return catalog_sequence_save(vm->context, &seq);
+    }
+    return 1; /* no storage backend: session-only */
+}
+
+static int sequence_persist_drop(VM* vm, const char* name) {
+    if (vm->driver != NULL && vm->driver->sequence_drop != NULL) {
+        return vm->driver->sequence_drop(vm->driver, name);
+    }
+    if (vm->driver == NULL && vm->context != NULL) {
+        return catalog_sequence_drop(vm->context, name);
+    }
+    return 1;
+}
+
 int vm_sequence_create(VM* vm, const char* name, int start, int increment) {
     if (vm == NULL || name == NULL || name[0] == '\0') return 0;
+    sequence_ensure_loaded(vm);
     if (sequence_find(vm, name) != NULL) return 0;
     for (int i = 0; i < SEQUENCE_MAX; i++) {
         if (!vm->sequences[i].used) {
@@ -428,6 +487,11 @@ int vm_sequence_create(VM* vm, const char* name, int start, int increment) {
             slot->current = start;
             slot->increment = increment;
             snprintf(slot->name, sizeof(slot->name), "%s", name);
+            if (!sequence_persist_save(vm, slot)) {
+                slot->used = 0;
+                slot->name[0] = '\0';
+                return 0;
+            }
             return 1;
         }
     }
@@ -436,12 +500,20 @@ int vm_sequence_create(VM* vm, const char* name, int start, int increment) {
 
 int vm_sequence_nextval(VM* vm, const char* name, int* out) {
     if (vm == NULL || name == NULL || out == NULL) return 0;
+    sequence_ensure_loaded(vm);
     SequenceSlot* slot = sequence_find(vm, name);
     if (slot == NULL) return 0;
+    int old_has_value = slot->has_value;
+    int old_current = slot->current;
     if (slot->has_value) {
         slot->current += slot->increment;
     } else {
         slot->has_value = 1;
+    }
+    if (!sequence_persist_save(vm, slot)) {
+        slot->has_value = old_has_value;
+        slot->current = old_current;
+        return 0;
     }
     *out = slot->current;
     return 1;
@@ -449,6 +521,7 @@ int vm_sequence_nextval(VM* vm, const char* name, int* out) {
 
 int vm_sequence_currval(VM* vm, const char* name, int* out) {
     if (vm == NULL || name == NULL || out == NULL) return 0;
+    sequence_ensure_loaded(vm);
     SequenceSlot* slot = sequence_find(vm, name);
     if (slot == NULL || !slot->has_value) return 0;
     *out = slot->current;
@@ -457,8 +530,10 @@ int vm_sequence_currval(VM* vm, const char* name, int* out) {
 
 int vm_sequence_drop(VM* vm, const char* name) {
     if (vm == NULL || name == NULL) return 0;
+    sequence_ensure_loaded(vm);
     SequenceSlot* slot = sequence_find(vm, name);
     if (slot == NULL) return 0;
+    if (!sequence_persist_drop(vm, name)) return 0;
     slot->used = 0;
     slot->has_value = 0;
     slot->name[0] = '\0';
@@ -590,11 +665,23 @@ Value vm_local_get(VM* vm, int index) {
 void vm_set_context(VM* vm, struct Context* ctx) {
     if (vm == NULL) return;
     vm->context = ctx;
+    /* Attaching a storage backend re-syncs sequences from it: drop the
+       cached slots so the next sequence op lazily reloads them. */
+    for (int i = 0; i < SEQUENCE_MAX; i++) {
+        vm->sequences[i].used = 0;
+        vm->sequences[i].name[0] = '\0';
+    }
+    vm->sequences_loaded = 0;
 }
 
 void vm_set_driver(VM* vm, DBDriver* driver) {
     if (vm == NULL) return;
     vm->driver = driver;
+    for (int i = 0; i < SEQUENCE_MAX; i++) {
+        vm->sequences[i].used = 0;
+        vm->sequences[i].name[0] = '\0';
+    }
+    vm->sequences_loaded = 0;
 }
 
 static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
