@@ -1368,6 +1368,354 @@ TEST(phase11_unique_rejects_duplicate_update) {
     ASSERT_INT_EQ(1, output_contains(out, "b@x"));
 }
 
+/* -------------------------------------------------------------------------- */
+/* CREATE VIEW / DROP VIEW (custom engine)                                    */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_create_view_and_select) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v1_t (id int, name string, qty int);\n"
+        "    insert into v1_t values (1, \"apple\", 10);\n"
+        "    insert into v1_t values (2, \"banana\", 20);\n"
+        "    insert into v1_t values (3, \"cherry\", 30);\n"
+        "    create view v1_big as select id, name from v1_t where qty >= 20;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from v1_big;\n"
+        "    print n;\n"
+        "    string s = \"?\";\n"
+        "    select name into s from v1_big where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* The view's own WHERE filters to 2 rows. */
+    ASSERT_INT_EQ(1, count_occurrences(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "banana"));
+}
+
+TEST(phase11_view_outer_where_order_limit) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v2_t (id int, qty int);\n"
+        "    insert into v2_t values (1, 10);\n"
+        "    insert into v2_t values (2, 20);\n"
+        "    insert into v2_t values (3, 30);\n"
+        "    create view v2_v as select id, qty from v2_t;\n"
+        "    int top = -1;\n"
+        "    select id into top from v2_v where qty > 5 order by qty desc limit 1;\n"
+        "    print top;\n"
+        "    int mid = -1;\n"
+        "    select id into mid from v2_v where qty = 20;\n"
+        "    print mid;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Outer WHERE/ORDER BY/LIMIT compose over the view: top is id 3. */
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+}
+
+TEST(phase11_view_star_select_for_row) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v3_t (id int, name string);\n"
+        "    insert into v3_t values (1, \"alice\");\n"
+        "    insert into v3_t values (2, \"bob\");\n"
+        "    create view v3_v as select * from v3_t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: the view persists and row fields resolve through it. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    for row in select id, name from v3_v order by id {\n"
+        "        print row.id;\n"
+        "        print row.name;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "alice"));
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+}
+
+TEST(phase11_view_persists_across_restarts) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v4_t (id int, name string, qty int);\n"
+        "    insert into v4_t values (1, \"apple\", 10);\n"
+        "    insert into v4_t values (2, \"banana\", 20);\n"
+        "    create view v4_v as select id, name from v4_t where qty > 5;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: the view definition is reloaded from the catalog. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from v4_v;\n"
+        "    print n;\n"
+        "    string s = \"?\";\n"
+        "    select name into s from v4_v where id = 2;\n"
+        "    print s;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "banana"));
+}
+
+TEST(phase11_drop_view_then_select_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v5_t (id int);\n"
+        "    insert into v5_t values (7);\n"
+        "    create view v5_v as select id from v5_t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* Dropping the view succeeds; the base table is untouched. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop view v5_v;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from v5_t;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+
+    /* New process: selecting from the dropped view errors. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    for row in select id from v5_v {\n"
+        "        print row.id;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_drop_view_if_exists) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop view if exists v6_v;\n"
+        "    create table v6_t (id int);\n"
+        "    create view v6_v as select id from v6_t;\n"
+        "    drop view if exists v6_v;\n"
+        "    drop view if exists v6_v;\n"
+        "    print \"ok\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "ok"));
+}
+
+TEST(phase11_drop_missing_view_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop view nope_v;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_create_view_missing_table_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create view v8_v as select id from nope_t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_insert_into_view_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v9_t (id int);\n"
+        "    create view v9_v as select id from v9_t;\n"
+        "    insert into v9_v values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "view"));
+}
+
+TEST(phase11_update_view_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v10_t (id int);\n"
+        "    insert into v10_t values (1);\n"
+        "    create view v10_v as select id from v10_t;\n"
+        "    update v10_v set id = 2;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "view"));
+}
+
+TEST(phase11_delete_view_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v11_t (id int);\n"
+        "    insert into v11_t values (1);\n"
+        "    create view v11_v as select id from v11_t;\n"
+        "    delete from v11_v;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "view"));
+}
+
+TEST(phase11_drop_table_on_view_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v12_t (id int);\n"
+        "    insert into v12_t values (5);\n"
+        "    create view v12_v as select id from v12_t;\n"
+        "    drop table v12_v;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "view"));
+
+    /* The failed DROP TABLE must not have corrupted the view. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from v12_v;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_drop_view_on_table_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v13_t (id int);\n"
+        "    insert into v13_t values (9);\n"
+        "    drop view v13_t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "table"));
+
+    /* The failed DROP VIEW must not have harmed the table. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from v13_t;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+}
+
+TEST(phase11_create_view_duplicate_name_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v14_t (id int);\n"
+        "    create view v14_v as select id from v14_t;\n"
+        "    create view v14_v as select id from v14_t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_create_view_on_table_name_errors) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v15_t (id int);\n"
+        "    create view v15_t as select id from v15_t;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+}
+
+TEST(phase11_view_over_view) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table v16_t (id int, qty int);\n"
+        "    insert into v16_t values (1, 10);\n"
+        "    insert into v16_t values (2, 20);\n"
+        "    insert into v16_t values (3, 30);\n"
+        "    create view v16_a as select id, qty from v16_t where qty >= 20;\n"
+        "    create view v16_b as select id from v16_a where qty >= 30;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from v16_b;\n"
+        "    print n;\n"
+        "    int x = -1;\n"
+        "    select id into x from v16_b;\n"
+        "    print x;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "3"));
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -1430,5 +1778,21 @@ int main(void) {
     RUN_TEST(phase11_constraints_persist_across_restarts);
     RUN_TEST(phase11_not_null_rejects_null_update);
     RUN_TEST(phase11_unique_rejects_duplicate_update);
+    RUN_TEST(phase11_create_view_and_select);
+    RUN_TEST(phase11_view_outer_where_order_limit);
+    RUN_TEST(phase11_view_star_select_for_row);
+    RUN_TEST(phase11_view_persists_across_restarts);
+    RUN_TEST(phase11_drop_view_then_select_errors);
+    RUN_TEST(phase11_drop_view_if_exists);
+    RUN_TEST(phase11_drop_missing_view_errors);
+    RUN_TEST(phase11_create_view_missing_table_errors);
+    RUN_TEST(phase11_insert_into_view_errors);
+    RUN_TEST(phase11_update_view_errors);
+    RUN_TEST(phase11_delete_view_errors);
+    RUN_TEST(phase11_drop_table_on_view_errors);
+    RUN_TEST(phase11_drop_view_on_table_errors);
+    RUN_TEST(phase11_create_view_duplicate_name_errors);
+    RUN_TEST(phase11_create_view_on_table_name_errors);
+    RUN_TEST(phase11_view_over_view);
     TEST_SUMMARY();
 }
