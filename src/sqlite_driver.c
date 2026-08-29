@@ -460,4 +460,6 @@ void sqlite_driver_init(DBDriver* driver) {
     driver->sequence_load = sqlite_sequence_load;
     driver->sequence_save = sqlite_sequence_save;
     driver->sequence_drop = sqlite_sequence_drop;
+    driver->row_trigger_fn = NULL;
+    driver->row_trigger_user = NULL;
 }

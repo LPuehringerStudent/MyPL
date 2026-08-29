@@ -1,0 +1,73 @@
+// Phase 12 Task 3: row-level triggers (FOR EACH ROW) with :new / :old context.
+//
+// An audit trail for the emp table: row-level triggers write one row into
+// emp_audit for every inserted, updated, or deleted employee row, capturing
+// the :old / :new column values. A statement-level trigger runs alongside,
+// once per statement.
+//
+// Ordering per statement:
+//   statement BEFORE -> row BEFOREs -> row writes -> row AFTERs -> statement AFTER
+//
+// Notes:
+//  - :new is available for INSERT/UPDATE, :old for UPDATE/DELETE. Reading the
+//    wrong one is a runtime error ("Cannot access field on non-row value").
+//  - The custom engine has no ?var binding for DML, so the audit rows are
+//    written with execute_immediate over a built SQL string.
+//  - The typechecker cannot resolve row fields for a table created and
+//    select-looped in one file, so this example uses select-into + print.
+
+trigger emp_stmt_after after insert on emp {
+    print "statement-level: an INSERT on emp completed";
+}
+
+trigger emp_audit_ins after insert on emp for each row {
+    string nid = int_to_string(:new.id);
+    string nname = :new.name;
+    print "row trigger: inserted employee";
+    print nid;
+    print nname;
+    execute_immediate(format(
+        "insert into emp_audit values (%s, 'INSERT', '', '%s')",
+        [nid, nname]));
+}
+
+trigger emp_audit_upd after update on emp for each row {
+    string nid = int_to_string(:new.id);
+    string osal = int_to_string(:old.salary);
+    string nsal = int_to_string(:new.salary);
+    print "row trigger: salary changed";
+    print osal;
+    print nsal;
+    execute_immediate(format(
+        "insert into emp_audit values (%s, 'UPDATE', '%s', '%s')",
+        [nid, osal, nsal]));
+}
+
+trigger emp_audit_del after delete on emp for each row {
+    string oid = int_to_string(:old.id);
+    string oname = :old.name;
+    print "row trigger: deleted employee";
+    print oid;
+    execute_immediate(format(
+        "insert into emp_audit values (%s, 'DELETE', '%s', '')",
+        [oid, oname]));
+}
+
+proc main() -> int {
+    create table if not exists emp (id int, name string, salary int);
+    create table if not exists emp_audit (emp_id int, action string, old_val string, new_val string);
+
+    insert into emp values (1, "alice", 100);
+    insert into emp values (2, "bob", 200);
+
+    // One statement, two affected rows: the row trigger fires twice.
+    update emp set salary = 300 where id > 0;
+
+    delete from emp where id = 2;
+
+    int audit_rows = 0;
+    select count(*) into audit_rows from emp_audit;
+    print "audit rows:";   // 2 inserts + 2 updates + 1 delete
+    print audit_rows;
+    return 0;
+}

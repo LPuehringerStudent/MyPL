@@ -46,7 +46,7 @@ void free_chunk(Chunk* chunk) {
 }
 
 void chunk_add_trigger(Chunk* chunk, const char* name, int timing, int event,
-                       const char* table, int offset) {
+                       const char* table, int offset, int for_each_row) {
     if (chunk->trigger_count >= chunk->trigger_capacity) {
         chunk->trigger_capacity = grow_capacity(chunk->trigger_capacity);
         ChunkTrigger* new_triggers = realloc(chunk->triggers,
@@ -67,6 +67,7 @@ void chunk_add_trigger(Chunk* chunk, const char* name, int timing, int event,
     t->timing = timing;
     t->event = event;
     t->offset = offset;
+    t->for_each_row = for_each_row;
     chunk->trigger_count++;
 }
 

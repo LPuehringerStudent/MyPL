@@ -195,6 +195,8 @@ typedef struct {
     int    timing;      /* TRIGGER_BEFORE or TRIGGER_AFTER */
     int    event;       /* TRIGGER_INSERT/UPDATE/DELETE/CREATE/DROP */
     char*  table;
+    int    for_each_row; /* 1 = row-level trigger: fires per affected row with
+                            :new / :old row context; 0 = statement-level */
     Block* body;
 } TriggerDecl;
 

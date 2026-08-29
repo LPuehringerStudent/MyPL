@@ -125,6 +125,17 @@ int sql_query_column_type(Context* ctx, const char* query, const char* column_na
 /* Database driver abstraction                                                */
 /* -------------------------------------------------------------------------- */
 
+/* Row-level trigger hook (Phase 12 FOR EACH ROW triggers). The VM installs
+   this hook on the driver when the active chunk declares row-level triggers;
+   DML execution then calls it once per affected row, before and after the
+   row is written. old_row/new_row are VAL_ROW Values, or NULL when that
+   context does not apply to the event (:old for INSERT, :new for DELETE).
+   Returns 1 on success; on 0, error/error_size carry the trigger failure
+   message and the DML aborts. */
+typedef int (*RowTriggerFn)(void* user, int timing, int event, const char* table,
+                            const Value* old_row, const Value* new_row,
+                            char* error, size_t error_size);
+
 struct DBDriver {
     void* impl;
     char error_message[256];
@@ -154,6 +165,10 @@ struct DBDriver {
     int (*sequence_load)(DBDriver* driver, DBSequence* out, int max, int* out_count);
     int (*sequence_save)(DBDriver* driver, const DBSequence* seq);
     int (*sequence_drop)(DBDriver* driver, const char* name);
+    /* Row-level trigger hook: installed/cleared by the VM around DML
+       execution. NULL means no row-level triggers are active. */
+    RowTriggerFn row_trigger_fn;
+    void* row_trigger_user;
 };
 
 void custom_driver_init(DBDriver* driver);

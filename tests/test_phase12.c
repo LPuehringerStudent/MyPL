@@ -38,6 +38,11 @@ static int count_occurrences(const char* out, const char* substr) {
     return count;
 }
 
+static void clean_trigger_db(void) {
+    remove("mypl.db");
+    remove("mypl.db.programs");
+}
+
 TEST(phase12_nextval_persists_across_restarts) {
     remove("mypl.db");
     char out[512];
@@ -221,6 +226,208 @@ TEST(phase12_missing_sequence_errors_unchanged) {
     ASSERT_INT_EQ(1, rc);
 }
 
+/* --- Row-level triggers (FOR EACH ROW, :new / :old) --- */
+
+TEST(phase12_row_trigger_insert_fires_per_row) {
+    clean_trigger_db();
+    char out[512];
+    int rc = run_mypl(
+        "trigger trg_r_ins after insert on trg_ri for each row {\n"
+        "    print \"row-ins\";\n"
+        "    print :new.id;\n"
+        "    print :new.name;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_ri (id int, name string);\n"
+        "    insert into trg_ri values (1, \"alice\");\n"
+        "    insert into trg_ri values (2, \"bob\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(2, count_occurrences(out, "row-ins"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "alice"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "bob"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_update_sees_old_and_new) {
+    clean_trigger_db();
+    char out[512];
+    int rc = run_mypl(
+        "trigger trg_r_upd after update on trg_ru for each row {\n"
+        "    print \"upd\";\n"
+        "    print :old.qty;\n"
+        "    print :new.qty;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_ru (id int, qty int);\n"
+        "    insert into trg_ru values (1, 10);\n"
+        "    insert into trg_ru values (2, 20);\n"
+        "    insert into trg_ru values (3, 30);\n"
+        "    update trg_ru set qty = 99 where id > 1;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* two rows matched: (20 -> 99) and (30 -> 99) */
+    ASSERT_INT_EQ(2, count_occurrences(out, "upd"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "20"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "30"));
+    ASSERT_INT_EQ(2, count_occurrences(out, "99"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_delete_sees_old) {
+    clean_trigger_db();
+    char out[512];
+    int rc = run_mypl(
+        "trigger trg_r_del after delete on trg_rd for each row {\n"
+        "    print \"del\";\n"
+        "    print :old.id;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_rd (id int);\n"
+        "    insert into trg_rd values (1);\n"
+        "    insert into trg_rd values (2);\n"
+        "    delete from trg_rd where id = 2;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "del"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "2"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_and_statement_triggers_both_fire) {
+    clean_trigger_db();
+    char out[512];
+    int rc = run_mypl(
+        "trigger trg_o_sb before insert on trg_ro {\n"
+        "    print \"stmt-before\";\n"
+        "}\n"
+        "trigger trg_o_rb before insert on trg_ro for each row {\n"
+        "    print \"row-before\";\n"
+        "}\n"
+        "trigger trg_o_ra after insert on trg_ro for each row {\n"
+        "    print \"row-after\";\n"
+        "}\n"
+        "trigger trg_o_sa after insert on trg_ro {\n"
+        "    print \"stmt-after\";\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_ro (id int);\n"
+        "    insert into trg_ro values (1);\n"
+        "    insert into trg_ro values (2);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* statement-level fires once per statement, row-level once per row */
+    ASSERT_INT_EQ(2, count_occurrences(out, "stmt-before"));
+    ASSERT_INT_EQ(2, count_occurrences(out, "stmt-after"));
+    ASSERT_INT_EQ(2, count_occurrences(out, "row-before"));
+    ASSERT_INT_EQ(2, count_occurrences(out, "row-after"));
+    /* ordering within one statement:
+       statement BEFORE -> row BEFORE -> write -> row AFTER -> statement AFTER */
+    const char* sb = strstr(out, "stmt-before");
+    const char* rb = strstr(out, "row-before");
+    const char* ra = strstr(out, "row-after");
+    const char* sa = strstr(out, "stmt-after");
+    ASSERT(sb != NULL && rb != NULL && ra != NULL && sa != NULL);
+    ASSERT(sb < rb && rb < ra && ra < sa);
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_persists_across_restarts) {
+    clean_trigger_db();
+    char out[512];
+    int rc = run_mypl(
+        "trigger trg_r_per after insert on trg_rp for each row {\n"
+        "    print \"row-persist-fired\";\n"
+        "    print :new.id;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_rp (id int);\n"
+        "    insert into trg_rp values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "row-persist-fired"));
+
+    /* New process, source no longer declares the trigger: the persisted
+       FOR EACH ROW definition is recompiled and keeps firing with :new. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    insert into trg_rp values (2);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "row-persist-fired"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "2"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_fires_on_dynamic_sql) {
+    clean_trigger_db();
+    char out[512];
+    int rc = run_mypl(
+        "trigger trg_r_dyn after insert on trg_rdy for each row {\n"
+        "    print \"dyn-row\";\n"
+        "    print :new.id;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_rdy (id int);\n"
+        "    execute_immediate(\"insert into trg_rdy values (7)\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "dyn-row"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "7"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_wrong_context_errors) {
+    clean_trigger_db();
+    char out[512];
+    /* :new is not available in a DELETE trigger: runtime error. */
+    int rc = run_mypl(
+        "trigger trg_r_bad after delete on trg_rb for each row {\n"
+        "    print :new.id;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_rb (id int);\n"
+        "    insert into trg_rb values (1);\n"
+        "    delete from trg_rb where id = 1;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "Cannot access field on non-row value"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_requires_dml_event) {
+    clean_trigger_db();
+    char out[512];
+    /* FOR EACH ROW only makes sense for row-changing events. */
+    int rc = run_mypl(
+        "trigger trg_r_ddl after create on trg_rddl for each row {\n"
+        "    print \"nope\";\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "'for each row' requires an insert, update, or delete trigger"));
+    clean_trigger_db();
+}
+
 #ifdef USE_SQLITE
 static int run_mypl_sqlite(const char* source, char* out, size_t out_size) {
     FILE* f = fopen("/tmp/test_phase12_sql_src.mypl", "w");
@@ -239,11 +446,6 @@ static int run_mypl_sqlite(const char* source, char* out, size_t out_size) {
         fclose(outf);
     }
     return WEXITSTATUS(rc);
-}
-
-static void clean_trigger_db(void) {
-    remove("mypl.db");
-    remove("mypl.db.programs");
 }
 
 TEST(phase12_trigger_static_fires) {
@@ -514,6 +716,89 @@ TEST(phase12_sqlite_drop_sequence_persists) {
     ASSERT_INT_EQ(1, rc);
     ASSERT_INT_EQ(1, output_contains(out, "sequence does not exist"));
 }
+
+TEST(phase12_sqlite_row_trigger_insert_fires_per_row) {
+    remove("/tmp/test_phase12.db");
+    char out[512];
+    int rc = run_mypl_sqlite(
+        "trigger strg_r_ins after insert on strg_ri for each row {\n"
+        "    print \"s-row-ins\";\n"
+        "    print :new.id;\n"
+        "    print :new.name;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table strg_ri (id int, name string);\n"
+        "    insert into strg_ri values (1, \"alice\");\n"
+        "    insert into strg_ri values (2, \"bob\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(2, count_occurrences(out, "s-row-ins"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "alice"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "bob"));
+    remove("/tmp/test_phase12.db");
+}
+
+TEST(phase12_sqlite_row_trigger_update_and_delete) {
+    remove("/tmp/test_phase12.db");
+    char out[512];
+    int rc = run_mypl_sqlite(
+        "trigger strg_r_upd after update on strg_ru for each row {\n"
+        "    print \"s-upd\";\n"
+        "    print :old.qty;\n"
+        "    print :new.qty;\n"
+        "}\n"
+        "trigger strg_r_del after delete on strg_ru for each row {\n"
+        "    print \"s-del\";\n"
+        "    print :old.id;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table strg_ru (id int, qty int);\n"
+        "    insert into strg_ru values (1, 10);\n"
+        "    insert into strg_ru values (2, 20);\n"
+        "    update strg_ru set qty = 99 where id = 2;\n"
+        "    delete from strg_ru where id = 1;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "s-upd"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "s-del"));
+    /* update: 20 -> 99; delete: id 1 */
+    ASSERT_INT_EQ(1, count_occurrences(out, "20"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "99"));
+    remove("/tmp/test_phase12.db");
+}
+
+TEST(phase12_sqlite_row_trigger_persists_across_restarts) {
+    remove("/tmp/test_phase12.db");
+    char out[512];
+    int rc = run_mypl_sqlite(
+        "trigger strg_r_per after insert on strg_rp for each row {\n"
+        "    print \"s-row-persist-fired\";\n"
+        "    print :new.id;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table strg_rp (id int);\n"
+        "    insert into strg_rp values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "s-row-persist-fired"));
+
+    rc = run_mypl_sqlite(
+        "proc main() -> int {\n"
+        "    insert into strg_rp values (2);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, count_occurrences(out, "s-row-persist-fired"));
+    ASSERT_INT_EQ(1, count_occurrences(out, "2"));
+    remove("/tmp/test_phase12.db");
+}
 #endif
 
 int main(void) {
@@ -525,6 +810,14 @@ int main(void) {
     RUN_TEST(phase12_sequence_survives_other_catalog_writes);
     RUN_TEST(phase12_duplicate_create_after_restart_errors);
     RUN_TEST(phase12_missing_sequence_errors_unchanged);
+    RUN_TEST(phase12_row_trigger_insert_fires_per_row);
+    RUN_TEST(phase12_row_trigger_update_sees_old_and_new);
+    RUN_TEST(phase12_row_trigger_delete_sees_old);
+    RUN_TEST(phase12_row_and_statement_triggers_both_fire);
+    RUN_TEST(phase12_row_trigger_persists_across_restarts);
+    RUN_TEST(phase12_row_trigger_fires_on_dynamic_sql);
+    RUN_TEST(phase12_row_trigger_wrong_context_errors);
+    RUN_TEST(phase12_row_trigger_requires_dml_event);
 #ifdef USE_SQLITE
     RUN_TEST(phase12_sqlite_nextval_persists_across_restarts);
     RUN_TEST(phase12_sqlite_drop_sequence_persists);
@@ -536,6 +829,9 @@ int main(void) {
     RUN_TEST(phase12_drop_trigger_via_execute_immediate);
     RUN_TEST(phase12_sqlite_trigger_persists_across_restarts);
     RUN_TEST(phase12_sqlite_drop_trigger_persists);
+    RUN_TEST(phase12_sqlite_row_trigger_insert_fires_per_row);
+    RUN_TEST(phase12_sqlite_row_trigger_update_and_delete);
+    RUN_TEST(phase12_sqlite_row_trigger_persists_across_restarts);
 #endif
     TEST_SUMMARY();
 }

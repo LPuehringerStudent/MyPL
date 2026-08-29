@@ -727,6 +727,8 @@ static int vm_fire_triggers(VM* vm, int timing, int event, const char* table) {
     for (int i = 0; i < chunk->trigger_count; i++) {
         ChunkTrigger* trigger = &chunk->triggers[i];
         if (trigger->offset < 0) continue;
+        /* Row-level triggers fire per row through the driver hook, not here. */
+        if (trigger->for_each_row) continue;
         if (trigger->timing != timing || trigger->event != event) continue;
         if (!trigger_name_equals(trigger->table, table)) continue;
         if (!vm_fire_trigger(vm, trigger->offset)) return 0;
@@ -752,6 +754,366 @@ static void vm_drop_trigger(VM* vm, const char* name) {
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Row-level trigger firing (FOR EACH ROW)
+ *
+ * Row-level trigger bodies compile to hidden procs taking two implicit row
+ * parameters: :new (local slot 0) and :old (slot 1). They never fire through
+ * the statement-level call paths (emit_trigger_calls / vm_fire_triggers);
+ * instead the DML drivers report each affected row through the
+ * DBDriver.row_trigger_fn hook, which the VM installs around driver->exec.
+ *
+ * Custom engine: the engine's DML loops call the hook per row with the old
+ * and new row images (BEFORE before the write, AFTER after it).
+ *
+ * SQLite: OP_SQL_EXEC / vm_dynamic_exec route DML with matching row triggers
+ * through vm_sqlite_exec_row_triggers, which snapshots the affected rows with
+ * SELECT rowid, * before the statement and re-selects after it. Both BEFORE
+ * and AFTER row triggers observe the row images around the completed
+ * statement; the firing order per row is preserved, but on SQLite a BEFORE
+ * row trigger fires after the row has actually been written (the engine
+ * cannot expose pre-write row images through the DBDriver interface).
+ * ------------------------------------------------------------------------ */
+
+static int vm_chunk_has_row_triggers(VM* vm, int event, const char* table) {
+    Chunk* chunk = vm->chunk;
+    if (chunk == NULL) return 0;
+    for (int i = 0; i < chunk->trigger_count; i++) {
+        ChunkTrigger* trigger = &chunk->triggers[i];
+        if (trigger->offset < 0 || !trigger->for_each_row) continue;
+        if (trigger->event != event) continue;
+        if (!trigger_name_equals(trigger->table, table)) continue;
+        return 1;
+    }
+    return 0;
+}
+
+/* Fire one row-level trigger in a child VM (like vm_fire_trigger, but with
+   the :new and :old row images pushed as the two implicit arguments). */
+static int vm_fire_row_trigger(VM* vm, int offset, Value new_row, Value old_row) {
+    VM* child = vm_init();
+    if (child == NULL) {
+        set_runtime_error(vm, "Out of memory");
+        return 0;
+    }
+    child->chunk = vm->chunk;
+    child->driver = vm->driver;
+    child->context = vm->context;
+    child->global_count = vm->global_count;
+    for (int i = 0; i < vm->global_count; i++) {
+        child->globals[i] = vm->globals[i];
+        value_retain(child->globals[i]);
+    }
+    value_retain(new_row);
+    value_retain(old_row);
+    if (!push(child, new_row) || !push(child, old_row)) {
+        set_runtime_error(vm, "Stack overflow");
+        vm_free_child(child);
+        return 0;
+    }
+    child->ip = child->chunk->code + offset;
+    child->frame_base = child->stack;
+    child->frame_count = 0;
+    InterpretResult result = vm_run(child, child->chunk->code + child->chunk->count);
+    if (result != INTERPRET_OK) {
+        snprintf(vm->error_message, sizeof(vm->error_message), "%s", child->error_message);
+        vm_free_child(child);
+        return 0;
+    }
+    Value value;
+    if (pop(child, &value)) {
+        value_release(value);
+    }
+    vm_free_child(child);
+    return 1;
+}
+
+static int vm_fire_row_triggers(VM* vm, int timing, int event, const char* table,
+                                Value new_row, Value old_row) {
+    Chunk* chunk = vm->chunk;
+    if (chunk == NULL) return 1;
+    for (int i = 0; i < chunk->trigger_count; i++) {
+        ChunkTrigger* trigger = &chunk->triggers[i];
+        if (trigger->offset < 0 || !trigger->for_each_row) continue;
+        if (trigger->timing != timing || trigger->event != event) continue;
+        if (!trigger_name_equals(trigger->table, table)) continue;
+        if (!vm_fire_row_trigger(vm, trigger->offset, new_row, old_row)) return 0;
+    }
+    return 1;
+}
+
+/* Driver row-trigger hook: the DML drivers call this once per affected row.
+   A missing row image is passed to the trigger as VAL_NULL, so using :new in
+   a DELETE trigger (or :old in an INSERT trigger) is a runtime error. */
+static int vm_row_trigger_hook(void* user, int timing, int event, const char* table,
+                               const Value* old_row, const Value* new_row,
+                               char* error, size_t error_size) {
+    VM* vm = (VM*)user;
+    Value new_v = new_row != NULL ? *new_row : value_null();
+    Value old_v = old_row != NULL ? *old_row : value_null();
+    if (vm_fire_row_triggers(vm, timing, event, table, new_v, old_v)) return 1;
+    if (error != NULL && error_size > 0) {
+        snprintf(error, error_size, "%s",
+                 vm->error_message[0] != '\0' ? vm->error_message : "row trigger failed");
+    }
+    return 0;
+}
+
+static int is_trigger_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+/* Points at the WHERE keyword of a DML statement (scanning past string
+   literals), or NULL when the statement has no WHERE clause. */
+static const char* sql_find_where(const char* sql) {
+    char quote = '\0';
+    for (const char* p = sql; *p != '\0'; p++) {
+        if (quote != '\0') {
+            if (*p == quote) quote = '\0';
+            continue;
+        }
+        if (*p == '\'' || *p == '"') {
+            quote = *p;
+            continue;
+        }
+        if ((*p == 'w' || *p == 'W') &&
+            (p == sql || !is_trigger_ident_char(p[-1])) &&
+            strncasecmp(p, "where", 5) == 0 &&
+            !is_trigger_ident_char(p[5])) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* A row snapshot for the SQLite row-trigger path: the rowid plus the row's
+   columns materialized as a RowObj. */
+typedef struct {
+    int     rowid;
+    RowObj* row;
+} TriggerRowImage;
+
+static void free_trigger_row_images(TriggerRowImage* images, int count) {
+    for (int i = 0; i < count; i++) {
+        row_obj_free(images[i].row);
+    }
+    free(images);
+}
+
+/* Runs `SELECT rowid, * FROM ...` through the active driver and materializes
+   every result row (column 0 = rowid, remaining columns become the RowObj). */
+static int vm_select_row_images(VM* vm, const char* query,
+                                TriggerRowImage** out_images, int* out_count) {
+    DBDriver* driver = vm->driver;
+    *out_images = NULL;
+    *out_count = 0;
+    void* handle = NULL;
+    if (!driver->query(driver, query, NULL, 0, &handle)) return 0;
+    TriggerRowImage* images = NULL;
+    int count = 0;
+    int capacity = 0;
+    int col_count = driver->result_column_count(driver, handle);
+    void* row_handle = NULL;
+    while (driver->result_next(driver, handle, &row_handle)) {
+        if (count >= capacity) {
+            capacity = capacity == 0 ? 8 : capacity * 2;
+            TriggerRowImage* grown = realloc(images, sizeof(TriggerRowImage) * (size_t)capacity);
+            if (grown == NULL) {
+                free_trigger_row_images(images, count);
+                driver->result_free(driver, handle);
+                return 0;
+            }
+            images = grown;
+        }
+        Value rowid_value;
+        int rowid = 0;
+        if (driver->row_get_column(driver, row_handle, 0, &rowid_value) &&
+            rowid_value.type == VAL_INT) {
+            rowid = rowid_value.as.as_int;
+        }
+        RowObj* row = row_obj_new(col_count - 1);
+        if (row == NULL) {
+            free_trigger_row_images(images, count);
+            driver->result_free(driver, handle);
+            return 0;
+        }
+        for (int c = 1; c < col_count; c++) {
+            Value cell;
+            if (!driver->row_get_column(driver, row_handle, c, &cell)) {
+                cell = value_null();
+            }
+            const char* col_name = driver->result_column_name(driver, handle, c);
+            row_obj_set_column(row, c - 1, col_name, cell);
+            value_release(cell);
+        }
+        images[count].rowid = rowid;
+        images[count].row = row;
+        count++;
+    }
+    driver->result_free(driver, handle);
+    *out_images = images;
+    *out_count = count;
+    return 1;
+}
+
+/* Runs a query expected to produce a single int (e.g. MAX(rowid)). */
+static int vm_query_scalar_int(VM* vm, const char* query, int* out) {
+    DBDriver* driver = vm->driver;
+    void* handle = NULL;
+    if (!driver->query(driver, query, NULL, 0, &handle)) return 0;
+    void* row_handle = NULL;
+    int ok = 0;
+    if (driver->result_next(driver, handle, &row_handle)) {
+        Value v;
+        if (driver->row_get_column(driver, row_handle, 0, &v)) {
+            if (v.type == VAL_INT) {
+                *out = v.as.as_int;
+                ok = 1;
+            } else if (v.type == VAL_FLOAT) {
+                *out = (int)v.as.as_float;
+                ok = 1;
+            }
+        }
+    }
+    driver->result_free(driver, handle);
+    return ok;
+}
+
+/* Fire BEFORE then AFTER row triggers for one (old, new) row image pair and
+   release both images. */
+static int vm_fire_row_trigger_pair(VM* vm, int event, const char* table,
+                                    RowObj* old_obj, RowObj* new_obj) {
+    Value old_row = old_obj != NULL ? value_row(old_obj) : value_null();
+    Value new_row = new_obj != NULL ? value_row(new_obj) : value_null();
+    int ok = vm_fire_row_triggers(vm, TRIGGER_BEFORE, event, table, new_row, old_row) &&
+             vm_fire_row_triggers(vm, TRIGGER_AFTER, event, table, new_row, old_row);
+    value_release(new_row);
+    value_release(old_row);
+    return ok;
+}
+
+/* SQLite row-trigger execution: snapshot affected rows via SELECT rowid, *
+   before running the DML, run it, then fire row triggers per affected row
+   (re-selecting :new by rowid for UPDATE). Returns the DML's change count. */
+static int vm_sqlite_exec_row_triggers(VM* vm, const char* sql, int event,
+                                       const char* table, Value* params, int param_count) {
+    DBDriver* driver = vm->driver;
+    const char* where = sql_find_where(sql);
+    if (where != NULL && param_count > 0 && strchr(where, '?') != NULL) {
+        set_runtime_error(vm,
+            "row-level triggers on SQLite do not support ? parameters in WHERE");
+        return -1;
+    }
+
+    if (event == TRIGGER_INSERT) {
+        char scalar_query[320];
+        snprintf(scalar_query, sizeof(scalar_query),
+                 "SELECT COALESCE(MAX(rowid), 0) FROM %s", table);
+        int before_max = 0;
+        if (!vm_query_scalar_int(vm, scalar_query, &before_max)) {
+            set_runtime_error_from_driver_sql(vm, "row trigger pre-select failed");
+            return -1;
+        }
+        int row_count = driver->exec(driver, sql, params, param_count);
+        if (row_count < 0) return -1;
+        size_t qlen = strlen(table) + 96;
+        char* query = malloc(qlen);
+        if (query == NULL) {
+            set_runtime_error(vm, "Out of memory");
+            return -1;
+        }
+        snprintf(query, qlen, "SELECT rowid, * FROM %s WHERE rowid > %d", table, before_max);
+        TriggerRowImage* images = NULL;
+        int count = 0;
+        if (!vm_select_row_images(vm, query, &images, &count)) {
+            free(query);
+            set_runtime_error_from_driver_sql(vm, "row trigger post-select failed");
+            return -1;
+        }
+        free(query);
+        for (int i = 0; i < count; i++) {
+            if (!vm_fire_row_trigger_pair(vm, event, table, NULL, images[i].row)) {
+                for (int j = i + 1; j < count; j++) row_obj_free(images[j].row);
+                free(images);
+                return -1;
+            }
+        }
+        free(images);
+        return row_count;
+    }
+
+    /* UPDATE / DELETE: snapshot the matching rows first. */
+    size_t qlen = strlen(table) + (where != NULL ? strlen(where) : 0) + 96;
+    char* query = malloc(qlen);
+    if (query == NULL) {
+        set_runtime_error(vm, "Out of memory");
+        return -1;
+    }
+    snprintf(query, qlen, "SELECT rowid, * FROM %s%s%s", table,
+             where != NULL ? " " : "", where != NULL ? where : "");
+    TriggerRowImage* olds = NULL;
+    int old_count = 0;
+    if (!vm_select_row_images(vm, query, &olds, &old_count)) {
+        free(query);
+        set_runtime_error_from_driver_sql(vm, "row trigger pre-select failed");
+        return -1;
+    }
+    free(query);
+
+    int row_count = driver->exec(driver, sql, params, param_count);
+    if (row_count < 0) {
+        free_trigger_row_images(olds, old_count);
+        return -1;
+    }
+
+    for (int i = 0; i < old_count; i++) {
+        RowObj* new_obj = NULL;
+        if (event == TRIGGER_UPDATE) {
+            char new_query[320];
+            snprintf(new_query, sizeof(new_query),
+                     "SELECT rowid, * FROM %s WHERE rowid = %d", table, olds[i].rowid);
+            TriggerRowImage* news = NULL;
+            int new_count = 0;
+            if (!vm_select_row_images(vm, new_query, &news, &new_count)) {
+                row_obj_free(olds[i].row);
+                for (int j = i + 1; j < old_count; j++) row_obj_free(olds[j].row);
+                free(olds);
+                set_runtime_error_from_driver_sql(vm, "row trigger post-select failed");
+                return -1;
+            }
+            if (new_count > 0) {
+                new_obj = news[0].row;
+            }
+            free(news);
+        }
+        if (!vm_fire_row_trigger_pair(vm, event, table, olds[i].row, new_obj)) {
+            for (int j = i + 1; j < old_count; j++) row_obj_free(olds[j].row);
+            free(olds);
+            return -1;
+        }
+    }
+    free(olds);
+    return row_count;
+}
+
+/* Execute a DML/DDL statement, firing row-level triggers per affected row
+   when the chunk declares any matching the statement's table and event. */
+static int vm_exec_dml(VM* vm, const char* sql, Value* params, int param_count) {
+    DBDriver* driver = vm->driver;
+    int event = -1;
+    char table[64];
+    int row_triggered =
+        sql_trigger_info(sql, &event, table, sizeof(table)) &&
+        (event == TRIGGER_INSERT || event == TRIGGER_UPDATE || event == TRIGGER_DELETE) &&
+        vm_chunk_has_row_triggers(vm, event, table);
+    if (row_triggered && driver->is_sqlite) {
+        return vm_sqlite_exec_row_triggers(vm, sql, event, table, params, param_count);
+    }
+    driver->row_trigger_fn = row_triggered ? vm_row_trigger_hook : NULL;
+    driver->row_trigger_user = row_triggered ? vm : NULL;
+    return driver->exec(driver, sql, params, param_count);
+}
 /* Execute a dynamic SQL string: intercepts `drop trigger <name>`, fires
    matching BEFORE/AFTER triggers around the statement, and runs it through
    the active driver (or the driver-less custom-engine context). Returns the
@@ -776,7 +1138,7 @@ int vm_dynamic_exec(VM* vm, const char* sql) {
     int row_count;
     DBDriver* driver = vm->driver;
     if (driver != NULL) {
-        row_count = driver->exec(driver, sql, NULL, 0);
+        row_count = vm_exec_dml(vm, sql, NULL, 0);
     } else {
         Context* ctx = vm->context;
         if (ctx == NULL || ctx->pager == NULL) return -1;
@@ -1558,8 +1920,8 @@ dispatch:
                     set_runtime_error_sql(vm, "No database driver");
                     THROW(vm);
                 }
-                int row_count = vm->driver->exec(vm->driver, sql_value.as.as_string,
-                                                 vm->sql_params, vm->sql_param_count);
+                int row_count = vm_exec_dml(vm, sql_value.as.as_string,
+                                            vm->sql_params, vm->sql_param_count);
                 for (int i = 0; i < vm->sql_param_count; i++) {
                     value_release(vm->sql_params[i]);
                 }

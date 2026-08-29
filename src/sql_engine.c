@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "sql_engine.h"
+#include "ast.h"   /* TRIGGER_BEFORE/AFTER/INSERT/UPDATE/DELETE constants */
 
 /* -------------------------------------------------------------------------- */
 /* In-memory catalog cache                                                    */
@@ -3032,6 +3033,97 @@ static int constraints_check_row_set(Table* table, Row* rows, int row_count) {
     return 1;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Row-level trigger hook (FOR EACH ROW triggers)                              */
+/*                                                                            */
+/* The VM installs the hook on the active DBDriver; custom_exec copies it    */
+/* into these globals before each statement. A NULL hook means no row-level  */
+/* triggers are active and DML runs exactly as before. The hook receives the  */
+/* old and new row images as VAL_ROW Values (NULL where the context does not  */
+/* apply) and returns 0 to abort the statement.                              */
+/* -------------------------------------------------------------------------- */
+
+static RowTriggerFn g_row_trigger_fn = NULL;
+static void*        g_row_trigger_user = NULL;
+
+static Value trigger_cell_value(const Cell* cell) {
+    switch (cell->type) {
+        case VAL_INT:    return value_int(cell->as.as_int);
+        case VAL_FLOAT:  return value_float(cell->as.as_float);
+        case VAL_STRING: return value_string(strdup(cell->as.as_string != NULL
+                                                    ? cell->as.as_string : ""));
+        case VAL_NULL:   return value_null();
+        default:         return value_int(0);
+    }
+}
+
+/* Builds a VAL_ROW Value (refcount 1, caller releases) from positional cells. */
+static Value trigger_row_value_from_cells(Table* table, Cell* cells) {
+    RowObj* row = row_obj_new(table->column_count);
+    if (row == NULL) return value_null();
+    for (int c = 0; c < table->column_count; c++) {
+        Value v = trigger_cell_value(&cells[c]);
+        row_obj_set_column(row, c, table->columns[c].name, v);
+        value_release(v);
+    }
+    return value_row(row);
+}
+
+/* Builds a VAL_ROW Value (refcount 1, caller releases) from a named Row. */
+static Value trigger_row_value_from_row(Row* src) {
+    RowObj* row = row_obj_new(src->field_count);
+    if (row == NULL) return value_null();
+    for (int c = 0; c < src->field_count; c++) {
+        Value v = trigger_cell_value(&src->fields[c].value);
+        row_obj_set_column(row, c, src->fields[c].name, v);
+        value_release(v);
+    }
+    return value_row(row);
+}
+
+/* Fire the row-trigger hook for one row image pair. Returns 1 on success; on
+   failure copies the hook's message into g_sql_ddl_error and returns 0. */
+static int engine_fire_row_triggers(int timing, int event, const char* table,
+                                    const Value* old_row, const Value* new_row) {
+    if (g_row_trigger_fn == NULL) return 1;
+    char error[256];
+    error[0] = '\0';
+    if (g_row_trigger_fn(g_row_trigger_user, timing, event, table, old_row, new_row,
+                         error, sizeof(error))) {
+        return 1;
+    }
+    snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error), "%s",
+             error[0] != '\0' ? error : "row trigger failed");
+    return 0;
+}
+
+static Row trigger_row_dup(Row* src) {
+    Row copy;
+    copy.field_count = src->field_count;
+    copy.fields = calloc((size_t)copy.field_count, sizeof(Field));
+    if (copy.fields == NULL) {
+        copy.field_count = 0;
+        return copy;
+    }
+    for (int i = 0; i < copy.field_count; i++) {
+        copy.fields[i].name = strdup(src->fields[i].name);
+        copy.fields[i].value = cell_dup(&src->fields[i].value);
+    }
+    return copy;
+}
+
+static void trigger_row_free(Row* row) {
+    if (row->fields == NULL) return;
+    for (int i = 0; i < row->field_count; i++) {
+        free(row->fields[i].name);
+        if (row->fields[i].value.type == VAL_STRING) {
+            free(row->fields[i].value.as.as_string);
+        }
+    }
+    free(row->fields);
+    row->fields = NULL;
+}
+
 static int execute_insert_select(Context* ctx, Table* table, const char* select_query) {
     Result* res = sql_exec(select_query, ctx);
     if (res == NULL) return 0;
@@ -3054,10 +3146,22 @@ static int execute_insert_select(Context* ctx, Table* table, const char* select_
                 }
             }
         }
-        int ok = constraints_apply_row(table, cells) &&
-                 constraints_check_new_row(ctx, table, cells);
+        int ok = constraints_apply_row(table, cells);
+        if (ok) {
+            Value new_row = trigger_row_value_from_cells(table, cells);
+            ok = engine_fire_row_triggers(TRIGGER_BEFORE, TRIGGER_INSERT,
+                                          table->name, NULL, &new_row);
+            value_release(new_row);
+        }
+        if (ok) {
+            ok = constraints_check_new_row(ctx, table, cells);
+        }
         if (ok) {
             catalog_insert(ctx, table, cells);
+            Value new_row = trigger_row_value_from_cells(table, cells);
+            ok = engine_fire_row_triggers(TRIGGER_AFTER, TRIGGER_INSERT,
+                                          table->name, NULL, &new_row);
+            value_release(new_row);
         }
         for (int c = 0; c < table->column_count && c < MAX_COLUMNS; c++) {
             if (cells[c].type == VAL_STRING) {
@@ -3183,12 +3287,35 @@ int sql_exec_ddl(const char* query, Context* ctx) {
             sql_free_ddl_stmt(&stmt);
             return 0;
         }
-        if (!constraints_apply_row(t, stmt.values) ||
-            !constraints_check_new_row(ctx, t, stmt.values)) {
+        if (!constraints_apply_row(t, stmt.values)) {
+            sql_free_ddl_stmt(&stmt);
+            return 0;
+        }
+        if (g_row_trigger_fn != NULL) {
+            Value new_row = trigger_row_value_from_cells(t, stmt.values);
+            int fired = engine_fire_row_triggers(TRIGGER_BEFORE, TRIGGER_INSERT,
+                                                 t->name, NULL, &new_row);
+            value_release(new_row);
+            if (!fired) {
+                sql_free_ddl_stmt(&stmt);
+                return 0;
+            }
+        }
+        if (!constraints_check_new_row(ctx, t, stmt.values)) {
             sql_free_ddl_stmt(&stmt);
             return 0;
         }
         catalog_insert(ctx, t, stmt.values);
+        if (g_row_trigger_fn != NULL) {
+            Value new_row = trigger_row_value_from_cells(t, stmt.values);
+            int fired = engine_fire_row_triggers(TRIGGER_AFTER, TRIGGER_INSERT,
+                                                 t->name, NULL, &new_row);
+            value_release(new_row);
+            if (!fired) {
+                sql_free_ddl_stmt(&stmt);
+                return 0;
+            }
+        }
         sql_free_ddl_stmt(&stmt);
         return 1;
     }
@@ -3367,9 +3494,29 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
         return 0;
     }
 
+    /* When row-level triggers are active, snapshot the pre-update image of
+       every matched row so BEFORE/AFTER row triggers receive :old. */
+    int* matched = NULL;
+    Row* old_rows = NULL;
+    if (g_row_trigger_fn != NULL && row_count > 0) {
+        matched = calloc((size_t)row_count, sizeof(int));
+        old_rows = calloc((size_t)row_count, sizeof(Row));
+        if (matched == NULL || old_rows == NULL) {
+            free(matched);
+            free(old_rows);
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error), "out of memory");
+            free_rows(rows, row_count);
+            return 0;
+        }
+    }
+
     for (int i = 0; i < row_count; i++) {
         if (stmt->where != NULL && !row_matches_where(&rows[i], stmt->where)) {
             continue;
+        }
+        if (matched != NULL) {
+            matched[i] = 1;
+            old_rows[i] = trigger_row_dup(&rows[i]);
         }
         Cell* cell = &rows[i].fields[set_col_index].value;
         if (cell->type == VAL_STRING && cell->as.as_string != NULL) {
@@ -3385,11 +3532,35 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
         } else {
             cell->as.as_int = stmt->set_value.as.as_int;
         }
+        if (matched != NULL && matched[i]) {
+            Value old_row = trigger_row_value_from_row(&old_rows[i]);
+            Value new_row = trigger_row_value_from_row(&rows[i]);
+            int fired = engine_fire_row_triggers(TRIGGER_BEFORE, TRIGGER_UPDATE,
+                                                 table->name, &old_row, &new_row);
+            value_release(old_row);
+            value_release(new_row);
+            if (!fired) {
+                for (int k = 0; k < row_count; k++) {
+                    if (matched[k]) trigger_row_free(&old_rows[k]);
+                }
+                free(matched);
+                free(old_rows);
+                free_rows(rows, row_count);
+                return 0;
+            }
+        }
     }
 
     /* Validate the mutated row set before the row chain is rewritten, so a
        rejected UPDATE leaves the stored data untouched. */
     if (!constraints_check_row_set(table, rows, row_count)) {
+        if (matched != NULL) {
+            for (int k = 0; k < row_count; k++) {
+                if (matched[k]) trigger_row_free(&old_rows[k]);
+            }
+            free(matched);
+            free(old_rows);
+        }
         free_rows(rows, row_count);
         return 0;
     }
@@ -3399,6 +3570,13 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
     for (int i = 0; i < row_count; i++) {
         Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
         if (cells == NULL) {
+            if (matched != NULL) {
+                for (int k = 0; k < row_count; k++) {
+                    if (matched[k]) trigger_row_free(&old_rows[k]);
+                }
+                free(matched);
+                free(old_rows);
+            }
             for (int k = i; k < row_count; k++) {
                 for (int j = 0; j < rows[k].field_count; j++) {
                     free(rows[k].fields[j].name);
@@ -3416,7 +3594,29 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
         }
         catalog_insert(ctx, table, cells);
         free(cells);
+        if (matched != NULL && matched[i]) {
+            Value old_row = trigger_row_value_from_row(&old_rows[i]);
+            Value new_row = trigger_row_value_from_row(&rows[i]);
+            int fired = engine_fire_row_triggers(TRIGGER_AFTER, TRIGGER_UPDATE,
+                                                 table->name, &old_row, &new_row);
+            value_release(old_row);
+            value_release(new_row);
+            trigger_row_free(&old_rows[i]);
+            matched[i] = 0;
+            if (!fired) {
+                for (int k = 0; k < row_count; k++) {
+                    if (matched[k]) trigger_row_free(&old_rows[k]);
+                }
+                free(matched);
+                free(old_rows);
+                free_rows(rows, row_count);
+                return 0;
+            }
+        }
     }
+
+    free(matched);
+    free(old_rows);
 
     for (int i = 0; i < row_count; i++) {
         for (int j = 0; j < rows[i].field_count; j++) {
@@ -3447,12 +3647,40 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
     int row_count = 0;
     if (!read_all_rows(ctx, table, &rows, &row_count)) return 0;
 
+    /* Row-level BEFORE triggers fire per matched row before the row chain
+       is rewritten; AFTER triggers fire once the rewrite is complete. */
+    int* matched = NULL;
+    if (g_row_trigger_fn != NULL && row_count > 0) {
+        matched = calloc((size_t)row_count, sizeof(int));
+        if (matched == NULL) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error), "out of memory");
+            free_rows(rows, row_count);
+            return 0;
+        }
+        for (int i = 0; i < row_count; i++) {
+            if (stmt->where != NULL && !row_matches_where(&rows[i], stmt->where)) {
+                continue;
+            }
+            matched[i] = 1;
+            Value old_row = trigger_row_value_from_row(&rows[i]);
+            int fired = engine_fire_row_triggers(TRIGGER_BEFORE, TRIGGER_DELETE,
+                                                 table->name, &old_row, NULL);
+            value_release(old_row);
+            if (!fired) {
+                free(matched);
+                free_rows(rows, row_count);
+                return 0;
+            }
+        }
+    }
+
     free_row_pages(ctx, table);
     indexes_reset(ctx, table);
     for (int i = 0; i < row_count; i++) {
         if (stmt->where != NULL && !row_matches_where(&rows[i], stmt->where)) {
             Cell* cells = malloc((size_t)rows[i].field_count * sizeof(Cell));
             if (cells == NULL) {
+                free(matched);
                 for (int k = i; k < row_count; k++) {
                     for (int j = 0; j < rows[k].field_count; j++) {
                         free(rows[k].fields[j].name);
@@ -3471,6 +3699,22 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
             catalog_insert(ctx, table, cells);
             free(cells);
         }
+    }
+
+    if (matched != NULL) {
+        for (int i = 0; i < row_count; i++) {
+            if (!matched[i]) continue;
+            Value old_row = trigger_row_value_from_row(&rows[i]);
+            int fired = engine_fire_row_triggers(TRIGGER_AFTER, TRIGGER_DELETE,
+                                                 table->name, &old_row, NULL);
+            value_release(old_row);
+            if (!fired) {
+                free(matched);
+                free_rows(rows, row_count);
+                return 0;
+            }
+        }
+        free(matched);
     }
 
     for (int i = 0; i < row_count; i++) {
@@ -4452,7 +4696,16 @@ static void custom_close(DBDriver* driver) {
 static int custom_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
     (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
+    /* Install the VM's row-level trigger hook (NULL when none is active).
+       Save/restore so a nested statement executed from inside a trigger body
+       (execute_immediate) does not clobber the outer statement's hook. */
+    RowTriggerFn saved_fn = g_row_trigger_fn;
+    void* saved_user = g_row_trigger_user;
+    g_row_trigger_fn = driver->row_trigger_fn;
+    g_row_trigger_user = driver->row_trigger_user;
     int row_count = sql_exec_ddl(sql, &impl->ctx);
+    g_row_trigger_fn = saved_fn;
+    g_row_trigger_user = saved_user;
     if (!row_count) {
         if (g_sql_ddl_error[0] != '\0') {
             snprintf(driver->error_message, sizeof(driver->error_message),
@@ -4643,4 +4896,6 @@ void custom_driver_init(DBDriver* driver) {
     driver->sequence_load = custom_sequence_load;
     driver->sequence_save = custom_sequence_save;
     driver->sequence_drop = custom_sequence_drop;
+    driver->row_trigger_fn = NULL;
+    driver->row_trigger_user = NULL;
 }
