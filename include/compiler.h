@@ -139,6 +139,9 @@ typedef struct {
     int   timing;
     int   event;
     int   offset;
+    int   for_each_row;  /* 1 = row-level: fired per row via the driver hook
+                            with :new/:old row arguments; never fired by the
+                            statement-level call paths */
 } ChunkTrigger;
 
 typedef struct {
@@ -174,7 +177,7 @@ int  add_constant(Chunk* chunk, Value value);
 /* Runtime trigger registry. chunk_add_trigger copies name/table.
    chunk_remove_trigger disables the named trigger (offset = -1). */
 void chunk_add_trigger(Chunk* chunk, const char* name, int timing, int event,
-                       const char* table, int offset);
+                       const char* table, int offset, int for_each_row);
 void chunk_remove_trigger(Chunk* chunk, const char* name);
 
 void   write_chunk_u16(Chunk* chunk, uint16_t value);

@@ -2720,6 +2720,13 @@ int typecheck_program(Program* program,
             type_error(&tc, (SourceLoc){0, 0}, "Too many nested scopes");
             break;
         }
+        if (trig->for_each_row) {
+            /* Row-level trigger context: :new / :old bind as row-typed
+               implicit locals. Fields stay unknown-typed (checked at runtime
+               against the actual row image). */
+            add_local(&tc, "new", &type_row);
+            add_local(&tc, "old", &type_row);
+        }
         tc.return_type = &type_int;
         check_block(&tc, trig->body);
         pop_scope(&tc);

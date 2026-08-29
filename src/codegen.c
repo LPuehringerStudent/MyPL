@@ -73,6 +73,7 @@ typedef struct {
     int   timing;
     int   event;
     char* table;
+    int   for_each_row; /* 1 = row-level: fires per row via the driver hook */
     int   dropped;  /* set by `drop trigger`: suppresses compile-time firing */
 } TriggerEntry;
 
@@ -1973,7 +1974,14 @@ static int register_trigger_procs(Compiler* compiler, Program* program, char* er
         char* mangled = malloc(len);
         if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
         snprintf(mangled, len, "__trigger_%s", trig->name);
-        int idx = add_proc_entry(compiler, mangled, -1, &type_int, NULL, NULL, 0);
+        /* Row-level triggers take two implicit row parameters, :new and
+           :old, passed by the VM's row-trigger hook at fire time. */
+        Type* row_param_types[2] = {&type_row, &type_row};
+        ParamMode row_param_modes[2] = {PARAM_IN, PARAM_IN};
+        int idx = add_proc_entry(compiler, mangled, -1, &type_int,
+                                 trig->for_each_row ? row_param_types : NULL,
+                                 trig->for_each_row ? row_param_modes : NULL,
+                                 trig->for_each_row ? 2 : 0);
         if (idx < 0) {
             compiler_format_error(compiler, error_buf, error_size,
                                   "Duplicate trigger '%s'", trig->name);
@@ -1989,6 +1997,7 @@ static int register_trigger_procs(Compiler* compiler, Program* program, char* er
         entry->proc_name = mangled;
         entry->timing = trig->timing;
         entry->event = trig->event;
+        entry->for_each_row = trig->for_each_row;
         entry->dropped = 0;
         entry->table = malloc(strlen(trig->table) + 1);
         if (entry->table == NULL) {
@@ -2012,6 +2021,12 @@ static void compile_trigger_members(Compiler* compiler, Program* program) {
         if (idx < 0) continue;
         compiler->current_proc_autonomous = 0;
         compiler->procs[idx].offset = compiler->chunk->count;
+        if (trig->for_each_row) {
+            /* Implicit row-context parameters: the VM hook pushes the :new
+               and :old row images as the first two stack slots. */
+            add_local(compiler, "new", 3, &type_row);
+            add_local(compiler, "old", 3, &type_row);
+        }
         compile_block(compiler, trig->body);
         compiler->procs[idx].autonomous_transaction = compiler->current_proc_autonomous;
         if (compiler->had_error) return;
@@ -2112,6 +2127,9 @@ static void compile_struct_methods(Compiler* compiler, Program* program) {
 static void emit_trigger_calls(Compiler* compiler, int timing, int event, const char* table) {
     for (int i = 0; i < compiler->trigger_count; i++) {
         TriggerEntry* entry = &compiler->triggers[i];
+        /* Row-level triggers are not fired here: they run per affected row
+           through the VM's driver row-trigger hook. */
+        if (entry->for_each_row) continue;
         if (entry->timing == timing && entry->event == event && !entry->dropped &&
             trigger_name_equals(entry->table, table)) {
             emit_call(compiler, entry->proc_name, 0);
@@ -2676,7 +2694,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
         if (idx < 0 || compiler.procs[idx].offset < 0) continue;
         chunk_add_trigger(chunk, te->proc_name + 10 /* skip "__trigger_" */,
                           te->timing, te->event, te->table,
-                          compiler.procs[idx].offset);
+                          compiler.procs[idx].offset, te->for_each_row);
     }
 
     free_exception_entries(&compiler);

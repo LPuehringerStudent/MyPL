@@ -599,6 +599,30 @@ static Expr* variable(Parser* parser) {
     return expr;
 }
 
+/* ':new' / ':old' row references inside row-level trigger bodies. Parses as
+   a plain variable named "new"/"old"; the following `.field` is handled by the
+   normal field infix rule. The variables are only in scope while compiling a
+   FOR EACH ROW trigger body (typechecker/codegen reject them elsewhere). */
+static Expr* trigger_row_ref(Parser* parser) {
+    Token colon = parser->previous; /* ':' */
+    if (!check(parser, TOKEN_IDENT) ||
+        (!current_token_is_keyword(parser, "new") &&
+         !current_token_is_keyword(parser, "old"))) {
+        error_at_current(parser, "expected ':new' or ':old' after ':'");
+        Expr* dummy = create_literal_expr(value_int(0));
+        dummy->loc.line = colon.line;
+        dummy->loc.column = colon.column;
+        return dummy;
+    }
+    advance(parser); /* new / old */
+    char* name = copy_token_lexeme(&parser->previous);
+    Expr* expr = create_variable_expr(name);
+    free(name);
+    expr->loc.line = colon.line;
+    expr->loc.column = colon.column;
+    return expr;
+}
+
 static Expr* sqlcode_expr(Parser* parser) {
     Expr* expr = create_call_expr("sqlcode", NULL, 0);
     if (expr != NULL) {
@@ -2755,7 +2779,7 @@ static ParseRule rules[] = {
     [TOKEN_RBRACKET]   = {NULL,        NULL,   PREC_NONE},
     [TOKEN_COMMA]      = {NULL,        NULL,   PREC_NONE},
     [TOKEN_SEMICOLON]  = {NULL,        NULL,   PREC_NONE},
-    [TOKEN_COLON]      = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_COLON]      = {trigger_row_ref, NULL, PREC_NONE},
 
     [TOKEN_ERROR]      = {NULL,        NULL,   PREC_NONE},
     [TOKEN_EOF]        = {NULL,        NULL,   PREC_NONE},
@@ -2944,6 +2968,32 @@ static void parse_trigger(Parser* parser, Program* program) {
     advance(parser); /* table name */
     char* table = copy_token_lexeme(&parser->previous);
 
+    int for_each_row = 0;
+    if (match(parser, TOKEN_FOR)) {
+        if (!current_token_is_keyword(parser, "each")) {
+            error_at_current(parser, "expected 'each' after 'for' in trigger declaration");
+            free(name);
+            free(table);
+            return;
+        }
+        advance(parser); /* each */
+        if (!current_token_is_keyword(parser, "row")) {
+            error_at_current(parser, "expected 'row' after 'for each' in trigger declaration");
+            free(name);
+            free(table);
+            return;
+        }
+        advance(parser); /* row */
+        for_each_row = 1;
+    }
+    if (for_each_row && event != TRIGGER_INSERT && event != TRIGGER_UPDATE &&
+        event != TRIGGER_DELETE) {
+        error_at_current(parser, "'for each row' requires an insert, update, or delete trigger");
+        free(name);
+        free(table);
+        return;
+    }
+
     if (!check(parser, TOKEN_LBRACE)) {
         error_at_current(parser, "expected '{' to start trigger body");
         free(name);
@@ -2976,6 +3026,7 @@ static void parse_trigger(Parser* parser, Program* program) {
     decl->timing = timing;
     decl->event = event;
     decl->table = table;
+    decl->for_each_row = for_each_row;
     decl->body = body;
 }
 
