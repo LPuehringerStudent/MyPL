@@ -11,6 +11,7 @@
 #include "natives.h"
 #include "os.h"
 #include "parser.h"
+#include "trigger.h"
 #include "typecheck.h"
 
 #define MAX_LOCALS 256
@@ -72,6 +73,7 @@ typedef struct {
     int   timing;
     int   event;
     char* table;
+    int   dropped;  /* set by `drop trigger`: suppresses compile-time firing */
 } TriggerEntry;
 
 typedef struct {
@@ -464,7 +466,6 @@ static void emit_call(Compiler* compiler, const char* name, int arg_count) {
 
 static void compile_expr(Compiler* compiler, Expr* expr);
 static void compile_stmt(Compiler* compiler, Stmt* stmt);
-static int sql_stmt_trigger_info(const char* sql, int* event, char* table, size_t table_size);
 static void emit_trigger_calls(Compiler* compiler, int timing, int event, const char* table);
 
 static int compiler_load_module(Compiler* compiler, const char* path, char* error, size_t error_size);
@@ -1331,7 +1332,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             int trig_event = -1;
             char trig_table[64];
-            int has_trig = sql_stmt_trigger_info(s->sql, &trig_event, trig_table, sizeof(trig_table));
+            int has_trig = sql_trigger_info(s->sql, &trig_event, trig_table, sizeof(trig_table));
             if (has_trig) {
                 emit_trigger_calls(compiler, TRIGGER_BEFORE, trig_event, trig_table);
             }
@@ -1341,6 +1342,38 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             if (has_trig) {
                 emit_trigger_calls(compiler, TRIGGER_AFTER, trig_event, trig_table);
             }
+            break;
+        }
+        case STMT_DROP_TRIGGER: {
+            const char* name = stmt->as.drop_trigger.name;
+            /* Suppress compile-time firing of the dropped trigger for any
+               static SQL compiled after this statement. The entry stays in
+               the runtime registry (chunk->triggers): the OP_DROP_TRIGGER
+               emitted below disables it at execution time, so dynamic SQL
+               running before the drop still fires it. */
+            for (int i = 0; i < compiler->trigger_count; i++) {
+                TriggerEntry* entry = &compiler->triggers[i];
+                if (trigger_name_equals(entry->proc_name + 10, name)) { /* skip "__trigger_" */
+                    entry->dropped = 1;
+                    break;
+                }
+            }
+            /* Runtime drop: disables the registry entry and removes the
+               persisted definition (see OP_DROP_TRIGGER in vm.c). */
+            char* name_copy = malloc(strlen(name) + 1);
+            if (name_copy == NULL) {
+                error(compiler, "out of memory");
+                return;
+            }
+            strcpy(name_copy, name);
+            int name_idx = add_constant(compiler->chunk, value_string(name_copy));
+            if (name_idx < 0) {
+                free(name_copy);
+                error(compiler, "too many constants");
+                return;
+            }
+            emit_byte(compiler, OP_DROP_TRIGGER);
+            emit_u16(compiler, (uint16_t)name_idx);
             break;
         }
         case STMT_SQL_TRANSACTION: {
@@ -1956,6 +1989,7 @@ static int register_trigger_procs(Compiler* compiler, Program* program, char* er
         entry->proc_name = mangled;
         entry->timing = trig->timing;
         entry->event = trig->event;
+        entry->dropped = 0;
         entry->table = malloc(strlen(trig->table) + 1);
         if (entry->table == NULL) {
             error(compiler, "out of memory");
@@ -2075,65 +2109,10 @@ static void compile_struct_methods(Compiler* compiler, Program* program) {
     }
 }
 
-/* Extract (event, table) from a static DML/DDL statement for trigger firing.
- * Returns 1 on success, 0 when the statement has no trigger-relevant shape. */
-static int sql_stmt_trigger_info(const char* sql, int* event, char* table, size_t table_size) {
-    const char* p = sql;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    char kw[16];
-    int ki = 0;
-    while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) && ki < 15) {
-        char c = *p++;
-        kw[ki++] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
-    }
-    kw[ki] = '\0';
-
-    int ev = -1;
-    const char* skip_kw = NULL;
-    if (strcmp(kw, "insert") == 0)      { ev = TRIGGER_INSERT; skip_kw = "into"; }
-    else if (strcmp(kw, "update") == 0) { ev = TRIGGER_UPDATE; skip_kw = NULL; }
-    else if (strcmp(kw, "delete") == 0) { ev = TRIGGER_DELETE; skip_kw = "from"; }
-    else if (strcmp(kw, "create") == 0) { ev = TRIGGER_CREATE; skip_kw = "table"; }
-    else if (strcmp(kw, "drop") == 0)   { ev = TRIGGER_DROP;   skip_kw = "table"; }
-    if (ev < 0) return 0;
-
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (skip_kw != NULL) {
-        size_t n = strlen(skip_kw);
-        for (size_t i = 0; i < n; i++) {
-            char c = p[i];
-            char lower = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
-            if (lower != skip_kw[i]) return 0;
-        }
-        p += n;
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    }
-    size_t ti = 0;
-    while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-                  (*p >= '0' && *p <= '9') || *p == '_') && ti + 1 < table_size) {
-        table[ti++] = *p++;
-    }
-    if (ti == 0) return 0;
-    table[ti] = '\0';
-    *event = ev;
-    return 1;
-}
-
-static int trigger_name_equals(const char* a, const char* b) {
-    while (*a && *b) {
-        char ca = *a++;
-        char cb = *b++;
-        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
-        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
-        if (ca != cb) return 0;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
 static void emit_trigger_calls(Compiler* compiler, int timing, int event, const char* table) {
     for (int i = 0; i < compiler->trigger_count; i++) {
         TriggerEntry* entry = &compiler->triggers[i];
-        if (entry->timing == timing && entry->event == event &&
+        if (entry->timing == timing && entry->event == event && !entry->dropped &&
             trigger_name_equals(entry->table, table)) {
             emit_call(compiler, entry->proc_name, 0);
             emit_byte(compiler, OP_POP);
@@ -2685,6 +2664,19 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
                 }
             }
         }
+    }
+
+    /* Publish the runtime trigger registry: dynamic SQL (execute_immediate,
+       dbms_sql.execute) fires triggers through these chunk entries. Triggers
+       dropped by a `drop trigger` statement are included; the emitted
+       OP_DROP_TRIGGER disables them at execution time. */
+    for (int i = 0; i < compiler.trigger_count; i++) {
+        TriggerEntry* te = &compiler.triggers[i];
+        int idx = find_proc(&compiler, te->proc_name);
+        if (idx < 0 || compiler.procs[idx].offset < 0) continue;
+        chunk_add_trigger(chunk, te->proc_name + 10 /* skip "__trigger_" */,
+                          te->timing, te->event, te->table,
+                          compiler.procs[idx].offset);
     }
 
     free_exception_entries(&compiler);

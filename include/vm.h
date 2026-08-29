@@ -50,6 +50,10 @@ int             vm_utl_file_fclose(VM* vm, int handle);
 int             vm_dbms_sql_execute(VM* vm, const char* sql);
 Value           vm_dbms_sql_query(VM* vm, const char* sql);
 
+/* Dynamic SQL execution with runtime trigger firing and DROP TRIGGER
+   interception (execute_immediate, dbms_sql.execute). */
+int             vm_dynamic_exec(VM* vm, const char* sql);
+
 /* sequences */
 int             vm_sequence_create(VM* vm, const char* name, int start, int increment);
 int             vm_sequence_nextval(VM* vm, const char* name, int* out);

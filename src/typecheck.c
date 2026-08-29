@@ -2499,6 +2499,9 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
         case STMT_PRAGMA:
             /* Pragmas are handled during code generation. */
             break;
+        case STMT_DROP_TRIGGER:
+            /* DROP TRIGGER is a runtime/codegen concern; nothing to check. */
+            break;
     }
 }
 

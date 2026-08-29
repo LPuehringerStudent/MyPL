@@ -3,9 +3,12 @@
 #include <string.h>
 
 #include "vm.h"
+#include "ast.h"
 #include "diagnostics.h"
 #include "natives.h"
 #include "sql_engine.h"
+#include "stored_programs.h"
+#include "trigger.h"
 
 #define TRY_MAX 64
 #define MAX_OUT_PARAMS 16
@@ -330,22 +333,7 @@ int vm_utl_file_fclose(VM* vm, int handle) {
 }
 
 int vm_dbms_sql_execute(VM* vm, const char* sql) {
-    if (vm == NULL || sql == NULL) return -1;
-    DBDriver* driver = vm_get_driver(vm);
-    if (driver != NULL) {
-        int row_count = driver->exec(driver, sql, NULL, 0);
-        if (row_count < 0) return -1;
-        vm_set_sql_rowcount(vm, row_count);
-        return row_count;
-    }
-    Context* ctx = vm->context;
-    if (ctx == NULL || ctx->pager == NULL) return -1;
-    Result* res = sql_exec(sql, ctx);
-    if (res == NULL) return -1;
-    int row_count = res->row_count;
-    result_free(res);
-    vm_set_sql_rowcount(vm, row_count);
-    return row_count;
+    return vm_dynamic_exec(vm, sql);
 }
 
 Value vm_dbms_sql_query(VM* vm, const char* sql) {
@@ -687,6 +675,124 @@ void vm_set_driver(VM* vm, DBDriver* driver) {
 static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
                               int out_count, int* out_positions, int* out_slots,
                               Value* out_result);
+
+static void vm_free_child(VM* vm);
+static InterpretResult vm_run(VM* vm, uint8_t* end);
+
+/* --------------------------------------------------------------------------
+ * Runtime trigger firing (dynamic SQL)
+ *
+ * Static SQL statements fire triggers via calls emitted at compile time
+ * (codegen.c emit_trigger_calls). Dynamic SQL built at runtime —
+ * execute_immediate(...) and dbms_sql.execute(...) — is sniffed here instead:
+ * matching triggers from the chunk's runtime registry run in a child VM that
+ * shares the chunk, driver, and globals (like vm_call_autonomous, but on the
+ * same connection/transaction).
+ * ------------------------------------------------------------------------ */
+
+static int vm_fire_trigger(VM* vm, int offset) {
+    VM* child = vm_init();
+    if (child == NULL) {
+        set_runtime_error(vm, "Out of memory");
+        return 0;
+    }
+    child->chunk = vm->chunk;
+    child->ip = child->chunk->code + offset;
+    child->frame_base = child->stack;
+    child->frame_count = 0;
+    child->driver = vm->driver;
+    child->context = vm->context;
+    child->global_count = vm->global_count;
+    for (int i = 0; i < vm->global_count; i++) {
+        child->globals[i] = vm->globals[i];
+        value_retain(child->globals[i]);
+    }
+    InterpretResult result = vm_run(child, child->chunk->code + child->chunk->count);
+    if (result != INTERPRET_OK) {
+        snprintf(vm->error_message, sizeof(vm->error_message), "%s", child->error_message);
+        vm_free_child(child);
+        return 0;
+    }
+    Value value;
+    if (pop(child, &value)) {
+        value_release(value);
+    }
+    vm_free_child(child);
+    return 1;
+}
+
+static int vm_fire_triggers(VM* vm, int timing, int event, const char* table) {
+    Chunk* chunk = vm->chunk;
+    if (chunk == NULL) return 1;
+    for (int i = 0; i < chunk->trigger_count; i++) {
+        ChunkTrigger* trigger = &chunk->triggers[i];
+        if (trigger->offset < 0) continue;
+        if (trigger->timing != timing || trigger->event != event) continue;
+        if (!trigger_name_equals(trigger->table, table)) continue;
+        if (!vm_fire_trigger(vm, trigger->offset)) return 0;
+    }
+    return 1;
+}
+
+/* Disable a trigger in the runtime registry and remove its persisted
+   definition so it stays dropped after a restart. */
+static void vm_drop_trigger(VM* vm, const char* name) {
+    if (vm->chunk != NULL) {
+        chunk_remove_trigger(vm->chunk, name);
+    }
+    if (vm->driver != NULL) {
+        Context ctx;
+        ctx.db_path = vm->driver->connection_string[0] != '\0'
+                          ? vm->driver->connection_string
+                          : NULL;
+        ctx.pager = NULL;
+        stored_programs_drop_unit(vm->driver, &ctx, name, "TRIGGER");
+    } else if (vm->context != NULL) {
+        stored_programs_drop_unit(NULL, vm->context, name, "TRIGGER");
+    }
+}
+
+/* Execute a dynamic SQL string: intercepts `drop trigger <name>`, fires
+   matching BEFORE/AFTER triggers around the statement, and runs it through
+   the active driver (or the driver-less custom-engine context). Returns the
+   affected row count, or -1 on error. */
+int vm_dynamic_exec(VM* vm, const char* sql) {
+    if (vm == NULL || sql == NULL) return -1;
+
+    char drop_name[256];
+    if (sql_drop_trigger_name(sql, drop_name, sizeof(drop_name))) {
+        vm_drop_trigger(vm, drop_name);
+        vm->sql_rowcount = 0;
+        return 0;
+    }
+
+    int event = -1;
+    char table[64];
+    int has_triggers = sql_trigger_info(sql, &event, table, sizeof(table));
+    if (has_triggers && !vm_fire_triggers(vm, TRIGGER_BEFORE, event, table)) {
+        return -1;
+    }
+
+    int row_count;
+    DBDriver* driver = vm->driver;
+    if (driver != NULL) {
+        row_count = driver->exec(driver, sql, NULL, 0);
+    } else {
+        Context* ctx = vm->context;
+        if (ctx == NULL || ctx->pager == NULL) return -1;
+        Result* res = sql_exec(sql, ctx);
+        if (res == NULL) return -1;
+        row_count = res->row_count;
+        result_free(res);
+    }
+    if (row_count < 0) return -1;
+    vm_set_sql_rowcount(vm, row_count);
+
+    if (has_triggers && !vm_fire_triggers(vm, TRIGGER_AFTER, event, table)) {
+        return -1;
+    }
+    return row_count;
+}
 
 static InterpretResult vm_run(VM* vm, uint8_t* end) {
     for (;;) {
@@ -1463,6 +1569,19 @@ dispatch:
                     THROW(vm);
                 }
                 vm->sql_rowcount = row_count;
+                break;
+            }
+            case OP_DROP_TRIGGER: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t idx = read_u16(vm->ip);
+                vm->ip += 2;
+                if (idx >= (uint16_t)vm->chunk->constants_count) return INTERPRET_RUNTIME_ERROR;
+                Value name_value = vm->chunk->constants[idx];
+                if (name_value.type != VAL_STRING || name_value.as.as_string == NULL) {
+                    set_runtime_error(vm, "Invalid trigger name");
+                    THROW(vm);
+                }
+                vm_drop_trigger(vm, name_value.as.as_string);
                 break;
             }
             case OP_SQL_BIND_INT:
