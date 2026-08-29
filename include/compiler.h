@@ -87,7 +87,8 @@ typedef enum {
     OP_CURSOR_OPEN,
     OP_CURSOR_FETCH,
     OP_CURSOR_CLOSE,
-    OP_CURSOR_ATTR
+    OP_CURSOR_ATTR,
+    OP_DROP_TRIGGER
 } OpCode;
 
 typedef enum {
@@ -127,6 +128,19 @@ struct MapObj {
     int capacity;
 };
 
+/* Runtime trigger registry entry. Filled by the code generator for every
+   active trigger declaration so dynamic SQL (execute_immediate, dbms_sql)
+   can fire triggers at runtime. timing/event use the TRIGGER_* constants
+   from ast.h; offset is the bytecode address of the hidden
+   __trigger_<name> proc, or -1 once the trigger has been dropped. */
+typedef struct {
+    char* name;
+    char* table;
+    int   timing;
+    int   event;
+    int   offset;
+} ChunkTrigger;
+
 typedef struct {
     uint8_t* code;
     int      count;
@@ -144,6 +158,10 @@ typedef struct {
     int    constants_count;
     int    constants_capacity;
 
+    ChunkTrigger* triggers;
+    int           trigger_count;
+    int           trigger_capacity;
+
     const char* source_path;
 } Chunk;
 
@@ -152,6 +170,12 @@ void free_chunk(Chunk* chunk);
 void write_chunk(Chunk* chunk, uint8_t byte);
 void write_chunk_line(Chunk* chunk, uint8_t byte, int line, int column);
 int  add_constant(Chunk* chunk, Value value);
+
+/* Runtime trigger registry. chunk_add_trigger copies name/table.
+   chunk_remove_trigger disables the named trigger (offset = -1). */
+void chunk_add_trigger(Chunk* chunk, const char* name, int timing, int event,
+                       const char* table, int offset);
+void chunk_remove_trigger(Chunk* chunk, const char* name);
 
 void   write_chunk_u16(Chunk* chunk, uint16_t value);
 void   write_chunk_u16_line(Chunk* chunk, uint16_t value, int line, int column);

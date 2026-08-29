@@ -1,6 +1,8 @@
 #include <stdlib.h>
+#include <string.h>
 
 #include "compiler.h"
+#include "trigger.h"
 
 static int grow_capacity(int capacity) {
     return capacity < 8 ? 8 : capacity * 2;
@@ -19,6 +21,9 @@ void init_chunk(Chunk* chunk) {
     chunk->constants = NULL;
     chunk->constants_count = 0;
     chunk->constants_capacity = 0;
+    chunk->triggers = NULL;
+    chunk->trigger_count = 0;
+    chunk->trigger_capacity = 0;
     chunk->source_path = NULL;
 }
 
@@ -28,11 +33,49 @@ void free_chunk(Chunk* chunk) {
             value_release(chunk->constants[i]);
         }
     }
+    for (int i = 0; i < chunk->trigger_count; i++) {
+        free(chunk->triggers[i].name);
+        free(chunk->triggers[i].table);
+    }
+    free(chunk->triggers);
     free(chunk->code);
     free(chunk->lines);
     free(chunk->columns);
     free(chunk->constants);
     init_chunk(chunk);
+}
+
+void chunk_add_trigger(Chunk* chunk, const char* name, int timing, int event,
+                       const char* table, int offset) {
+    if (chunk->trigger_count >= chunk->trigger_capacity) {
+        chunk->trigger_capacity = grow_capacity(chunk->trigger_capacity);
+        ChunkTrigger* new_triggers = realloc(chunk->triggers,
+            sizeof(ChunkTrigger) * (size_t)chunk->trigger_capacity);
+        if (new_triggers == NULL) return;
+        chunk->triggers = new_triggers;
+    }
+    ChunkTrigger* t = &chunk->triggers[chunk->trigger_count];
+    t->name = malloc(strlen(name) + 1);
+    t->table = malloc(strlen(table) + 1);
+    if (t->name == NULL || t->table == NULL) {
+        free(t->name);
+        free(t->table);
+        return;
+    }
+    strcpy(t->name, name);
+    strcpy(t->table, table);
+    t->timing = timing;
+    t->event = event;
+    t->offset = offset;
+    chunk->trigger_count++;
+}
+
+void chunk_remove_trigger(Chunk* chunk, const char* name) {
+    for (int i = 0; i < chunk->trigger_count; i++) {
+        if (trigger_name_equals(chunk->triggers[i].name, name)) {
+            chunk->triggers[i].offset = -1;
+        }
+    }
 }
 
 void write_chunk_line(Chunk* chunk, uint8_t byte, int line, int column) {

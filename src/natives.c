@@ -1608,12 +1608,16 @@ static int native_execute_immediate(VM* vm, int argc, Value* argv, Value* out) {
         vm_set_error(vm, "execute_immediate: no database driver");
         return 0;
     }
-    int row_count = driver->exec(driver, sql, NULL, 0);
+    /* Routes through the VM so matching triggers fire and DROP TRIGGER is
+       intercepted (see vm_dynamic_exec). */
+    int row_count = vm_dynamic_exec(vm, sql);
     if (row_count < 0) {
-        if (driver->error_message[0] != '\0') {
-            vm_set_error(vm, driver->error_message);
-        } else {
-            vm_set_error(vm, "execute_immediate: SQL execution failed");
+        if (vm_get_error(vm) == NULL) {
+            if (driver->error_message[0] != '\0') {
+                vm_set_error(vm, driver->error_message);
+            } else {
+                vm_set_error(vm, "execute_immediate: SQL execution failed");
+            }
         }
         return 0;
     }

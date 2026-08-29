@@ -197,19 +197,20 @@ static int skip_package_block(const char** p, int* in_string, int* escape) {
     return depth == 0;
 }
 
-/* Extract a single top-level proc/func unit beginning at `start`.
+/* Extract a single top-level proc/func/trigger unit beginning at `start`.
    Returns 1 and sets *out_end to the character after the matching `}` on success. */
 static int parse_unit(const char* start, const char** out_end, ProgramUnit* unit) {
     memset(unit, 0, sizeof(*unit));
 
     int is_proc = keyword_eq(start, "proc");
     int is_func = keyword_eq(start, "func");
-    if (!is_proc && !is_func) return 0;
+    int is_trigger = keyword_eq(start, "trigger");
+    if (!is_proc && !is_func && !is_trigger) return 0;
 
-    unit->type = strdup(is_proc ? "PROCEDURE" : "FUNCTION");
+    unit->type = strdup(is_proc ? "PROCEDURE" : is_func ? "FUNCTION" : "TRIGGER");
     if (unit->type == NULL) return 0;
 
-    const char* p = start + 4; /* "proc" and "func" are both 4 chars */
+    const char* p = start + (is_trigger ? 7 : 4); /* strlen("trigger") vs "proc"/"func" */
     int in_string = 0;
     int escape = 0;
 
@@ -320,7 +321,7 @@ static int parse_unit(const char* start, const char** out_end, ProgramUnit* unit
     return 1;
 }
 
-/* Scan source for top-level proc/func declarations. */
+/* Scan source for top-level proc/func/trigger declarations. */
 static int extract_units(const char* source, ProgramUnit** out_units, int* out_count) {
     *out_units = NULL;
     *out_count = 0;
@@ -351,7 +352,8 @@ static int extract_units(const char* source, ProgramUnit** out_units, int* out_c
             continue;
         }
 
-        if (depth == 0 && (keyword_eq(p, "proc") || keyword_eq(p, "func"))) {
+        if (depth == 0 && (keyword_eq(p, "proc") || keyword_eq(p, "func") ||
+                           keyword_eq(p, "trigger"))) {
             const char* end;
             ProgramUnit unit;
             if (parse_unit(p, &end, &unit)) {
@@ -630,6 +632,18 @@ static int parse_sidecar(const char* data, ProgramUnit** out_units, int* out_cou
     return 1;
 }
 
+static void write_unit(FILE* f, const ProgramUnit* unit) {
+    if (unit->authid != NULL && unit->authid[0] != '\0') {
+        char authid_upper[256];
+        str_toupper(authid_upper, unit->authid, sizeof(authid_upper));
+        fprintf(f, "// __MYPL_PROGRAM_UNIT__ %s %s AUTHID %s\n%s\n",
+                unit->type, unit->name, authid_upper, unit->source);
+    } else {
+        fprintf(f, "// __MYPL_PROGRAM_UNIT__ %s %s\n%s\n",
+                unit->type, unit->name, unit->source);
+    }
+}
+
 static int custom_save_source(DBDriver* driver, Context* ctx, const char* source) {
     (void)driver;
     ProgramUnit* current = NULL;
@@ -739,15 +753,7 @@ static int custom_save_source(DBDriver* driver, Context* ctx, const char* source
     }
 
     for (int i = 0; i < merged_count; i++) {
-        if (merged[i].authid != NULL && merged[i].authid[0] != '\0') {
-            char authid_upper[256];
-            str_toupper(authid_upper, merged[i].authid, sizeof(authid_upper));
-            fprintf(f, "// __MYPL_PROGRAM_UNIT__ %s %s AUTHID %s\n%s\n",
-                    merged[i].type, merged[i].name, authid_upper, merged[i].source);
-        } else {
-            fprintf(f, "// __MYPL_PROGRAM_UNIT__ %s %s\n%s\n",
-                    merged[i].type, merged[i].name, merged[i].source);
-        }
+        write_unit(f, &merged[i]);
     }
 
     fclose(f);
@@ -860,4 +866,87 @@ int stored_programs_save_source(DBDriver* driver, Context* ctx, const char* sour
 #endif
     }
     return custom_save_source(driver, ctx, source);
+}
+
+#ifdef USE_SQLITE
+static int sqlite_drop_unit(DBDriver* driver, const char* name, const char* type) {
+    sqlite3* db = ((SQLiteImpl*)driver->impl)->db;
+    sqlite3_stmt* check = NULL;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT name FROM sqlite_master WHERE type='table' AND name='_mypl_program_units'",
+                           -1, &check, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    int exists = sqlite3_step(check) == SQLITE_ROW;
+    sqlite3_finalize(check);
+    if (!exists) return 1;
+
+    sqlite3_stmt* stmt = NULL;
+    const char* sql =
+        "DELETE FROM _mypl_program_units WHERE name = ?1 COLLATE NOCASE AND unit_type = ?2";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(db));
+        return 0;
+    }
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, type, -1, SQLITE_TRANSIENT);
+    int ok = sqlite3_step(stmt) == SQLITE_DONE;
+    if (!ok) {
+        snprintf(driver->error_message, sizeof(driver->error_message), "%s",
+                 sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+#endif
+
+static int custom_drop_unit(Context* ctx, const char* name, const char* type) {
+    char* path = sidecar_path(ctx);
+    if (path == NULL) return 1;
+
+    char* existing = os_read_file(path);
+    if (existing == NULL) {
+        free(path);
+        return 1;
+    }
+
+    ProgramUnit* units = NULL;
+    int count = 0;
+    if (!parse_sidecar(existing, &units, &count)) {
+        free(existing);
+        free(path);
+        return 0;
+    }
+    free(existing);
+
+    FILE* f = fopen(path, "w");
+    if (f == NULL) {
+        free_units(units, count);
+        free(path);
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (strcmp(units[i].type, type) == 0 && strcasecmp(units[i].name, name) == 0) {
+            continue; /* dropped */
+        }
+        write_unit(f, &units[i]);
+    }
+    fclose(f);
+    free_units(units, count);
+    free(path);
+    return 1;
+}
+
+int stored_programs_drop_unit(DBDriver* driver, Context* ctx, const char* name, const char* type) {
+    if (name == NULL || type == NULL) return 0;
+    if (driver != NULL && driver->is_sqlite) {
+#ifdef USE_SQLITE
+        return sqlite_drop_unit(driver, name, type);
+#else
+        (void)driver;
+        return 1;
+#endif
+    }
+    return custom_drop_unit(ctx, name, type);
 }

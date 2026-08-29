@@ -103,7 +103,8 @@ typedef enum {
     STMT_RAISE,
     STMT_SUBTYPE_DECL,
     STMT_FORALL,
-    STMT_PRAGMA
+    STMT_PRAGMA,
+    STMT_DROP_TRIGGER
 } StmtKind;
 
 typedef struct Expr Expr;
@@ -358,6 +359,10 @@ typedef struct {
 } PragmaStmt;
 
 typedef struct {
+    char* name;
+} DropTriggerStmt;
+
+typedef struct {
     Block* try_block;
     char* catch_var;
     Block* catch_block;
@@ -393,6 +398,7 @@ struct Stmt {
         SubtypeDeclStmt subtype_decl;
         ForallStmt forall_stmt;
         PragmaStmt pragma;
+        DropTriggerStmt drop_trigger;
     } as;
 };
 
@@ -527,6 +533,7 @@ Stmt* create_raise_stmt(const char* name);
 Stmt* create_subtype_decl_stmt(const char* name, Type* base_type);
 Stmt* create_forall_stmt(const char* var_name, const char* array_name, Stmt* sql_stmt);
 Stmt* create_pragma_stmt(const char* name);
+Stmt* create_drop_trigger_stmt(const char* name);
 Expr* create_cursor_attr_expr(const char* cursor_name, const char* attr_name);
 
 Expr* create_literal_expr(Value value);

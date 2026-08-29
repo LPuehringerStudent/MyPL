@@ -2051,6 +2051,30 @@ static Stmt* statement(Parser* parser) {
     if (match(parser, TOKEN_CASE)) return case_statement(parser);
     if (match(parser, TOKEN_RETURN)) return return_statement(parser);
     if (match(parser, TOKEN_PRINT)) return print_statement(parser);
+    if (check(parser, TOKEN_DROP) && peek_next(parser).type == TOKEN_TRIGGER) {
+        /* Language-level DROP TRIGGER (not SQL DDL): removes a MyPL trigger. */
+        Token kw = parser->current;
+        advance(parser); /* consume drop */
+        advance(parser); /* consume trigger */
+        if (!check(parser, TOKEN_IDENT)) {
+            error_at_current(parser, "expected trigger name after 'drop trigger'");
+            return NULL;
+        }
+        advance(parser); /* consume name */
+        char* name = copy_token_lexeme(&parser->previous);
+        if (!match(parser, TOKEN_SEMICOLON)) {
+            error_at_current(parser, "expected ';' after trigger name");
+            free(name);
+            return NULL;
+        }
+        Stmt* stmt = create_drop_trigger_stmt(name);
+        free(name);
+        if (stmt != NULL) {
+            stmt->loc.line = kw.line;
+            stmt->loc.column = kw.column;
+        }
+        return stmt;
+    }
     if (match(parser, TOKEN_CREATE) || match(parser, TOKEN_DROP)) {
         return sql_statement(parser, STMT_SQL_DDL);
     }

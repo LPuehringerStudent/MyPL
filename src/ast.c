@@ -592,6 +592,9 @@ void free_stmt(Stmt* stmt) {
         case STMT_PRAGMA:
             free(stmt->as.pragma.name);
             break;
+        case STMT_DROP_TRIGGER:
+            free(stmt->as.drop_trigger.name);
+            break;
     }
     free(stmt);
 }
@@ -1292,6 +1295,19 @@ Stmt* create_pragma_stmt(const char* name) {
     stmt->kind = STMT_PRAGMA;
     stmt->as.pragma.name = copy_string(name);
     if (stmt->as.pragma.name == NULL && name != NULL) {
+        free(stmt);
+        return NULL;
+    }
+    return stmt;
+}
+
+Stmt* create_drop_trigger_stmt(const char* name) {
+    Stmt* stmt = malloc(sizeof(Stmt));
+    if (stmt == NULL) return NULL;
+    stmt->loc = (SourceLoc){0, 0};
+    stmt->kind = STMT_DROP_TRIGGER;
+    stmt->as.drop_trigger.name = copy_string(name);
+    if (stmt->as.drop_trigger.name == NULL && name != NULL) {
         free(stmt);
         return NULL;
     }
