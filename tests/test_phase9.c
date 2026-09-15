@@ -142,6 +142,7 @@ TEST(phase9_regexp_substr) {
 }
 
 TEST(phase9_sequence_nextval_and_currval) {
+    remove("mypl.db");
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
@@ -158,6 +159,7 @@ TEST(phase9_sequence_nextval_and_currval) {
 }
 
 TEST(phase9_sequence_drop_and_undefined) {
+    remove("mypl.db");
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
@@ -178,6 +180,71 @@ TEST(phase9_sequence_drop_and_undefined) {
     ASSERT_INT_EQ(0, output_contains(out, "bad"));
 }
 
+TEST(phase12_sequence_persists_across_restarts) {
+    remove("mypl.db");
+    char out[256];
+
+    /* First process: create a sequence and advance it twice. */
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create_sequence(\"restart_seq\", 100, 10);\n"
+        "    print int_to_string(nextval(\"restart_seq\"));\n"
+        "    print int_to_string(nextval(\"restart_seq\"));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "100"));
+    ASSERT_INT_EQ(1, output_contains(out, "110"));
+
+    /* New process: currval reflects the persisted value without calling
+       nextval again, and nextval continues incrementing from it. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    print int_to_string(currval(\"restart_seq\"));\n"
+        "    print int_to_string(nextval(\"restart_seq\"));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "110"));
+    ASSERT_INT_EQ(1, output_contains(out, "120"));
+}
+
+TEST(phase12_sequence_drop_persists_across_restarts) {
+    remove("mypl.db");
+    char out[256];
+
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create_sequence(\"dropped_seq\", 1, 1);\n"
+        "    drop_sequence(\"dropped_seq\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: the dropped sequence stays gone, and its name is free
+       to reuse. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    try {\n"
+        "        nextval(\"dropped_seq\");\n"
+        "        print \"bad\";\n"
+        "    } catch (err) {\n"
+        "        print \"caught\";\n"
+        "    }\n"
+        "    create_sequence(\"dropped_seq\", 5, 1);\n"
+        "    print int_to_string(nextval(\"dropped_seq\"));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "caught"));
+    ASSERT_INT_EQ(0, output_contains(out, "bad"));
+    ASSERT_INT_EQ(1, output_contains(out, "5"));
+}
+
 int main(void) {
     RUN_TEST(phase9_dbms_output_buffer_and_get_lines);
     RUN_TEST(phase9_dbms_output_disabled_put_is_noop);
@@ -188,5 +255,7 @@ int main(void) {
     RUN_TEST(phase9_regexp_substr);
     RUN_TEST(phase9_sequence_nextval_and_currval);
     RUN_TEST(phase9_sequence_drop_and_undefined);
+    RUN_TEST(phase12_sequence_persists_across_restarts);
+    RUN_TEST(phase12_sequence_drop_persists_across_restarts);
     TEST_SUMMARY();
 }

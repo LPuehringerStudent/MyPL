@@ -833,6 +833,57 @@ TEST(sql_insert_into_select_with_where) {
     cleanup(path);
 }
 
+TEST(sql_sequence_persists_across_reopen) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, catalog_sequence_create(&ctx, "order_seq", 100, 10));
+    /* Duplicate names are rejected without disturbing the existing sequence. */
+    ASSERT_INT_EQ(0, catalog_sequence_create(&ctx, "order_seq", 1, 1));
+
+    int value = -1;
+    ASSERT_INT_EQ(1, catalog_sequence_nextval(&ctx, "order_seq", &value));
+    ASSERT_INT_EQ(100, value);
+    ASSERT_INT_EQ(1, catalog_sequence_nextval(&ctx, "order_seq", &value));
+    ASSERT_INT_EQ(110, value);
+    catalog_close(&ctx);
+
+    /* Reopen: the sequence and its current value survive the round trip. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, catalog_sequence_currval(&ctx, "order_seq", &value));
+    ASSERT_INT_EQ(110, value);
+    ASSERT_INT_EQ(1, catalog_sequence_nextval(&ctx, "order_seq", &value));
+    ASSERT_INT_EQ(120, value);
+    catalog_close(&ctx);
+
+    cleanup(path);
+}
+
+TEST(sql_sequence_drop_persists_across_reopen) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, catalog_sequence_create(&ctx, "tmp_seq", 1, 1));
+    ASSERT_INT_EQ(1, catalog_sequence_drop(&ctx, "tmp_seq"));
+    /* Dropping a name that no longer exists fails. */
+    ASSERT_INT_EQ(0, catalog_sequence_drop(&ctx, "tmp_seq"));
+    catalog_close(&ctx);
+
+    /* Reopen: the drop persisted, so the name is available to reuse and
+       currval() on it fails since it was never (re)created. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    int value = -1;
+    ASSERT_INT_EQ(0, catalog_sequence_currval(&ctx, "tmp_seq", &value));
+    ASSERT_INT_EQ(1, catalog_sequence_create(&ctx, "tmp_seq", 5, 1));
+    ASSERT_INT_EQ(1, catalog_sequence_nextval(&ctx, "tmp_seq", &value));
+    ASSERT_INT_EQ(5, value);
+    catalog_close(&ctx);
+
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -869,5 +920,7 @@ int main(void) {
     RUN_TEST(sql_insert_into_select_star);
     RUN_TEST(sql_insert_into_select_specific_columns);
     RUN_TEST(sql_insert_into_select_with_where);
+    RUN_TEST(sql_sequence_persists_across_reopen);
+    RUN_TEST(sql_sequence_drop_persists_across_reopen);
     TEST_SUMMARY();
 }

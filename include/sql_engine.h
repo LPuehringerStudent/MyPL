@@ -84,6 +84,15 @@ void   catalog_insert(Context* ctx, Table* table, Cell* cells);
    with that name exists. */
 const char* catalog_view_query(Context* ctx, const char* name);
 
+/* Sequences (catalog format V5): name -> current value + increment step,
+   persisted on the catalog page so nextval()/currval() survive process
+   restarts. Returns 0 on failure (duplicate/missing name, catalog full,
+   or nextval()/currval() called on a name that was never created). */
+int catalog_sequence_create(Context* ctx, const char* name, int start, int increment);
+int catalog_sequence_nextval(Context* ctx, const char* name, int* out);
+int catalog_sequence_currval(Context* ctx, const char* name, int* out);
+int catalog_sequence_drop(Context* ctx, const char* name);
+
 /* Catalog introspection */
 int         catalog_table_count(Context* ctx);
 const char* catalog_table_name(Context* ctx, int index);
@@ -132,6 +141,11 @@ struct DBDriver {
 };
 
 void custom_driver_init(DBDriver* driver);
+
+/* Returns the Context backing a custom-engine DBDriver (so callers outside
+   sql_engine.c can reach the page-based catalog, e.g. to persist sequences),
+   or NULL when the driver has no such catalog (the sqlite driver, or NULL). */
+Context* custom_driver_context(DBDriver* driver);
 
 /* Storage layer */
 #define PAGE_SIZE 4096

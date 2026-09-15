@@ -417,8 +417,22 @@ static SequenceSlot* sequence_find(VM* vm, const char* name) {
     return NULL;
 }
 
+/* Sequences persist through the page-based catalog when one is reachable
+ * (the custom engine, whether wired up via vm_set_context or via a custom
+ * DBDriver). The sqlite driver has no such catalog, and a VM with neither
+ * a context nor a driver has nowhere to persist to; both fall back to the
+ * VM-local, process-lifetime SequenceSlot table below. */
+static Context* vm_catalog_context(VM* vm) {
+    if (vm->context != NULL) return vm->context;
+    if (vm->driver != NULL) return custom_driver_context(vm->driver);
+    return NULL;
+}
+
 int vm_sequence_create(VM* vm, const char* name, int start, int increment) {
     if (vm == NULL || name == NULL || name[0] == '\0') return 0;
+    Context* ctx = vm_catalog_context(vm);
+    if (ctx != NULL) return catalog_sequence_create(ctx, name, start, increment);
+
     if (sequence_find(vm, name) != NULL) return 0;
     for (int i = 0; i < SEQUENCE_MAX; i++) {
         if (!vm->sequences[i].used) {
@@ -436,6 +450,9 @@ int vm_sequence_create(VM* vm, const char* name, int start, int increment) {
 
 int vm_sequence_nextval(VM* vm, const char* name, int* out) {
     if (vm == NULL || name == NULL || out == NULL) return 0;
+    Context* ctx = vm_catalog_context(vm);
+    if (ctx != NULL) return catalog_sequence_nextval(ctx, name, out);
+
     SequenceSlot* slot = sequence_find(vm, name);
     if (slot == NULL) return 0;
     if (slot->has_value) {
@@ -449,6 +466,9 @@ int vm_sequence_nextval(VM* vm, const char* name, int* out) {
 
 int vm_sequence_currval(VM* vm, const char* name, int* out) {
     if (vm == NULL || name == NULL || out == NULL) return 0;
+    Context* ctx = vm_catalog_context(vm);
+    if (ctx != NULL) return catalog_sequence_currval(ctx, name, out);
+
     SequenceSlot* slot = sequence_find(vm, name);
     if (slot == NULL || !slot->has_value) return 0;
     *out = slot->current;
@@ -457,6 +477,9 @@ int vm_sequence_currval(VM* vm, const char* name, int* out) {
 
 int vm_sequence_drop(VM* vm, const char* name) {
     if (vm == NULL || name == NULL) return 0;
+    Context* ctx = vm_catalog_context(vm);
+    if (ctx != NULL) return catalog_sequence_drop(ctx, name);
+
     SequenceSlot* slot = sequence_find(vm, name);
     if (slot == NULL) return 0;
     slot->used = 0;
