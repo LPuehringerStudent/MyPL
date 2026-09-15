@@ -127,6 +127,21 @@ struct MapObj {
     int capacity;
 };
 
+/* A trigger declared/reloaded in this compilation, kept on the Chunk so the
+ * VM can fire it for a *dynamically* executed SQL statement (execute_immediate,
+ * dbms_sql.execute) whose text isn't known until runtime. `event`/`timing` use
+ * the TRIGGER_INSERT/UPDATE/DELETE/CREATE/DROP and TRIGGER_BEFORE/AFTER codes
+ * from ast.h (kept as plain ints here to avoid pulling ast.h into this header,
+ * mirroring how sql_engine.h's Column.type references VAL_INT et al. the same
+ * way). `target` is the trigger body's resolved bytecode offset, exactly what
+ * a statically-woven `OP_CALL` to it would use. */
+typedef struct {
+    char* table;
+    int   event;
+    int   timing;
+    uint16_t target;
+} ChunkTrigger;
+
 typedef struct {
     uint8_t* code;
     int      count;
@@ -143,6 +158,9 @@ typedef struct {
     Value* constants;
     int    constants_count;
     int    constants_capacity;
+
+    ChunkTrigger* triggers;
+    int           trigger_count;
 
     const char* source_path;
 } Chunk;

@@ -50,6 +50,18 @@ int             vm_utl_file_fclose(VM* vm, int handle);
 int             vm_dbms_sql_execute(VM* vm, const char* sql);
 Value           vm_dbms_sql_query(VM* vm, const char* sql);
 
+/* Fires any trigger (declared in this program, or reloaded from a prior
+ * persisted declaration) whose table/event/timing matches a *dynamically*
+ * executed SQL statement — one whose text isn't known until runtime, so it
+ * couldn't be woven into a static OP_CALL at compile time the way a literal
+ * SQL statement's trigger calls are. Used by execute_immediate and
+ * dbms_sql.execute. `timing` is TRIGGER_BEFORE or TRIGGER_AFTER (ast.h).
+ * No-op (returns 1) when the statement's shape isn't recognized or no
+ * trigger matches. Returns 0 if a trigger's body raised an error — the
+ * caller should not go on to execute `sql` in that case; vm_get_error()
+ * explains why. */
+int             vm_fire_sql_triggers(VM* vm, int timing, const char* sql);
+
 /* sequences */
 int             vm_sequence_create(VM* vm, const char* name, int start, int increment);
 int             vm_sequence_nextval(VM* vm, const char* name, int* out);

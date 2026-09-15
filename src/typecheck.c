@@ -574,6 +574,7 @@ static int is_native(const char* name) {
            strcmp(name, "nextval") == 0 ||
            strcmp(name, "currval") == 0 ||
            strcmp(name, "drop_sequence") == 0 ||
+           strcmp(name, "drop_trigger") == 0 ||
            strcmp(name, "external_call") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
@@ -1596,6 +1597,17 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* a = infer_expr(tc, args[0], NULL);
         if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
             type_error(tc, loc, "sequence operation expects a string name");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "drop_trigger") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "drop_trigger expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+            type_error(tc, loc, "drop_trigger expects a string name");
         }
         return &type_int;
     }

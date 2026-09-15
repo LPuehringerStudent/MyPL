@@ -2687,6 +2687,31 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
         }
     }
 
+    /* Copy the resolved trigger table onto the Chunk so the VM can fire
+     * triggers for dynamically executed SQL (execute_immediate,
+     * dbms_sql.execute) whose text isn't known until runtime — unlike the
+     * static case above, which already wove direct OP_CALLs into matching
+     * literal SQL statements at compile time. */
+    if (compiler.trigger_count > 0) {
+        chunk->triggers = calloc((size_t)compiler.trigger_count, sizeof(ChunkTrigger));
+        if (chunk->triggers != NULL) {
+            for (int i = 0; i < compiler.trigger_count; i++) {
+                TriggerEntry* entry = &compiler.triggers[i];
+                int idx = find_proc(&compiler, entry->proc_name);
+                if (idx < 0) continue;
+                char* table_copy = strdup(entry->table);
+                if (table_copy == NULL) continue;
+                ChunkTrigger* ct = &chunk->triggers[chunk->trigger_count];
+                ct->table = table_copy;
+                ct->event = entry->event;
+                ct->timing = entry->timing;
+                ct->target = (uint16_t)compiler.procs[idx].offset;
+                chunk->trigger_count++;
+            }
+        }
+    }
+
+    free_trigger_entries(&compiler);
     free_exception_entries(&compiler);
     free_proc_entries(&compiler);
     free_global_names(&compiler);

@@ -320,7 +320,91 @@ static int parse_unit(const char* start, const char** out_end, ProgramUnit* unit
     return 1;
 }
 
-/* Scan source for top-level proc/func declarations. */
+/* Extract a single top-level trigger unit beginning at `start`:
+ *   trigger <name> (before|after) (insert|update|delete|create|drop) on <table> { ... }
+ * Stored verbatim (unlike parse_unit, there's no authid clause to strip)
+ * so it re-parses as an ordinary trigger declaration when reloaded.
+ * Returns 1 and sets *out_end to the character after the matching `}`. */
+static int parse_trigger_unit(const char* start, const char** out_end, ProgramUnit* unit) {
+    memset(unit, 0, sizeof(*unit));
+
+    if (!keyword_eq(start, "trigger")) return 0;
+    unit->type = strdup("TRIGGER");
+    if (unit->type == NULL) return 0;
+
+    const char* p = start + 7; /* strlen("trigger") */
+    int in_string = 0;
+    int escape = 0;
+
+    p = skip_ws_comments_strings(p, &in_string, &escape);
+    if (!is_id_start(*p)) {
+        free_unit(unit);
+        return 0;
+    }
+
+    const char* name_start = p;
+    while (is_id_cont(*p)) p++;
+    size_t name_len = (size_t)(p - name_start);
+    unit->name = malloc(name_len + 1);
+    if (unit->name == NULL) {
+        free_unit(unit);
+        return 0;
+    }
+    memcpy(unit->name, name_start, name_len);
+    unit->name[name_len] = '\0';
+
+    /* Scan the (before|after) (insert|update|delete|create|drop) on <table>
+     * header up to the opening '{'; the parser (not this scanner) is the
+     * source of truth for that grammar, so just skip tokens generically. */
+    while (*p != '\0' && *p != '{') {
+        p = skip_ws_comments_strings(p, &in_string, &escape);
+        if (*p == '\0' || *p == '{') break;
+        if (is_id_start(*p)) {
+            while (is_id_cont(*p)) p++;
+        } else {
+            p++;
+        }
+    }
+    if (*p != '{') {
+        free_unit(unit);
+        return 0;
+    }
+
+    int depth = 0;
+    while (*p != '\0') {
+        p = skip_ws_comments_strings(p, &in_string, &escape);
+        if (*p == '\0') break;
+        if (*p == '{') {
+            depth++;
+            p++;
+            continue;
+        }
+        if (*p == '}') {
+            depth--;
+            p++;
+            if (depth == 0) break;
+            continue;
+        }
+        p++;
+    }
+    if (depth != 0) {
+        free_unit(unit);
+        return 0;
+    }
+
+    *out_end = p;
+    size_t source_len = (size_t)(p - start);
+    unit->source = malloc(source_len + 1);
+    if (unit->source == NULL) {
+        free_unit(unit);
+        return 0;
+    }
+    memcpy(unit->source, start, source_len);
+    unit->source[source_len] = '\0';
+    return 1;
+}
+
+/* Scan source for top-level proc/func/trigger declarations. */
 static int extract_units(const char* source, ProgramUnit** out_units, int* out_count) {
     *out_units = NULL;
     *out_count = 0;
@@ -366,6 +450,22 @@ static int extract_units(const char* source, ProgramUnit** out_units, int* out_c
                     }
                 } else {
                     free_unit(&unit);
+                }
+                p = end;
+                continue;
+            }
+        }
+
+        if (depth == 0 && keyword_eq(p, "trigger")) {
+            const char* end;
+            ProgramUnit unit;
+            if (parse_trigger_unit(p, &end, &unit)) {
+                if (!add_unit(out_units, out_count, &cap, &unit)) {
+                    free_unit(&unit);
+                    free_units(*out_units, *out_count);
+                    *out_units = NULL;
+                    *out_count = 0;
+                    return 0;
                 }
                 p = end;
                 continue;
@@ -504,6 +604,31 @@ static int sqlite_save_source(DBDriver* driver, Context* ctx, const char* source
     sqlite3_finalize(stmt);
     free_units(units, count);
     return ok;
+}
+
+static int sqlite_drop_unit(DBDriver* driver, const char* name, const char* type) {
+    sqlite3* db = ((SQLiteImpl*)driver->impl)->db;
+    sqlite3_stmt* check = NULL;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT name FROM sqlite_master WHERE type='table' AND name='_mypl_program_units'",
+                           -1, &check, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    int exists = sqlite3_step(check) == SQLITE_ROW;
+    sqlite3_finalize(check);
+    if (!exists) return 0;
+
+    sqlite3_stmt* stmt = NULL;
+    if (sqlite3_prepare_v2(db, "DELETE FROM _mypl_program_units WHERE name = ?1 AND unit_type = ?2",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, type, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    int changed = sqlite3_changes(db) > 0;
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE && changed;
 }
 #endif
 
@@ -757,6 +882,59 @@ static int custom_save_source(DBDriver* driver, Context* ctx, const char* source
     return 1;
 }
 
+static void write_sidecar_unit(FILE* f, const ProgramUnit* unit) {
+    if (unit->authid != NULL && unit->authid[0] != '\0') {
+        char authid_upper[256];
+        str_toupper(authid_upper, unit->authid, sizeof(authid_upper));
+        fprintf(f, "// __MYPL_PROGRAM_UNIT__ %s %s AUTHID %s\n%s\n",
+                unit->type, unit->name, authid_upper, unit->source);
+    } else {
+        fprintf(f, "// __MYPL_PROGRAM_UNIT__ %s %s\n%s\n", unit->type, unit->name, unit->source);
+    }
+}
+
+static int custom_drop_unit(Context* ctx, const char* name, const char* type) {
+    char* path = sidecar_path(ctx);
+    if (path == NULL) return 0;
+
+    char* existing = os_read_file(path);
+    if (existing == NULL) {
+        free(path);
+        return 0;
+    }
+
+    ProgramUnit* units = NULL;
+    int count = 0;
+    if (!parse_sidecar(existing, &units, &count)) {
+        free(existing);
+        free(path);
+        return 0;
+    }
+    free(existing);
+
+    int idx = find_unit(units, count, name, type);
+    if (idx < 0) {
+        free_units(units, count);
+        free(path);
+        return 0;
+    }
+
+    FILE* f = fopen(path, "w");
+    if (f == NULL) {
+        free_units(units, count);
+        free(path);
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (i == idx) continue;
+        write_sidecar_unit(f, &units[i]);
+    }
+    fclose(f);
+    free_units(units, count);
+    free(path);
+    return 1;
+}
+
 static char* custom_load_source(Context* ctx) {
     char* path = sidecar_path(ctx);
     if (path == NULL) return NULL;
@@ -860,4 +1038,20 @@ int stored_programs_save_source(DBDriver* driver, Context* ctx, const char* sour
 #endif
     }
     return custom_save_source(driver, ctx, source);
+}
+
+int stored_programs_drop_trigger(DBDriver* driver, Context* ctx, const char* name) {
+    if (name == NULL || name[0] == '\0') return 0;
+    if (driver == NULL) {
+        return custom_drop_unit(ctx, name, "TRIGGER");
+    }
+    if (driver->is_sqlite) {
+#ifdef USE_SQLITE
+        return sqlite_drop_unit(driver, name, "TRIGGER");
+#else
+        (void)driver; (void)ctx; (void)name;
+        return 0;
+#endif
+    }
+    return custom_drop_unit(ctx, name, "TRIGGER");
 }

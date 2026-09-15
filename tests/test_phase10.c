@@ -127,6 +127,204 @@ TEST(phase10_trigger_update_and_delete) {
     ASSERT_INT_EQ(1, output_contains(out, "deleted"));
 }
 
+/* Phase 12: triggers persist in the catalog, DROP TRIGGER, and firing on
+ * dynamic SQL (execute_immediate / dbms_sql.execute). */
+
+TEST(phase12_trigger_persists_and_fires_after_restart) {
+    remove("mypl.db");
+    remove("mypl.db.programs");
+    char out[512];
+
+    int rc = run_mypl(
+        "trigger t_persist after insert on tp {\n"
+        "    dbms_output.put_line(\"persisted-fire\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    create table tp (id int);\n"
+        "    insert into tp values (1);\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    for line in lines { print line; }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "persisted-fire"));
+
+    /* New process: the trigger isn't redeclared, but it's reloaded from the
+       persisted program units (like a stored proc) and fires again. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    insert into tp values (2);\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    for line in lines { print line; }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "persisted-fire"));
+}
+
+TEST(phase12_drop_trigger_removes_persisted_trigger) {
+    remove("mypl.db");
+    remove("mypl.db.programs");
+    char out[512];
+
+    int rc = run_mypl(
+        "trigger t_drop after insert on td {\n"
+        "    dbms_output.put_line(\"should-not-fire-again\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table td (id int);\n"
+        "    drop_trigger(\"t_drop\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process: the dropped trigger was never persisted, so a matching
+       insert does not fire it. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    insert into td values (1);\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    print int_to_string(length(lines));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase12_drop_missing_trigger_errors) {
+    remove("mypl.db");
+    remove("mypl.db.programs");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop_trigger(\"no_such_trigger\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "trigger does not exist"));
+}
+
+TEST(phase12_trigger_fires_on_execute_immediate) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "trigger t_pre before insert on td4 {\n"
+        "    dbms_output.put_line(\"before-dyn\");\n"
+        "}\n"
+        "trigger t_post after insert on td4 {\n"
+        "    dbms_output.put_line(\"after-dyn\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    create table td4 (id int);\n"
+        "    execute_immediate(\"insert into td4 values (1)\");\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    for line in lines { print line; }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "before-dyn"));
+    ASSERT_INT_EQ(1, output_contains(out, "after-dyn"));
+    const char* b = strstr(out, "before-dyn");
+    const char* a = strstr(out, "after-dyn");
+    ASSERT(b != NULL && a != NULL && b < a);
+}
+
+TEST(phase12_trigger_fires_on_dbms_sql_execute) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "trigger t_dyn2 after insert on td3 {\n"
+        "    dbms_output.put_line(\"dyn2-fired\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    create table td3 (id int);\n"
+        "    dbms_sql.execute(\"insert into td3 values (1)\");\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    for line in lines { print line; }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "dyn2-fired"));
+}
+
+TEST(phase12_trigger_does_not_fire_on_dynamic_sql_for_other_table) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "trigger t_wrong_dyn after insert on other_dyn {\n"
+        "    dbms_output.put_line(\"wrong-dyn\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    create table td5 (id int);\n"
+        "    execute_immediate(\"insert into td5 values (1)\");\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    print int_to_string(length(lines));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+}
+
+TEST(phase12_trigger_update_delete_fire_on_dynamic_sql) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "trigger t_upd_dyn after update on tg {\n"
+        "    dbms_output.put_line(\"updated-dyn\");\n"
+        "}\n"
+        "trigger t_del_dyn after delete on tg {\n"
+        "    dbms_output.put_line(\"deleted-dyn\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    dbms_output.enable(10);\n"
+        "    create table tg (id int);\n"
+        "    insert into tg values (1);\n"
+        "    execute_immediate(\"update tg set id = 2 where id = 1\");\n"
+        "    dbms_sql.execute(\"delete from tg where id = 2\");\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    for line in lines { print line; }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "updated-dyn"));
+    ASSERT_INT_EQ(1, output_contains(out, "deleted-dyn"));
+}
+
+TEST(phase12_before_trigger_error_aborts_dynamic_sql) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "trigger t_veto before insert on tv {\n"
+        "    raise_application_error(-20001, \"vetoed by trigger\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table tv (id int);\n"
+        "    execute_immediate(\"insert into tv values (1)\");\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from tv;\n"
+        "    print n;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "vetoed by trigger"));
+}
+
 TEST(phase10_table_function_scalar_collection) {
     char out[256];
     int rc = run_mypl(
@@ -374,6 +572,14 @@ int main(void) {
     RUN_TEST(phase10_trigger_does_not_fire_on_other_table);
     RUN_TEST(phase10_trigger_ddl_create_table);
     RUN_TEST(phase10_trigger_update_and_delete);
+    RUN_TEST(phase12_trigger_persists_and_fires_after_restart);
+    RUN_TEST(phase12_drop_trigger_removes_persisted_trigger);
+    RUN_TEST(phase12_drop_missing_trigger_errors);
+    RUN_TEST(phase12_trigger_fires_on_execute_immediate);
+    RUN_TEST(phase12_trigger_fires_on_dbms_sql_execute);
+    RUN_TEST(phase12_trigger_does_not_fire_on_dynamic_sql_for_other_table);
+    RUN_TEST(phase12_trigger_update_delete_fire_on_dynamic_sql);
+    RUN_TEST(phase12_before_trigger_error_aborts_dynamic_sql);
     RUN_TEST(phase10_table_function_scalar_collection);
     RUN_TEST(phase10_table_function_row_collection);
     RUN_TEST(phase10_struct_method_mutates_field);

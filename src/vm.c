@@ -329,20 +329,24 @@ int vm_utl_file_fclose(VM* vm, int handle) {
 
 int vm_dbms_sql_execute(VM* vm, const char* sql) {
     if (vm == NULL || sql == NULL) return -1;
+    /* TRIGGER_BEFORE == 0, TRIGGER_AFTER == 1 (ast.h). */
+    if (!vm_fire_sql_triggers(vm, 0, sql)) return -1;
     DBDriver* driver = vm_get_driver(vm);
+    int row_count;
     if (driver != NULL) {
-        int row_count = driver->exec(driver, sql, NULL, 0);
+        row_count = driver->exec(driver, sql, NULL, 0);
         if (row_count < 0) return -1;
         vm_set_sql_rowcount(vm, row_count);
-        return row_count;
+    } else {
+        Context* ctx = vm->context;
+        if (ctx == NULL || ctx->pager == NULL) return -1;
+        Result* res = sql_exec(sql, ctx);
+        if (res == NULL) return -1;
+        row_count = res->row_count;
+        result_free(res);
+        vm_set_sql_rowcount(vm, row_count);
     }
-    Context* ctx = vm->context;
-    if (ctx == NULL || ctx->pager == NULL) return -1;
-    Result* res = sql_exec(sql, ctx);
-    if (res == NULL) return -1;
-    int row_count = res->row_count;
-    result_free(res);
-    vm_set_sql_rowcount(vm, row_count);
+    if (!vm_fire_sql_triggers(vm, 1, sql)) return -1;
     return row_count;
 }
 
@@ -600,6 +604,7 @@ void vm_set_driver(VM* vm, DBDriver* driver) {
 static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
                               int out_count, int* out_positions, int* out_slots,
                               Value* out_result);
+static int vm_call_trigger(VM* parent, uint16_t target);
 
 static InterpretResult vm_run(VM* vm, uint8_t* end) {
     for (;;) {
@@ -2086,6 +2091,151 @@ static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
     auto_driver.close(&auto_driver);
     vm_free_child(child);
     return 0;
+}
+
+/* Invokes a trigger body (a 0-arg proc compiled into the SAME chunk, at
+ * `target`) from native code, for a trigger firing on dynamically executed
+ * SQL (execute_immediate/dbms_sql.execute) whose text isn't known until
+ * compile time. A statically woven trigger call is just an ordinary OP_CALL
+ * emitted directly into the calling bytecode; this path exists because that
+ * option isn't available once the SQL text is only known at runtime.
+ *
+ * The body runs on a child VM so the reentrant call gets its own frame/ip/
+ * stack without disturbing vm_run's single flat dispatch loop (there,
+ * frame_count reaching 0 always means "the whole program returned", so a
+ * real nested call needs its own VM struct rather than sharing the
+ * parent's — the same reason vm_call_autonomous below uses a child VM).
+ * Unlike an autonomous transaction, this is NOT isolated: the child shares
+ * the parent's chunk, driver, and context directly, so the trigger runs
+ * against the same connection/transaction as the statement that fired it.
+ * It starts from a copy of the parent's globals, and on success those are
+ * copied back so the trigger's writes to global state are visible to the
+ * caller. dbms_output state is shared by reference so a trigger can log
+ * through it. Other per-VM resources (utl_file handles, the legacy
+ * in-memory sequence table, try/catch frames) start fresh on the child and
+ * are not synced back — a documented scope limit, not different in kind
+ * from how autonomous transactions already isolate their own child VM. */
+static int vm_call_trigger(VM* parent, uint16_t target) {
+    VM* child = vm_init();
+    if (child == NULL) {
+        set_runtime_error(parent, "Out of memory");
+        return 0;
+    }
+    child->chunk = parent->chunk;
+    child->driver = parent->driver;
+    child->context = parent->context;
+    child->dbms_output_enabled = parent->dbms_output_enabled;
+    child->dbms_output_limit = parent->dbms_output_limit;
+    child->dbms_output_buffer = parent->dbms_output_buffer;
+    child->global_count = parent->global_count;
+    for (int i = 0; i < parent->global_count; i++) {
+        child->globals[i] = parent->globals[i];
+        value_retain(child->globals[i]);
+    }
+    child->frame_base = child->stack;
+    child->frame_count = 0;
+    child->ip = child->chunk->code + target;
+
+    InterpretResult run_result = vm_run(child, child->chunk->code + child->chunk->count);
+    if (run_result != INTERPRET_OK) {
+        snprintf(parent->error_message, sizeof(parent->error_message), "%s", child->error_message);
+        vm_free_child(child);
+        return 0;
+    }
+
+    Value result;
+    if (pop(child, &result)) {
+        value_release(result);
+    }
+    for (int i = 0; i < parent->global_count; i++) {
+        Value updated = child->globals[i];
+        value_retain(updated);
+        value_release(parent->globals[i]);
+        parent->globals[i] = updated;
+    }
+    vm_free_child(child);
+    return 1;
+}
+
+/* Extracts (event, table) from a *dynamically* executed SQL statement so a
+ * trigger can fire on it. Mirrors sql_stmt_trigger_info() in codegen.c
+ * (used for the static case, over the same small DML/DDL keyword shapes),
+ * duplicated rather than shared because that copy is compile-time-only
+ * (Compiler-internal, no VM/runtime dependencies) while this one runs from
+ * native code with no Compiler in scope. Returns 1 on success, 0 when the
+ * statement has no trigger-relevant shape. */
+static int vm_dynamic_trigger_info(const char* sql, int* event, char* table, size_t table_size) {
+    const char* p = sql;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    char kw[16];
+    int ki = 0;
+    while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) && ki < 15) {
+        char c = *p++;
+        kw[ki++] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+    }
+    kw[ki] = '\0';
+
+    /* Values must match TRIGGER_INSERT/UPDATE/DELETE/CREATE/DROP in ast.h. */
+    int ev = -1;
+    const char* skip_kw = NULL;
+    if (strcmp(kw, "insert") == 0)      { ev = 0; skip_kw = "into"; }
+    else if (strcmp(kw, "update") == 0) { ev = 1; skip_kw = NULL; }
+    else if (strcmp(kw, "delete") == 0) { ev = 2; skip_kw = "from"; }
+    else if (strcmp(kw, "create") == 0) { ev = 3; skip_kw = "table"; }
+    else if (strcmp(kw, "drop") == 0)   { ev = 4; skip_kw = "table"; }
+    if (ev < 0) return 0;
+
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (skip_kw != NULL) {
+        size_t n = strlen(skip_kw);
+        for (size_t i = 0; i < n; i++) {
+            char c = p[i];
+            char lower = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+            if (lower != skip_kw[i]) return 0;
+        }
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    }
+    size_t ti = 0;
+    while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                  (*p >= '0' && *p <= '9') || *p == '_') && ti + 1 < table_size) {
+        table[ti++] = *p++;
+    }
+    if (ti == 0) return 0;
+    table[ti] = '\0';
+    *event = ev;
+    return 1;
+}
+
+static int trigger_table_name_equals(const char* a, const char* b) {
+    while (*a && *b) {
+        char ca = *a++;
+        char cb = *b++;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return 0;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+int vm_fire_sql_triggers(VM* vm, int timing, const char* sql) {
+    if (vm == NULL || vm->chunk == NULL || sql == NULL) return 1;
+    if (vm->chunk->trigger_count == 0) return 1;
+
+    int event = 0;
+    char table[MAX_NAME_LEN + 1];
+    if (!vm_dynamic_trigger_info(sql, &event, table, sizeof(table))) return 1;
+
+    for (int i = 0; i < vm->chunk->trigger_count; i++) {
+        ChunkTrigger* t = &vm->chunk->triggers[i];
+        if (t->timing == timing && t->event == event &&
+            trigger_table_name_equals(t->table, table)) {
+            if (!vm_call_trigger(vm, t->target)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 InterpretResult vm_interpret(VM* vm, Chunk* chunk) {

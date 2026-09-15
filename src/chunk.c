@@ -19,6 +19,8 @@ void init_chunk(Chunk* chunk) {
     chunk->constants = NULL;
     chunk->constants_count = 0;
     chunk->constants_capacity = 0;
+    chunk->triggers = NULL;
+    chunk->trigger_count = 0;
     chunk->source_path = NULL;
 }
 
@@ -27,6 +29,12 @@ void free_chunk(Chunk* chunk) {
         for (int i = 0; i < chunk->constants_count; i++) {
             value_release(chunk->constants[i]);
         }
+    }
+    if (chunk->triggers != NULL) {
+        for (int i = 0; i < chunk->trigger_count; i++) {
+            free(chunk->triggers[i].table);
+        }
+        free(chunk->triggers);
     }
     free(chunk->code);
     free(chunk->lines);

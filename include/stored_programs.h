@@ -16,4 +16,10 @@ int stored_programs_save_source(DBDriver* driver, Context* ctx, const char* sour
    redefined in `source` removed. The caller must free the result. */
 char* stored_programs_filter_redefined(const char* loaded, const char* source);
 
+/* Removes a persisted trigger by name so it will not be reloaded and
+   recompiled on future runs. Returns 1 if a trigger with that name was
+   found and removed, 0 otherwise. Has no effect on a trigger already
+   compiled into the currently running program. */
+int stored_programs_drop_trigger(DBDriver* driver, Context* ctx, const char* name);
+
 #endif

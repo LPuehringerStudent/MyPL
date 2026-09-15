@@ -13,6 +13,7 @@
 
 #include "compiler.h"
 #include "os.h"
+#include "stored_programs.h"
 #include "vm.h"
 
 typedef struct {
@@ -1608,6 +1609,11 @@ static int native_execute_immediate(VM* vm, int argc, Value* argv, Value* out) {
         vm_set_error(vm, "execute_immediate: no database driver");
         return 0;
     }
+    /* TRIGGER_BEFORE == 0 (ast.h); vm_fire_sql_triggers already set the
+     * error message on failure. */
+    if (!vm_fire_sql_triggers(vm, 0, sql)) {
+        return 0;
+    }
     int row_count = driver->exec(driver, sql, NULL, 0);
     if (row_count < 0) {
         if (driver->error_message[0] != '\0') {
@@ -1615,6 +1621,10 @@ static int native_execute_immediate(VM* vm, int argc, Value* argv, Value* out) {
         } else {
             vm_set_error(vm, "execute_immediate: SQL execution failed");
         }
+        return 0;
+    }
+    /* TRIGGER_AFTER == 1 (ast.h). */
+    if (!vm_fire_sql_triggers(vm, 1, sql)) {
         return 0;
     }
     vm_set_sql_rowcount(vm, row_count);
@@ -2138,6 +2148,34 @@ static int native_drop_sequence(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+/* Removes a persisted trigger declaration so it stops being reloaded and
+ * recompiled on future runs (see stored_programs.c). Has no effect on a
+ * trigger already compiled into the currently running program — bytecode
+ * that has already been woven or registered can't be un-compiled. */
+static int native_drop_trigger(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "drop_trigger expects a string trigger name");
+        return 0;
+    }
+    const char* name = argv[0].as.as_string ? argv[0].as.as_string : "";
+    DBDriver* driver = vm_get_driver(vm);
+    if (driver == NULL) {
+        vm_set_error(vm, "drop_trigger: no database driver");
+        return 0;
+    }
+    /* sqlite_drop_unit() ignores ctx; custom_drop_unit() only reads
+     * ctx->db_path (to find the sidecar file next to the db), which is
+     * exactly driver->connection_string here — no need to reach into the
+     * driver's private impl for a live catalog Context. */
+    Context ctx = { driver->connection_string, NULL };
+    if (!stored_programs_drop_trigger(driver, &ctx, name)) {
+        vm_set_error(vm, "drop_trigger: trigger does not exist");
+        return 0;
+    }
+    *out = value_int(0);
+    return 1;
+}
+
 static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
     if (argc != 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING ||
         argv[2].type != VAL_INT) {
@@ -2270,6 +2308,7 @@ static NativeDef natives[] = {
     {"nextval", 1, native_nextval},
     {"currval", 1, native_currval},
     {"drop_sequence", 1, native_drop_sequence},
+    {"drop_trigger", 1, native_drop_trigger},
     {"external_call", 3, native_external_call},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
