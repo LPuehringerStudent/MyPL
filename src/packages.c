@@ -72,6 +72,13 @@ static char* strip_main_procedure(const char* source);
     "package dbms_sql is\n" \
     "    proc execute(sql string) -> int;\n" \
     "    func query(sql string) -> array<row>;\n" \
+    "    func open_cursor() -> int;\n" \
+    "    proc parse(c int, sql string) -> int;\n" \
+    "    proc bind_variable(c int, name string, value any) -> int;\n" \
+    "    func execute_cursor(c int) -> int;\n" \
+    "    func fetch_rows(c int, rows int) -> array<row>;\n" \
+    "    func column_value(c int, column int) -> any;\n" \
+    "    proc close_cursor(c int) -> int;\n" \
     "end dbms_sql;\n" \
     "\n" \
     "package body dbms_sql is\n" \
@@ -81,6 +88,37 @@ static char* strip_main_procedure(const char* source);
     "\n" \
     "    func query(sql string) -> array<row> {\n" \
     "        return dbms_sql_query(sql);\n" \
+    "    }\n" \
+    "\n" \
+    "    func open_cursor() -> int {\n" \
+    "        return dbms_sql_open_cursor();\n" \
+    "    }\n" \
+    "\n" \
+    "    proc parse(c int, sql string) -> int {\n" \
+    "        dbms_sql_parse(c, sql);\n" \
+    "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    proc bind_variable(c int, name string, value any) -> int {\n" \
+    "        dbms_sql_bind_variable(c, name, value);\n" \
+    "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    func execute_cursor(c int) -> int {\n" \
+    "        return dbms_sql_cursor_execute(c);\n" \
+    "    }\n" \
+    "\n" \
+    "    func fetch_rows(c int, rows int) -> array<row> {\n" \
+    "        return dbms_sql_fetch_rows(c, rows);\n" \
+    "    }\n" \
+    "\n" \
+    "    func column_value(c int, column int) -> any {\n" \
+    "        return dbms_sql_column_value(c, column);\n" \
+    "    }\n" \
+    "\n" \
+    "    proc close_cursor(c int) -> int {\n" \
+    "        dbms_sql_close_cursor(c);\n" \
+    "        return 0;\n" \
     "    }\n" \
     "end dbms_sql;"
 

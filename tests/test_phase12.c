@@ -428,6 +428,103 @@ TEST(phase12_row_trigger_requires_dml_event) {
     clean_trigger_db();
 }
 
+/* --- dbms_sql cursor API (Phase 12 Task 4) --- */
+
+static void clean_dbms_sql_db(void) {
+    remove("mypl.db");
+    remove("mypl.db.programs");
+}
+
+TEST(phase12_dbms_sql_open_parse_execute_dml) {
+    clean_dbms_sql_db();
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dbms_t (id int, name string);\n"
+        "    int c = dbms_sql.open_cursor();\n"
+        "    dbms_sql.parse(c, \"insert into dbms_t values (1, 'alice')\");\n"
+        "    int n = dbms_sql.execute_cursor(c);\n"
+        "    print n;\n"
+        "    dbms_sql.close_cursor(c);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    clean_dbms_sql_db();
+}
+
+TEST(phase12_dbms_sql_fetch_rows) {
+    clean_dbms_sql_db();
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dbms_t (id int, name string);\n"
+        "    insert into dbms_t values (1, 'alice');\n"
+        "    insert into dbms_t values (2, 'bob');\n"
+        "    int c = dbms_sql.open_cursor();\n"
+        "    dbms_sql.parse(c, \"select id, name from dbms_t order by id\");\n"
+        "    dbms_sql.execute_cursor(c);\n"
+        "    array<row> rows = dbms_sql.fetch_rows(c, 10);\n"
+        "    print length(rows);\n"
+        "    print rows[0].id;\n"
+        "    print rows[0].name;\n"
+        "    print rows[1].id;\n"
+        "    print rows[1].name;\n"
+        "    dbms_sql.close_cursor(c);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "alice"));
+    ASSERT_INT_EQ(1, output_contains(out, "2"));
+    ASSERT_INT_EQ(1, output_contains(out, "bob"));
+    clean_dbms_sql_db();
+}
+
+TEST(phase12_dbms_sql_column_value) {
+    clean_dbms_sql_db();
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dbms_t (id int, name string);\n"
+        "    insert into dbms_t values (7, 'carol');\n"
+        "    int c = dbms_sql.open_cursor();\n"
+        "    dbms_sql.parse(c, \"select id, name from dbms_t\");\n"
+        "    dbms_sql.execute_cursor(c);\n"
+        "    array<row> rows = dbms_sql.fetch_rows(c, 1);\n"
+        "    any id = dbms_sql.column_value(c, 0);\n"
+        "    any name = dbms_sql.column_value(c, 1);\n"
+        "    print id;\n"
+        "    print name;\n"
+        "    dbms_sql.close_cursor(c);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "7"));
+    ASSERT_INT_EQ(1, output_contains(out, "carol"));
+    clean_dbms_sql_db();
+}
+
+TEST(phase12_dbms_sql_close_invalidates_handle) {
+    clean_dbms_sql_db();
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int c = dbms_sql.open_cursor();\n"
+        "    dbms_sql.close_cursor(c);\n"
+        "    dbms_sql.execute_cursor(c);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "invalid cursor handle"));
+    clean_dbms_sql_db();
+}
+
 #ifdef USE_SQLITE
 static int run_mypl_sqlite(const char* source, char* out, size_t out_size) {
     FILE* f = fopen("/tmp/test_phase12_sql_src.mypl", "w");
@@ -799,6 +896,60 @@ TEST(phase12_sqlite_row_trigger_persists_across_restarts) {
     ASSERT_INT_EQ(1, count_occurrences(out, "2"));
     remove("/tmp/test_phase12.db");
 }
+
+TEST(phase12_dbms_sql_sqlite_bind_and_execute) {
+    remove("/tmp/test_phase12.db");
+    char out[512];
+    int rc = run_mypl_sqlite(
+        "proc main() -> int {\n"
+        "    create table dbms_t (id int, name string);\n"
+        "    int c = dbms_sql.open_cursor();\n"
+        "    dbms_sql.parse(c, \"insert into dbms_t values (?1, ?2)\");\n"
+        "    dbms_sql.bind_variable(c, \"1\", 42);\n"
+        "    dbms_sql.bind_variable(c, \"2\", \"dave\");\n"
+        "    int n = dbms_sql.execute_cursor(c);\n"
+        "    print n;\n"
+        "    dbms_sql.parse(c, \"select id, name from dbms_t where id = ?1\");\n"
+        "    dbms_sql.bind_variable(c, \"1\", 42);\n"
+        "    dbms_sql.execute_cursor(c);\n"
+        "    array<row> rows = dbms_sql.fetch_rows(c, 10);\n"
+        "    print length(rows);\n"
+        "    print rows[0].id;\n"
+        "    print rows[0].name;\n"
+        "    dbms_sql.close_cursor(c);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    ASSERT_INT_EQ(1, output_contains(out, "42"));
+    ASSERT_INT_EQ(1, output_contains(out, "dave"));
+    remove("/tmp/test_phase12.db");
+}
+
+TEST(phase12_dbms_sql_sqlite_bind_string_with_quote) {
+    remove("/tmp/test_phase12.db");
+    char out[512];
+    int rc = run_mypl_sqlite(
+        "proc main() -> int {\n"
+        "    create table dbms_t (id int, name string);\n"
+        "    int c = dbms_sql.open_cursor();\n"
+        "    dbms_sql.parse(c, \"insert into dbms_t values (?1, ?2)\");\n"
+        "    dbms_sql.bind_variable(c, \"1\", 1);\n"
+        "    dbms_sql.bind_variable(c, \"2\", \"o'brien\");\n"
+        "    dbms_sql.execute_cursor(c);\n"
+        "    dbms_sql.parse(c, \"select name from dbms_t\");\n"
+        "    dbms_sql.execute_cursor(c);\n"
+        "    array<row> rows = dbms_sql.fetch_rows(c, 1);\n"
+        "    print rows[0].name;\n"
+        "    dbms_sql.close_cursor(c);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "o'brien"));
+    remove("/tmp/test_phase12.db");
+}
 #endif
 
 int main(void) {
@@ -818,7 +969,13 @@ int main(void) {
     RUN_TEST(phase12_row_trigger_fires_on_dynamic_sql);
     RUN_TEST(phase12_row_trigger_wrong_context_errors);
     RUN_TEST(phase12_row_trigger_requires_dml_event);
+    RUN_TEST(phase12_dbms_sql_open_parse_execute_dml);
+    RUN_TEST(phase12_dbms_sql_fetch_rows);
+    RUN_TEST(phase12_dbms_sql_column_value);
+    RUN_TEST(phase12_dbms_sql_close_invalidates_handle);
 #ifdef USE_SQLITE
+    RUN_TEST(phase12_dbms_sql_sqlite_bind_and_execute);
+    RUN_TEST(phase12_dbms_sql_sqlite_bind_string_with_quote);
     RUN_TEST(phase12_sqlite_nextval_persists_across_restarts);
     RUN_TEST(phase12_sqlite_drop_sequence_persists);
     RUN_TEST(phase12_trigger_static_fires);

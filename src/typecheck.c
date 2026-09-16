@@ -567,6 +567,13 @@ static int is_native(const char* name) {
            strcmp(name, "utl_file_fclose") == 0 ||
            strcmp(name, "dbms_sql_execute") == 0 ||
            strcmp(name, "dbms_sql_query") == 0 ||
+           strcmp(name, "dbms_sql_open_cursor") == 0 ||
+           strcmp(name, "dbms_sql_parse") == 0 ||
+           strcmp(name, "dbms_sql_bind_variable") == 0 ||
+           strcmp(name, "dbms_sql_cursor_execute") == 0 ||
+           strcmp(name, "dbms_sql_fetch_rows") == 0 ||
+           strcmp(name, "dbms_sql_column_value") == 0 ||
+           strcmp(name, "dbms_sql_close_cursor") == 0 ||
            strcmp(name, "regexp_like") == 0 ||
            strcmp(name, "regexp_substr") == 0 ||
            strcmp(name, "regexp_replace") == 0 ||
@@ -1530,6 +1537,96 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             type_error(tc, loc, "dbms_sql_query expects a string");
         }
         return transient_array_type(tc, &type_row);
+    }
+    if (strcmp(name, "dbms_sql_open_cursor") == 0) {
+        if (arg_count != 0) {
+            type_error(tc, loc, "dbms_sql_open_cursor expects 0 arguments");
+            return NULL;
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_sql_parse") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "dbms_sql_parse expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_parse expects an int cursor handle");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "dbms_sql_parse expects a string SQL");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_sql_bind_variable") == 0) {
+        if (arg_count != 3) {
+            type_error(tc, loc, "dbms_sql_bind_variable expects 3 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        (void)infer_expr(tc, args[2], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_bind_variable expects an int cursor handle");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
+            type_error(tc, loc, "dbms_sql_bind_variable expects a string bind name");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_sql_cursor_execute") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "dbms_sql_cursor_execute expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_cursor_execute expects an int cursor handle");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "dbms_sql_fetch_rows") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "dbms_sql_fetch_rows expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_fetch_rows expects an int cursor handle");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_fetch_rows expects an int row count");
+        }
+        return transient_array_type(tc, &type_row);
+    }
+    if (strcmp(name, "dbms_sql_column_value") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "dbms_sql_column_value expects 2 arguments");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        Type* b = infer_expr(tc, args[1], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_column_value expects an int cursor handle");
+        }
+        if (b != &type_unknown && b != NULL && b->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_column_value expects an int column index");
+        }
+        return &type_unknown;
+    }
+    if (strcmp(name, "dbms_sql_close_cursor") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "dbms_sql_close_cursor expects 1 argument");
+            return NULL;
+        }
+        Type* a = infer_expr(tc, args[0], NULL);
+        if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
+            type_error(tc, loc, "dbms_sql_close_cursor expects an int cursor handle");
+        }
+        return &type_int;
     }
     if (strcmp(name, "regexp_like") == 0) {
         if (arg_count != 2) {

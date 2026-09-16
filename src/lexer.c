@@ -107,6 +107,7 @@ static TokenType identifier_type(Lexer* lexer) {
     switch (lexer->start[0]) {
         case 'a':
             if (length == 5 && memcmp(lexer->start, "array", 5) == 0) return TOKEN_ARRAY_TYPE;
+            if (length == 3 && memcmp(lexer->start, "any", 3) == 0) return TOKEN_ANY_TYPE;
             break;
         case 'b':
             if (length == 5 && memcmp(lexer->start, "block", 5) == 0) return TOKEN_BLOCK;

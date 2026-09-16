@@ -1966,6 +1966,80 @@ static int native_dbms_sql_query(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_dbms_sql_open_cursor(VM* vm, int argc, Value* argv, Value* out) {
+    (void)argc;
+    (void)argv;
+    int handle = vm_dbms_sql_open_cursor(vm);
+    if (handle < 0) {
+        vm_set_error(vm, "dbms_sql.open_cursor: no available cursor handle");
+        return 0;
+    }
+    *out = value_int(handle);
+    return 1;
+}
+
+static int native_dbms_sql_parse(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_INT || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "dbms_sql_parse expects (int, string)");
+        return 0;
+    }
+    int ok = vm_dbms_sql_parse(vm, argv[0].as.as_int,
+                               argv[1].as.as_string ? argv[1].as.as_string : "");
+    *out = value_int(ok ? 0 : -1);
+    return ok;
+}
+
+static int native_dbms_sql_bind_variable(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 3 || argv[0].type != VAL_INT || argv[1].type != VAL_STRING) {
+        vm_set_error(vm, "dbms_sql_bind_variable expects (int, string, value)");
+        return 0;
+    }
+    int ok = vm_dbms_sql_bind_variable(vm, argv[0].as.as_int,
+                                       argv[1].as.as_string ? argv[1].as.as_string : "",
+                                       argv[2]);
+    *out = value_int(ok ? 0 : -1);
+    return ok;
+}
+
+static int native_dbms_sql_cursor_execute(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_INT) {
+        vm_set_error(vm, "dbms_sql_cursor_execute expects an int handle");
+        return 0;
+    }
+    int rc = vm_dbms_sql_cursor_execute(vm, argv[0].as.as_int);
+    if (rc < 0) return 0;
+    *out = value_int(rc);
+    return 1;
+}
+
+static int native_dbms_sql_fetch_rows(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "dbms_sql_fetch_rows expects (int, int)");
+        return 0;
+    }
+    *out = vm_dbms_sql_fetch_rows(vm, argv[0].as.as_int, argv[1].as.as_int);
+    return 1;
+}
+
+static int native_dbms_sql_column_value(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "dbms_sql_column_value expects (int, int)");
+        return 0;
+    }
+    *out = vm_dbms_sql_column_value(vm, argv[0].as.as_int, argv[1].as.as_int);
+    return 1;
+}
+
+static int native_dbms_sql_close_cursor(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_INT) {
+        vm_set_error(vm, "dbms_sql_close_cursor expects an int handle");
+        return 0;
+    }
+    int ok = vm_dbms_sql_close_cursor(vm, argv[0].as.as_int);
+    *out = value_int(ok ? 0 : -1);
+    return ok;
+}
+
 static int regex_compile(VM* vm, const char* pattern, regex_t* out_re) {
     int rc = regcomp(out_re, pattern, REG_EXTENDED);
     if (rc != 0) {
@@ -2267,6 +2341,13 @@ static NativeDef natives[] = {
     {"utl_file_fclose", 1, native_utl_file_fclose},
     {"dbms_sql_execute", 1, native_dbms_sql_execute},
     {"dbms_sql_query", 1, native_dbms_sql_query},
+    {"dbms_sql_open_cursor", 0, native_dbms_sql_open_cursor},
+    {"dbms_sql_parse", 2, native_dbms_sql_parse},
+    {"dbms_sql_bind_variable", 3, native_dbms_sql_bind_variable},
+    {"dbms_sql_cursor_execute", 1, native_dbms_sql_cursor_execute},
+    {"dbms_sql_fetch_rows", 2, native_dbms_sql_fetch_rows},
+    {"dbms_sql_column_value", 2, native_dbms_sql_column_value},
+    {"dbms_sql_close_cursor", 1, native_dbms_sql_close_cursor},
     {"regexp_like", 2, native_regexp_like},
     {"regexp_substr", 2, native_regexp_substr},
     {"regexp_replace", 3, native_regexp_replace},
