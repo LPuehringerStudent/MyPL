@@ -841,6 +841,7 @@ static Type* parse_type(Parser* parser) {
     if (match(parser, TOKEN_FLOAT_TYPE)) return &type_float;
     if (match(parser, TOKEN_STRING_TYPE)) return &type_string;
     if (match(parser, TOKEN_BOOL_TYPE)) return &type_bool;
+    if (match(parser, TOKEN_ANY_TYPE)) return &type_unknown;
     if (match(parser, TOKEN_DATE_TYPE)) return &type_date;
     if (match(parser, TOKEN_TIMESTAMP_TYPE)) return &type_timestamp;
     if (match(parser, TOKEN_CURSOR)) return &type_cursor;
@@ -1998,6 +1999,7 @@ static Stmt* statement(Parser* parser) {
         check(parser, TOKEN_FLOAT_TYPE) ||
         check(parser, TOKEN_STRING_TYPE) ||
         check(parser, TOKEN_BOOL_TYPE) ||
+        check(parser, TOKEN_ANY_TYPE) ||
         check(parser, TOKEN_DATE_TYPE) ||
         check(parser, TOKEN_TIMESTAMP_TYPE) ||
         check(parser, TOKEN_ARRAY_TYPE) ||
@@ -2314,6 +2316,7 @@ static int token_is_type_after(Parser* parser) {
            next.type == TOKEN_FLOAT_TYPE ||
            next.type == TOKEN_STRING_TYPE ||
            next.type == TOKEN_BOOL_TYPE ||
+           next.type == TOKEN_ANY_TYPE ||
            next.type == TOKEN_DATE_TYPE ||
            next.type == TOKEN_TIMESTAMP_TYPE ||
            next.type == TOKEN_ARRAY_TYPE ||
@@ -2327,6 +2330,7 @@ static int token_starts_type(Parser* parser) {
         check(parser, TOKEN_FLOAT_TYPE) ||
         check(parser, TOKEN_STRING_TYPE) ||
         check(parser, TOKEN_BOOL_TYPE) ||
+        check(parser, TOKEN_ANY_TYPE) ||
         check(parser, TOKEN_DATE_TYPE) ||
         check(parser, TOKEN_TIMESTAMP_TYPE) ||
         check(parser, TOKEN_ARRAY_TYPE) ||
@@ -2734,6 +2738,7 @@ static ParseRule rules[] = {
     [TOKEN_FLOAT_TYPE] = {NULL,        NULL,   PREC_NONE},
     [TOKEN_STRING_TYPE]= {NULL,        NULL,   PREC_NONE},
     [TOKEN_BOOL_TYPE]  = {NULL,        NULL,   PREC_NONE},
+    [TOKEN_ANY_TYPE]   = {NULL,        NULL,   PREC_NONE},
     [TOKEN_ARRAY_TYPE] = {NULL,        NULL,   PREC_NONE},
     [TOKEN_CURSOR]     = {NULL,        NULL,   PREC_NONE},
     [TOKEN_OPEN]       = {NULL,        NULL,   PREC_NONE},

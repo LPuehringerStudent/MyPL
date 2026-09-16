@@ -24,6 +24,8 @@ typedef struct {
 #define UTL_FILE_MAX_HANDLES 16
 #define SEQUENCE_MAX 16
 #define SEQUENCE_NAME_MAX 64
+#define DBMS_SQL_MAX_CURSORS 16
+#define DBMS_SQL_MAX_BINDS 16
 
 typedef struct {
     int out_count;
@@ -38,6 +40,19 @@ typedef struct {
     int  increment;
     char name[SEQUENCE_NAME_MAX];
 } SequenceSlot;
+
+typedef struct {
+    int    active;
+    char*  sql;
+    Value  binds[DBMS_SQL_MAX_BINDS];
+    int    bind_count;
+    void*  result_handle;
+    void*  row_handle;
+    int    row_count;
+    int    current_row;
+    int    is_select;
+    int    col_count;
+} DBMS_SQL_Cursor;
 
 struct VM {
     Chunk*        chunk;
@@ -73,6 +88,7 @@ struct VM {
     FILE*         utl_file_handles[UTL_FILE_MAX_HANDLES];
     SequenceSlot  sequences[SEQUENCE_MAX];
     int           sequences_loaded;
+    DBMS_SQL_Cursor dbms_sql_cursors[DBMS_SQL_MAX_CURSORS];
 };
 
 VM* vm_init(void) {
@@ -115,6 +131,17 @@ VM* vm_init(void) {
         vm->sequences[i].name[0] = '\0';
     }
     vm->sequences_loaded = 0;
+    for (int i = 0; i < DBMS_SQL_MAX_CURSORS; i++) {
+        vm->dbms_sql_cursors[i].active = 0;
+        vm->dbms_sql_cursors[i].sql = NULL;
+        vm->dbms_sql_cursors[i].bind_count = 0;
+        vm->dbms_sql_cursors[i].result_handle = NULL;
+        vm->dbms_sql_cursors[i].row_handle = NULL;
+        vm->dbms_sql_cursors[i].row_count = 0;
+        vm->dbms_sql_cursors[i].current_row = -1;
+        vm->dbms_sql_cursors[i].is_select = 0;
+        vm->dbms_sql_cursors[i].col_count = 0;
+    }
     return vm;
 }
 
@@ -398,6 +425,395 @@ Value vm_dbms_sql_query(VM* vm, const char* sql) {
     return value_array(result);
 }
 
+/* --------------------------------------------------------------------------
+ * dbms_sql cursor API (Phase 12 Task 4)
+ * ------------------------------------------------------------------------ */
+
+static void dbms_sql_cursor_reset(DBMS_SQL_Cursor* cursor) {
+    if (cursor == NULL) return;
+    if (cursor->sql != NULL) {
+        free(cursor->sql);
+        cursor->sql = NULL;
+    }
+    for (int i = 0; i < cursor->bind_count; i++) {
+        value_release(cursor->binds[i]);
+    }
+    cursor->bind_count = 0;
+    cursor->result_handle = NULL;
+    cursor->row_handle = NULL;
+    cursor->row_count = 0;
+    cursor->current_row = -1;
+    cursor->is_select = 0;
+    cursor->col_count = 0;
+}
+
+static int dbms_sql_cursor_close_internal(VM* vm, DBMS_SQL_Cursor* cursor) {
+    if (cursor == NULL) return 0;
+    if (cursor->result_handle != NULL) {
+        if (vm->driver != NULL) {
+            vm->driver->result_free(vm->driver, cursor->result_handle);
+        } else if (vm->context != NULL) {
+            result_free((Result*)cursor->result_handle);
+        }
+    }
+    dbms_sql_cursor_reset(cursor);
+    cursor->active = 0;
+    return 1;
+}
+
+static int dbms_sql_is_select(const char* sql) {
+    if (sql == NULL) return 0;
+    const char* p = sql;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    return strncasecmp(p, "select", 6) == 0 &&
+           (p[6] == '\0' || p[6] == ' ' || p[6] == '\t' || p[6] == '\n' || p[6] == '\r');
+}
+
+static int dbms_sql_format_value(Value v, char* out, size_t out_size) {
+    if (out == NULL || out_size == 0) return 0;
+    switch (v.type) {
+        case VAL_NULL:
+            snprintf(out, out_size, "NULL");
+            return 1;
+        case VAL_INT:
+            snprintf(out, out_size, "%d", v.as.as_int);
+            return 1;
+        case VAL_FLOAT:
+            snprintf(out, out_size, "%g", v.as.as_float);
+            return 1;
+        case VAL_BOOL:
+            snprintf(out, out_size, "%d", v.as.as_int ? 1 : 0);
+            return 1;
+        case VAL_STRING: {
+            const char* s = v.as.as_string != NULL ? v.as.as_string : "";
+            size_t needed = 3; /* quotes + NUL */
+            for (const char* q = s; *q != '\0'; q++) {
+                needed += (*q == '\'') ? 2 : 1;
+            }
+            if (needed > out_size) return 0;
+            char* dst = out;
+            *dst++ = '\'';
+            for (const char* q = s; *q != '\0'; q++) {
+                if (*q == '\'') {
+                    *dst++ = '\'';
+                    *dst++ = '\'';
+                } else {
+                    *dst++ = *q;
+                }
+            }
+            *dst++ = '\'';
+            *dst = '\0';
+            return 1;
+        }
+        default:
+            snprintf(out, out_size, "NULL");
+            return 1;
+    }
+}
+
+static char* dbms_sql_substitute_binds(VM* vm, const char* sql, Value* binds, int bind_count) {
+    (void)vm;
+    if (sql == NULL) return NULL;
+    size_t sql_len = strlen(sql);
+    size_t capacity = sql_len + 1;
+    char* out = malloc(capacity);
+    if (out == NULL) return NULL;
+    size_t j = 0;
+    for (size_t i = 0; i < sql_len; ) {
+        if (sql[i] == '?') {
+            size_t k = i + 1;
+            int pos = 0;
+            while (k < sql_len && sql[k] >= '0' && sql[k] <= '9') {
+                pos = pos * 10 + (sql[k] - '0');
+                k++;
+            }
+            if (k > i + 1 && pos > 0 && pos <= bind_count) {
+                char buf[1024];
+                if (!dbms_sql_format_value(binds[pos - 1], buf, sizeof(buf))) {
+                    buf[0] = '\0';
+                }
+                size_t blen = strlen(buf);
+                size_t needed = j + blen + (sql_len - k) + 1;
+                if (needed > capacity) {
+                    capacity = needed * 2;
+                    char* grown = realloc(out, capacity);
+                    if (grown == NULL) {
+                        free(out);
+                        return NULL;
+                    }
+                    out = grown;
+                }
+                memcpy(out + j, buf, blen);
+                j += blen;
+                i = k;
+                continue;
+            }
+        }
+        if (j + 2 > capacity) {
+            capacity = capacity * 2 + 16;
+            char* grown = realloc(out, capacity);
+            if (grown == NULL) {
+                free(out);
+                return NULL;
+            }
+            out = grown;
+        }
+        out[j++] = sql[i++];
+    }
+    out[j] = '\0';
+    return out;
+}
+
+int vm_dbms_sql_open_cursor(VM* vm) {
+    if (vm == NULL) return -1;
+    for (int i = 0; i < DBMS_SQL_MAX_CURSORS; i++) {
+        if (!vm->dbms_sql_cursors[i].active) {
+            dbms_sql_cursor_reset(&vm->dbms_sql_cursors[i]);
+            vm->dbms_sql_cursors[i].active = 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+int vm_dbms_sql_parse(VM* vm, int handle, const char* sql) {
+    if (vm == NULL || sql == NULL) return 0;
+    if (handle < 0 || handle >= DBMS_SQL_MAX_CURSORS || !vm->dbms_sql_cursors[handle].active) {
+        vm_set_error(vm, "dbms_sql.parse: invalid cursor handle");
+        return 0;
+    }
+    DBMS_SQL_Cursor* cursor = &vm->dbms_sql_cursors[handle];
+    dbms_sql_cursor_reset(cursor);
+    cursor->sql = strdup(sql);
+    if (cursor->sql == NULL) {
+        vm_set_error(vm, "Out of memory");
+        cursor->active = 0;
+        return 0;
+    }
+    cursor->active = 1;
+    return 1;
+}
+
+int vm_dbms_sql_bind_variable(VM* vm, int handle, const char* name, Value value) {
+    if (vm == NULL || name == NULL) return 0;
+    if (handle < 0 || handle >= DBMS_SQL_MAX_CURSORS || !vm->dbms_sql_cursors[handle].active) {
+        vm_set_error(vm, "dbms_sql.bind_variable: invalid cursor handle");
+        return 0;
+    }
+    DBMS_SQL_Cursor* cursor = &vm->dbms_sql_cursors[handle];
+    if (cursor->sql == NULL) {
+        vm_set_error(vm, "dbms_sql.bind_variable: cursor has no parsed SQL");
+        return 0;
+    }
+    int pos = 0;
+    if (name[0] == '\0' || (name[0] == '0' && name[1] == '\0')) {
+        vm_set_error(vm, "dbms_sql.bind_variable: invalid bind name");
+        return 0;
+    }
+    for (const char* p = name; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') {
+            vm_set_error(vm, "dbms_sql.bind_variable: bind name must be a positional number");
+            return 0;
+        }
+        pos = pos * 10 + (*p - '0');
+    }
+    if (pos < 1 || pos > DBMS_SQL_MAX_BINDS) {
+        vm_set_error(vm, "dbms_sql.bind_variable: bind position out of range");
+        return 0;
+    }
+    if (pos > cursor->bind_count) {
+        for (int i = cursor->bind_count; i < pos; i++) {
+            cursor->binds[i] = value_null();
+        }
+        cursor->bind_count = pos;
+    }
+    value_release(cursor->binds[pos - 1]);
+    value_retain(value);
+    cursor->binds[pos - 1] = value;
+    return 1;
+}
+
+int vm_dbms_sql_cursor_execute(VM* vm, int handle) {
+    if (vm == NULL) return -1;
+    if (handle < 0 || handle >= DBMS_SQL_MAX_CURSORS || !vm->dbms_sql_cursors[handle].active) {
+        vm_set_error(vm, "dbms_sql.execute: invalid cursor handle");
+        return -1;
+    }
+    DBMS_SQL_Cursor* cursor = &vm->dbms_sql_cursors[handle];
+    if (cursor->sql == NULL) {
+        vm_set_error(vm, "dbms_sql.execute: cursor has no parsed SQL");
+        return -1;
+    }
+    char* sql = dbms_sql_substitute_binds(vm, cursor->sql, cursor->binds, cursor->bind_count);
+    if (sql == NULL) {
+        vm_set_error(vm, "Out of memory");
+        return -1;
+    }
+    cursor->is_select = dbms_sql_is_select(sql);
+    if (cursor->result_handle != NULL) {
+        if (vm->driver != NULL) {
+            vm->driver->result_free(vm->driver, cursor->result_handle);
+        } else if (vm->context != NULL) {
+            result_free((Result*)cursor->result_handle);
+        }
+        cursor->result_handle = NULL;
+    }
+    cursor->row_handle = NULL;
+    cursor->row_count = 0;
+    cursor->current_row = -1;
+    cursor->col_count = 0;
+
+    if (cursor->is_select) {
+        DBDriver* driver = vm->driver;
+        if (driver != NULL) {
+            void* handle = NULL;
+            if (!driver->query(driver, sql, NULL, 0, &handle)) {
+                free(sql);
+                set_runtime_error_from_driver_sql(vm, "dbms_sql.execute query failed");
+                return -1;
+            }
+            cursor->result_handle = handle;
+            cursor->col_count = driver->result_column_count(driver, handle);
+        } else {
+            Context* ctx = vm->context;
+            if (ctx == NULL || ctx->pager == NULL) {
+                free(sql);
+                vm_set_error(vm, "dbms_sql.execute: no database context");
+                return -1;
+            }
+            Result* res = sql_exec(sql, ctx);
+            if (res == NULL) {
+                free(sql);
+                vm_set_error(vm, "dbms_sql.execute: SQL query failed");
+                return -1;
+            }
+            cursor->result_handle = res;
+            cursor->col_count = res->rows != NULL && res->row_count > 0 ? res->rows[0].field_count : 0;
+        }
+        free(sql);
+        vm_set_sql_rowcount(vm, 0);
+        return 0;
+    }
+
+    int row_count = vm_dynamic_exec(vm, sql);
+    free(sql);
+    if (row_count < 0) return -1;
+    vm_set_sql_rowcount(vm, row_count);
+    return row_count;
+}
+
+Value vm_dbms_sql_fetch_rows(VM* vm, int handle, int count) {
+    if (vm == NULL || count < 0) return value_array(array_new());
+    if (handle < 0 || handle >= DBMS_SQL_MAX_CURSORS || !vm->dbms_sql_cursors[handle].active) {
+        vm_set_error(vm, "dbms_sql.fetch_rows: invalid cursor handle");
+        return value_array(array_new());
+    }
+    DBMS_SQL_Cursor* cursor = &vm->dbms_sql_cursors[handle];
+    if (!cursor->is_select || cursor->result_handle == NULL) {
+        vm_set_error(vm, "dbms_sql.fetch_rows: cursor is not a SELECT");
+        return value_array(array_new());
+    }
+    ArrayObj* result = array_new();
+    DBDriver* driver = vm->driver;
+    int fetched = 0;
+    if (driver != NULL) {
+        void* row_handle = NULL;
+        while (fetched < count && driver->result_next(driver, cursor->result_handle, &row_handle)) {
+            cursor->row_handle = row_handle;
+            RowObj* row = row_obj_new(cursor->col_count);
+            if (row == NULL) break;
+            for (int c = 0; c < cursor->col_count; c++) {
+                Value cell;
+                if (!driver->row_get_column(driver, row_handle, c, &cell)) {
+                    cell = value_int(0);
+                }
+                const char* col_name = driver->result_column_name(driver, cursor->result_handle, c);
+                row_obj_set_column(row, c, col_name, cell);
+                value_release(cell);
+            }
+            array_append(result, value_row(row));
+            value_release(value_row(row));
+            fetched++;
+            cursor->current_row++;
+        }
+    } else {
+        Result* res = (Result*)cursor->result_handle;
+        Row* row = NULL;
+        while (fetched < count && (row = result_next(res)) != NULL) {
+            cursor->row_handle = row;
+            int col_count = row->field_count;
+            RowObj* row_obj = row_obj_new(col_count);
+            if (row_obj == NULL) break;
+            for (int c = 0; c < col_count; c++) {
+                Value cell;
+                Cell cell_data = row->fields[c].value;
+                switch (cell_data.type) {
+                    case VAL_INT:    cell = value_int(cell_data.as.as_int); break;
+                    case VAL_FLOAT:  cell = value_float(cell_data.as.as_float); break;
+                    case VAL_STRING: cell = value_string(strdup(cell_data.as.as_string)); break;
+                    default:         cell = value_int(0); break;
+                }
+                row_obj_set_column(row_obj, c, row->fields[c].name, cell);
+                value_release(cell);
+            }
+            array_append(result, value_row(row_obj));
+            value_release(value_row(row_obj));
+            fetched++;
+            cursor->current_row++;
+        }
+    }
+    if (fetched == 0) {
+        cursor->row_handle = NULL;
+    }
+    return value_array(result);
+}
+
+Value vm_dbms_sql_column_value(VM* vm, int handle, int column) {
+    if (vm == NULL) return value_null();
+    if (handle < 0 || handle >= DBMS_SQL_MAX_CURSORS || !vm->dbms_sql_cursors[handle].active) {
+        vm_set_error(vm, "dbms_sql.column_value: invalid cursor handle");
+        return value_null();
+    }
+    DBMS_SQL_Cursor* cursor = &vm->dbms_sql_cursors[handle];
+    if (!cursor->is_select || cursor->result_handle == NULL) {
+        vm_set_error(vm, "dbms_sql.column_value: cursor is not a SELECT");
+        return value_null();
+    }
+    if (cursor->row_handle == NULL || column < 0 || column >= cursor->col_count) {
+        vm_set_error(vm, "dbms_sql.column_value: no current row or invalid column");
+        return value_null();
+    }
+    DBDriver* driver = vm->driver;
+    if (driver != NULL) {
+        Value cell;
+        if (!driver->row_get_column(driver, cursor->row_handle, column, &cell)) {
+            return value_null();
+        }
+        return cell;
+    } else {
+        Row* row = (Row*)cursor->row_handle;
+        if (column >= row->field_count) {
+            return value_null();
+        }
+        Cell cell_data = row->fields[column].value;
+        switch (cell_data.type) {
+            case VAL_INT:    return value_int(cell_data.as.as_int);
+            case VAL_FLOAT:  return value_float(cell_data.as.as_float);
+            case VAL_STRING: return value_string(strdup(cell_data.as.as_string));
+            default:         return value_null();
+        }
+    }
+}
+
+int vm_dbms_sql_close_cursor(VM* vm, int handle) {
+    if (vm == NULL) return 0;
+    if (handle < 0 || handle >= DBMS_SQL_MAX_CURSORS || !vm->dbms_sql_cursors[handle].active) {
+        vm_set_error(vm, "dbms_sql.close_cursor: invalid cursor handle");
+        return 0;
+    }
+    return dbms_sql_cursor_close_internal(vm, &vm->dbms_sql_cursors[handle]);
+}
+
 static SequenceSlot* sequence_find(VM* vm, const char* name) {
     for (int i = 0; i < SEQUENCE_MAX; i++) {
         if (vm->sequences[i].used && strcmp(vm->sequences[i].name, name) == 0) {
@@ -584,6 +1000,11 @@ void vm_free(VM* vm) {
         if (vm->utl_file_handles[i] != NULL) {
             fclose(vm->utl_file_handles[i]);
             vm->utl_file_handles[i] = NULL;
+        }
+    }
+    for (int i = 0; i < DBMS_SQL_MAX_CURSORS; i++) {
+        if (vm->dbms_sql_cursors[i].active) {
+            dbms_sql_cursor_close_internal(vm, &vm->dbms_sql_cursors[i]);
         }
     }
     array_pool_free_all();
@@ -2558,6 +2979,11 @@ static void vm_free_child(VM* vm) {
         vm->driver->result_free(vm->driver, vm->result_handle);
     } else if (vm->driver == NULL) {
         result_free((Result*)vm->result_handle);
+    }
+    for (int i = 0; i < DBMS_SQL_MAX_CURSORS; i++) {
+        if (vm->dbms_sql_cursors[i].active) {
+            dbms_sql_cursor_close_internal(vm, &vm->dbms_sql_cursors[i]);
+        }
     }
     free(vm);
 }

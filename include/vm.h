@@ -50,6 +50,15 @@ int             vm_utl_file_fclose(VM* vm, int handle);
 int             vm_dbms_sql_execute(VM* vm, const char* sql);
 Value           vm_dbms_sql_query(VM* vm, const char* sql);
 
+/* dbms_sql cursor API (Phase 12 Task 4) */
+int             vm_dbms_sql_open_cursor(VM* vm);
+int             vm_dbms_sql_parse(VM* vm, int handle, const char* sql);
+int             vm_dbms_sql_bind_variable(VM* vm, int handle, const char* name, Value value);
+int             vm_dbms_sql_cursor_execute(VM* vm, int handle);
+Value           vm_dbms_sql_fetch_rows(VM* vm, int handle, int count);
+Value           vm_dbms_sql_column_value(VM* vm, int handle, int column);
+int             vm_dbms_sql_close_cursor(VM* vm, int handle);
+
 /* Dynamic SQL execution with runtime trigger firing and DROP TRIGGER
    interception (execute_immediate, dbms_sql.execute). */
 int             vm_dynamic_exec(VM* vm, const char* sql);

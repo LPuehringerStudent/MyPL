@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "SQLite support is disabled in this build\n");
         return 1;
 #endif
-    } else if (file != NULL) {
+    } else if (file != NULL) {  
         custom_driver_init(&driver);
         if (!driver.open(&driver, "mypl.db")) {
             fprintf(stderr, "Could not open database: mypl.db\n");
