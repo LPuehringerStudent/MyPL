@@ -87,6 +87,103 @@ TEST(cli_resolves_nested_import_relative_to_importing_file) {
     system("rm -rf /tmp/mypl_nested_import_test");
 }
 
+TEST(cli_initializes_package_declared_in_imported_module) {
+    system("rm -rf /tmp/mypl_import_pkginit_test");
+    system("mkdir -p /tmp/mypl_import_pkginit_test/lib");
+
+    FILE* f = fopen("/tmp/mypl_import_pkginit_test/lib/counter.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+        "package counter is\n"
+        "    counter int;\n"
+        "    func get() -> int;\n"
+        "end counter;\n"
+        "\n"
+        "package body counter is\n"
+        "    int counter = 41;\n"
+        "    func get() -> int {\n"
+        "        return counter;\n"
+        "    }\n"
+        "end counter;\n");
+    fclose(f);
+
+    f = fopen("/tmp/mypl_import_pkginit_test/main.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "import \"lib/counter.mypl\";\nproc main() -> int { return counter.get(); }\n");
+    fclose(f);
+
+    /* Package-level state declared in the imported module must run its
+       initializer before main() executes, exactly as if it were declared
+       in the main file itself. Without that, `counter` starts at the
+       int zero-value instead of 41. */
+    int rc = system("./bin/mypl /tmp/mypl_import_pkginit_test/main.mypl > /tmp/mypl_out.txt 2>&1");
+    ASSERT_INT_EQ(0, WEXITSTATUS(rc));
+
+    FILE* out = fopen("/tmp/mypl_out.txt", "r");
+    ASSERT_PTR_NOT_NULL(out);
+    char buf[64];
+    fgets(buf, sizeof(buf), out);
+    fclose(out);
+    ASSERT_INT_EQ(41, atoi(buf));
+
+    system("rm -rf /tmp/mypl_import_pkginit_test");
+}
+
+TEST(cli_initializes_packages_from_multiple_imported_modules_in_order) {
+    system("rm -rf /tmp/mypl_import_pkginit_multi_test");
+    system("mkdir -p /tmp/mypl_import_pkginit_multi_test/lib");
+
+    FILE* f = fopen("/tmp/mypl_import_pkginit_multi_test/lib/a.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+        "package pkg_a is\n"
+        "    func get() -> int;\n"
+        "end pkg_a;\n"
+        "\n"
+        "package body pkg_a is\n"
+        "    int value = 10;\n"
+        "    func get() -> int {\n"
+        "        return value;\n"
+        "    }\n"
+        "end pkg_a;\n");
+    fclose(f);
+
+    f = fopen("/tmp/mypl_import_pkginit_multi_test/lib/b.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+        "package pkg_b is\n"
+        "    func get() -> int;\n"
+        "end pkg_b;\n"
+        "\n"
+        "package body pkg_b is\n"
+        "    int value = 20;\n"
+        "    func get() -> int {\n"
+        "        return value;\n"
+        "    }\n"
+        "end pkg_b;\n");
+    fclose(f);
+
+    f = fopen("/tmp/mypl_import_pkginit_multi_test/main.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+        "import \"lib/a.mypl\";\n"
+        "import \"lib/b.mypl\";\n"
+        "proc main() -> int { return pkg_a.get() + pkg_b.get(); }\n");
+    fclose(f);
+
+    int rc = system("./bin/mypl /tmp/mypl_import_pkginit_multi_test/main.mypl > /tmp/mypl_out.txt 2>&1");
+    ASSERT_INT_EQ(0, WEXITSTATUS(rc));
+
+    FILE* out = fopen("/tmp/mypl_out.txt", "r");
+    ASSERT_PTR_NOT_NULL(out);
+    char buf[64];
+    fgets(buf, sizeof(buf), out);
+    fclose(out);
+    ASSERT_INT_EQ(30, atoi(buf));
+
+    system("rm -rf /tmp/mypl_import_pkginit_multi_test");
+}
+
 #ifdef USE_SQLITE
 TEST(cli_accepts_db_flag) {
     remove("/tmp/cli_test.db");
@@ -107,6 +204,8 @@ int main(void) {
     RUN_TEST(cli_returns_nonzero_on_compile_error);
     RUN_TEST(cli_resolves_import_relative_to_importing_file);
     RUN_TEST(cli_resolves_nested_import_relative_to_importing_file);
+    RUN_TEST(cli_initializes_package_declared_in_imported_module);
+    RUN_TEST(cli_initializes_packages_from_multiple_imported_modules_in_order);
 #ifdef USE_SQLITE
     RUN_TEST(cli_accepts_db_flag);
 #endif
