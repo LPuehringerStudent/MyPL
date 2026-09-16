@@ -367,8 +367,11 @@ High-level direction:
 - Add triggers, pipelined/table functions, object types with methods, and
   conditional compilation (Phase 10).
 
-Contributions and ideas are welcome.
+Contributions and ideas are welcome — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow (failing-test-first,
+clean rebuilds, sanitizer checks) and [`SECURITY.md`](SECURITY.md) for
+reporting vulnerabilities.
 
 ## License
 
-MIT
+[MIT](LICENSE)
