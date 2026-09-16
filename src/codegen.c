@@ -24,6 +24,9 @@
 #define MAX_GLOBALS 256
 #define MAX_EXCEPTIONS 64
 #define MAX_TRIGGERS 64
+/* One slot per compiled file (main plus every distinct imported module)
+   that declares package-level state needing an initializer. */
+#define MAX_MODULE_INITS (MAX_MODULES + 1)
 
 typedef struct {
     const char* name;
@@ -50,6 +53,9 @@ typedef struct {
     ParamMode* param_modes;
     int param_count;
     int autonomous_transaction;
+    /* Set for a package member declared in its package's spec (interface);
+       clear for a body-only helper. Meaningless outside package members. */
+    int is_public;
 } ProcEntry;
 
 typedef struct {
@@ -113,6 +119,11 @@ typedef struct {
     TriggerEntry triggers[MAX_TRIGGERS];
     int trigger_count;
     const StructDecl* current_struct;
+    /* Hidden 0-arg procs, one per compiled file that declares package-level
+       state, in load order (deepest imports first, the main file last).
+       Called in this order from the bootstrap sequence before main() runs. */
+    char* module_init_procs[MAX_MODULE_INITS];
+    int module_init_count;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -159,6 +170,7 @@ static int add_proc_entry(Compiler* compiler, const char* name, int offset,
     compiler->procs[compiler->proc_count].param_modes = pm_copy;
     compiler->procs[compiler->proc_count].param_count = param_count;
     compiler->procs[compiler->proc_count].autonomous_transaction = 0;
+    compiler->procs[compiler->proc_count].is_public = 0;
     return compiler->proc_count++;
 }
 
@@ -204,6 +216,12 @@ static void free_trigger_entries(Compiler* compiler) {
     for (int i = 0; i < compiler->trigger_count; i++) {
         free(compiler->triggers[i].proc_name);
         free(compiler->triggers[i].table);
+    }
+}
+
+static void free_module_init_entries(Compiler* compiler) {
+    for (int i = 0; i < compiler->module_init_count; i++) {
+        free(compiler->module_init_procs[i]);
     }
 }
 
@@ -368,6 +386,11 @@ static int find_proc(Compiler* compiler, const char* name) {
         }
     }
     return -1;
+}
+
+static void mark_proc_public(Compiler* compiler, const char* name) {
+    int idx = find_proc(compiler, name);
+    if (idx >= 0) compiler->procs[idx].is_public = 1;
 }
 
 static int find_global(Compiler* compiler, const char* name) {
@@ -1875,6 +1898,7 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
                 }
             }
             int idx = add_proc_entry(compiler, mangled, -1, proc->return_type, pt, pm, proc->param_count);
+            if (idx >= 0) mark_proc_public(compiler, mangled);
             free(pt); free(pm); free(mangled);
             if (idx < 0) {
                 compiler_format_error(compiler, error_buf, error_size,
@@ -1901,6 +1925,7 @@ static int register_package_procs(Compiler* compiler, Program* program, char* er
                 }
             }
             int idx = add_proc_entry(compiler, mangled, -1, proc->return_type, pt, pm, proc->param_count);
+            if (idx >= 0) mark_proc_public(compiler, mangled);
             free(pt); free(pm); free(mangled);
             if (idx < 0) {
                 compiler_format_error(compiler, error_buf, error_size,
@@ -2148,6 +2173,61 @@ static void compile_package_initializers(Compiler* compiler, Program* program) {
         }
         compiler->current_package = saved_package;
     }
+}
+
+/* Wraps this file's package-body initializers (if it declares any) in a
+ * hidden 0-arg proc and records it in compiler->module_init_procs, so the
+ * bootstrap sequence built for the outermost (main) file can call it
+ * regardless of whether this file IS the main file or one of its imports.
+ *
+ * This matters because compile_package_initializers() is also what
+ * registers each package-level variable as a global (add_global(), inside
+ * compile_stmt()'s VarDeclStmt case) — before this function existed, that
+ * step only ran for the main file (see the call site below), so a package
+ * declared in an imported module had no global slot at all: referencing
+ * its state from within the package's own procs failed to compile
+ * ("Undefined variable"), and even where it happened to resolve, the
+ * initializer that would have set it never ran. Wrapping every file's
+ * initializers in a callable proc, invoked once each in load order, fixes
+ * both: the global gets registered when this proc is compiled, and it
+ * gets run when the bootstrap sequence calls it. */
+static int compile_module_init_proc(Compiler* compiler, Program* program, char* error_buf, size_t error_size) {
+    if (program->body_count == 0) return 1;
+    if (compiler->module_init_count >= MAX_MODULE_INITS) {
+        compiler_format_error(compiler, error_buf, error_size,
+                              "Too many imported modules with package state");
+        return 0;
+    }
+
+    char name[32];
+    snprintf(name, sizeof(name), "__module_init_%d", compiler->module_init_count);
+    char* mangled = strdup(name);
+    if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
+
+    int idx = add_proc_entry(compiler, mangled, -1, &type_int, NULL, NULL, 0);
+    if (idx < 0) {
+        compiler_format_error(compiler, error_buf, error_size, "Too many procedures");
+        free(mangled);
+        return 0;
+    }
+
+    compiler->procs[idx].offset = compiler->chunk->count;
+    compile_package_initializers(compiler, program);
+    if (compiler->had_error) {
+        if (error_buf != NULL && error_size > 0) {
+            strncpy(error_buf, compiler->error_message, error_size - 1);
+            error_buf[error_size - 1] = '\0';
+        }
+        free(mangled);
+        return 0;
+    }
+    emit_constant(compiler, value_int(0));
+    emit_byte(compiler, OP_RETURN);
+    compiler->local_count = 0;
+    compiler->scope_depth = 0;
+
+    compiler->module_init_procs[compiler->module_init_count++] = mangled;
+    return 1;
 }
 
 static void compile_package_members(Compiler* compiler, Program* program) {
@@ -2478,6 +2558,7 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         sigs[i].param_types = compiler->procs[i].param_types;
         sigs[i].param_modes = compiler->procs[i].param_modes;
         sigs[i].param_count = compiler->procs[i].param_count;
+        sigs[i].is_public = compiler->procs[i].is_public;
     }
 
     if (!typecheck_program(program, sigs, compiler->proc_count, compiler->ctx,
@@ -2488,20 +2569,16 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
     free(sigs);
 
-    int init_start = -1;
-    int init_to_main_jump = -1;
-    if (is_main) {
-        init_start = compiler->chunk->count;
-        compile_package_initializers(compiler, program);
-        if (compiler->had_error) {
-            if (error != NULL && error_size > 0) {
-                strncpy(error, compiler->error_message, error_size - 1);
-                error[error_size - 1] = '\0';
-            }
-            free_program(program);
-            return 0;
-        }
-        init_to_main_jump = emit_jump(compiler, OP_JMP);
+    /* Every file that declares package-level state gets a callable
+       initializer proc, compiled before compile_package_members() below —
+       that's also where each package-level variable is registered as a
+       global (see compile_module_init_proc()'s comment), and package
+       procs/funcs referencing it need that global to already exist. Main
+       is included here too, so it's invoked from the same bootstrap list
+       further down rather than inlined as a special case. */
+    if (!compile_module_init_proc(compiler, program, error, error_size)) {
+        free_program(program);
+        return 0;
     }
 
     compile_package_members(compiler, program);
@@ -2558,6 +2635,13 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
 
     if (is_main) {
+        int init_start = compiler->chunk->count;
+        for (int i = 0; i < compiler->module_init_count; i++) {
+            emit_call(compiler, compiler->module_init_procs[i], 0);
+            emit_byte(compiler, OP_POP);
+        }
+        int init_to_main_jump = emit_jump(compiler, OP_JMP);
+
         int main_entry = compiler->chunk->count;
         if (compiler->entry_index >= 0) {
             emit_call(compiler, compiler->procs[compiler->entry_index].name, 0);
@@ -2566,9 +2650,7 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         if (compiler->entry_jump_patch >= 0) {
             patch_jump_to(compiler, compiler->entry_jump_patch, init_start);
         }
-        if (init_to_main_jump >= 0) {
-            patch_jump_to(compiler, init_to_main_jump, main_entry);
-        }
+        patch_jump_to(compiler, init_to_main_jump, main_entry);
     }
 
     free_program(program);
@@ -2625,6 +2707,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.exception_count = 0;
     compiler.trigger_count = 0;
     compiler.current_struct = NULL;
+    compiler.module_init_count = 0;
     add_exception(&compiler, "no_data_found", 100);
     add_exception(&compiler, "too_many_rows", -1422);
     for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;
@@ -2633,6 +2716,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     if (!compiler_compile_source(&compiler, source, 1, path, error, error_size)) {
         free_exception_entries(&compiler);
         free_trigger_entries(&compiler);
+        free_module_init_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -2647,6 +2731,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
         }
         free_exception_entries(&compiler);
         free_trigger_entries(&compiler);
+        free_module_init_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
@@ -2664,7 +2749,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
             }
             free_exception_entries(&compiler);
             free_trigger_entries(&compiler);
-        free_trigger_entries(&compiler);
+            free_module_init_entries(&compiler);
             free_proc_entries(&compiler);
             free_global_names(&compiler);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);
@@ -2698,6 +2783,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     }
 
     free_exception_entries(&compiler);
+    free_module_init_entries(&compiler);
     free_proc_entries(&compiler);
     free_global_names(&compiler);
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
