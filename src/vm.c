@@ -358,6 +358,14 @@ int vm_utl_file_fseek(VM* vm, int handle, int offset) {
     return fseek(vm->utl_file_handles[handle], offset, SEEK_SET);
 }
 
+int vm_utl_file_fflush(VM* vm, int handle) {
+    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES ||
+        vm->utl_file_handles[handle] == NULL) {
+        return 0;
+    }
+    return fflush(vm->utl_file_handles[handle]) == 0;
+}
+
 int vm_utl_file_fclose(VM* vm, int handle) {
     if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL) {
         return 0;
