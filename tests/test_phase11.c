@@ -1716,6 +1716,50 @@ TEST(phase11_view_over_view) {
     ASSERT_INT_EQ(1, output_contains(out, "3"));
 }
 
+/* A SQL loop variable reads the current row whatever it is named; only `row`
+ * used to work (examples/inventory.mypl, migration.mypl and todo.mypl). */
+TEST(phase11_named_sql_loop_variable_reads_fields) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table nl_t (id int, name string);\n"
+        "    insert into nl_t values (1, \"alpha\");\n"
+        "    insert into nl_t values (2, \"beta\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* New process, so the table is in the catalog at compile time. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int total = 0;\n"
+        "    for item in select id, name from nl_t order by id {\n"
+        "        total = total + item.id;\n"
+        "        print concat(\"name=\", item.name);\n"
+        "    }\n"
+        "    print concat(\"total=\", int_to_string(total));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "name=alpha\nname=beta\ntotal=3"));
+
+    /* Columns are still checked against the query. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    for item in select name from nl_t {\n"
+        "        print item.id;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "Unknown column 'id' for row variable 'item'"));
+    remove("mypl.db");
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -1794,5 +1838,6 @@ int main(void) {
     RUN_TEST(phase11_create_view_duplicate_name_errors);
     RUN_TEST(phase11_create_view_on_table_name_errors);
     RUN_TEST(phase11_view_over_view);
+    RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     TEST_SUMMARY();
 }
