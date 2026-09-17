@@ -1,0 +1,45 @@
+.TH MYPL 1 "September 2026" "MyPL 0.1.0" "User Commands"
+.SH NAME
+mypl \- the MyPL interpreter (a lightweight PL/SQL-style scripting language)
+.SH SYNOPSIS
+.B mypl
+.RI [ options ]
+.RI [ file ]
+.SH DESCRIPTION
+MyPL compiles C-like source files (\fI*.mypl\fR) to bytecode for a small
+stack VM and can run against either its built-in custom SQL engine or an
+optional SQLite backend. Without a file argument, an interactive REPL is
+started.
+.SH OPTIONS
+.TP
+.B \-DNAME
+Define a conditional-compilation flag (repeatable). Applies to the input
+file and its imports; use with \fB$if NAME $then ... $end\fR directives.
+.TP
+.BI \-\-db " PATH"
+Open a SQLite database (\fI:memory:\fR allowed) instead of the built-in
+custom engine. Disabled in builds with \fBUSE_SQLITE=0\fR.
+.TP
+.B \-\-help
+Show a short usage summary.
+.TP
+.B \-\-version
+Print version information.
+.SH REPL
+When started without a file, MyPL reads statements interactively.
+Dot-commands include \fB.exit\fR/\fB.quit\fR, \fB.help\fR, \fB.load\fR,
+\fB.connect\fR, \fB.tables\fR, \fB.schema\fR, \fB.columns\fR,
+\fB.count\fR, \fB.sql\fR, \fB.vars\fR, \fB.defs\fR, and \fB.history\fR.
+.SH FILES
+.TP
+.I mypl.db
+Default database file for the custom engine.
+.SH EXAMPLES
+.TP
+Run a program against the custom engine:
+.B mypl program.mypl
+.TP
+Run against an in-memory SQLite database with a debug flag:
+.B mypl -DDEBUG program.mypl --db :memory:
+.SH SEE ALSO
+The README and examples/ directory in the source distribution.

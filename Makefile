@@ -24,7 +24,7 @@ LIB_OBJECTS = $(filter-out $(OBJDIR)/main.o,$(OBJECTS))
 
 TARGET      = $(BINDIR)/mypl
 
-.PHONY: all clean test examples-test fuzz fuzz-run fuzz-replay
+.PHONY: all clean test examples-test fuzz fuzz-run fuzz-replay install uninstall
 
 all: $(TARGET)
 
@@ -158,3 +158,16 @@ $(BINDIR)/replay_%: tests/fuzz/fuzz_%.c tests/fuzz/fuzz_replay.c tests/fuzz/fuzz
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)
+
+PREFIX     ?= /usr/local
+DESTDIR    ?=
+INSTALLBIN = $(DESTDIR)$(PREFIX)/bin
+INSTALLMAN = $(DESTDIR)$(PREFIX)/share/man/man1
+
+install: $(TARGET) mypl.1
+	mkdir -p $(INSTALLBIN) $(INSTALLMAN)
+	cp $(TARGET) $(INSTALLBIN)/mypl
+	cp mypl.1 $(INSTALLMAN)/mypl.1
+
+uninstall:
+	rm -f $(INSTALLBIN)/mypl $(INSTALLMAN)/mypl.1
