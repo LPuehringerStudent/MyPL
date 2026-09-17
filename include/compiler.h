@@ -297,4 +297,27 @@ char* cc_preprocess(const char* source, const char* source_path,
                     const CompileOptions* options,
                     char* error_buf, size_t error_size);
 
+/* ---------------------------------------------------------------------------
+ * Incremental (REPL) compilation — Phase 13 #37.
+ *
+ * A ReplCompiler persists procedure/global/trigger tables and the top-level
+ * main-body local table across compile calls, so each REPL input compiles
+ * only itself and appends to one growing Chunk (executed via
+ * vm_interpret_from at the returned offset). Statement/expression inputs are
+ * wrapped by the caller as "proc main() -> int { <main body so far> ... }";
+ * definition inputs (proc/package) are compiled standalone. On failure all
+ * internal tables roll back to the pre-fragment state and the caller gets an
+ * error string identical to whole-program compilation (the REPL prepends the
+ * appropriate line prefixes).
+ * ------------------------------------------------------------------------- */
+typedef struct ReplCompiler ReplCompiler;
+
+ReplCompiler* repl_compiler_create(void);
+void          repl_compiler_free(ReplCompiler* rc);
+int           repl_compiler_compile(ReplCompiler* rc, const char* source,
+                                    int is_def_fragment, Chunk* chunk,
+                                    char* error, size_t error_size,
+                                    struct Context* ctx);
+int           repl_compiler_exec_offset(const ReplCompiler* rc);
+
 #endif

@@ -23,6 +23,9 @@ int typecheck_program(Program* program,
                       struct Context* ctx,
                       const char* source_path,
                       char* error,
-                      size_t error_size);
+                      size_t error_size,
+                      const char* const* main_seed_names,
+                      Type* const* main_seed_types,
+                      int main_seed_count);
 
 #endif

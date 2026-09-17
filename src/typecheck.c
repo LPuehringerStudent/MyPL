@@ -2665,7 +2665,10 @@ int typecheck_program(Program* program,
                       struct Context* ctx,
                       const char* source_path,
                       char* error,
-                      size_t error_size) {
+                      size_t error_size,
+                      const char* const* main_seed_names,
+                      Type* const* main_seed_types,
+                      int main_seed_count) {
     if (error != NULL && error_size > 0) {
         error[0] = '\0';
     }
@@ -2767,6 +2770,18 @@ int typecheck_program(Program* program,
             if (!add_local(&tc, proc->params[p].name, resolve_named_type(&tc, proc->params[p].type))) {
                 type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
                 break;
+            }
+        }
+        /* REPL incremental compilation: the wrapper main's scope is seeded
+           with the persistent top-level locals accumulated by previous
+           inputs so new statements can reference earlier variables. */
+        if (main_seed_names != NULL && main_seed_count > 0 &&
+            strcmp(proc->name, "main") == 0) {
+            for (int s = 0; s < main_seed_count; s++) {
+                if (!add_local(&tc, main_seed_names[s], main_seed_types[s])) {
+                    type_error(&tc, (SourceLoc){0, 0}, "Too many local variables");
+                    break;
+                }
             }
         }
         if (tc.had_error) {

@@ -73,6 +73,12 @@ struct VM {
     int           frame_count;
     Value*        frame_base;
     int           local_count;
+    /* Frame depth at which OP_SET_LOCAL writes are mirrored into repl_locals.
+       1 for whole-program runs (main executes one frame below the bootstrap),
+       0 for REPL incremental fragments (no bootstrap; the fragment body is
+       the outermost frame). Child VMs inherit the default and never have
+       their mirrors read, so the value is irrelevant for them. */
+    int           capture_base;
     /* REPL local mirror (top-level main frame), heap array grown on demand. */
     Value*        repl_locals;
     int           repl_local_capacity;
@@ -137,6 +143,7 @@ VM* vm_init(void) {
     vm->frame_count = 0;
     vm->frame_base = vm->stack;
     vm->local_count = 0;
+    vm->capture_base = 1;
     vm->repl_local_count = 0;
     vm->result_handle = NULL;
     vm->row_handle = NULL;
@@ -1800,7 +1807,7 @@ dispatch:
                 uint8_t slot = *vm->ip++;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                if (vm->frame_count == vm->capture_base && slot + 1 > vm->local_count) {
                     vm->local_count = slot + 1;
                 }
                 Value v = vm->frame_base[slot];
@@ -1818,7 +1825,7 @@ dispatch:
                 vm->ip += 2;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                if (vm->frame_count == vm->capture_base && slot + 1 > vm->local_count) {
                     vm->local_count = slot + 1;
                 }
                 Value v = vm->frame_base[slot];
@@ -1835,14 +1842,14 @@ dispatch:
                 uint8_t slot = *vm->ip++;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                if (vm->frame_count == vm->capture_base && slot + 1 > vm->local_count) {
                     vm->local_count = slot + 1;
                 }
                 Value v = *(vm->stack_top - 1);
                 value_retain(v);
                 value_release(vm->frame_base[slot]);
                 vm->frame_base[slot] = v;
-                if (vm->frame_count == 1) {
+                if (vm->frame_count == vm->capture_base) {
                     if (slot < vm->repl_local_count) {
                         value_release(vm->repl_locals[slot]);
                     }
@@ -1860,14 +1867,14 @@ dispatch:
                 vm->ip += 2;
                 int depth = (int)(vm->stack_top - vm->frame_base);
                 if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
-                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                if (vm->frame_count == vm->capture_base && slot + 1 > vm->local_count) {
                     vm->local_count = slot + 1;
                 }
                 Value v = *(vm->stack_top - 1);
                 value_retain(v);
                 value_release(vm->frame_base[slot]);
                 vm->frame_base[slot] = v;
-                if (vm->frame_count == 1) {
+                if (vm->frame_count == vm->capture_base) {
                     if (!vm_ensure_repl_capacity(vm, (int)slot + 1)) {
                         set_runtime_error(vm, "Too many local variables");
                         THROW(vm);
@@ -3352,6 +3359,36 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
     vm->sql_rowcount = 0;
     vm->try_count = 0;
     vm->local_count = 0;
+    vm->capture_base = 1;
     vm->repl_local_count = 0;
     return vm_run(vm, chunk->code + chunk->count);
+}
+
+InterpretResult vm_interpret_from(VM* vm, Chunk* chunk, int offset) {
+    /* Incremental (REPL) fragment entry: like vm_interpret but starts at an
+       offset inside a persistent chunk. Frame state is intentionally NOT
+       reset (mirrors vm_interpret, which also leaves frames alone), and the
+       repl-local mirror is NOT cleared so captures accumulate across
+       fragments. capture_base=0 because the fragment body runs at
+       frame_count 0 (there is no bootstrap frame). */
+    vm->chunk = chunk;
+    if (offset < 0 || offset >= chunk->count) {
+        set_runtime_error(vm, "Invalid fragment offset");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+    vm->ip = chunk->code + offset;
+    vm->error_message[0] = '\0';
+    vm->sql_rowcount = 0;
+    vm->try_count = 0;
+    vm->local_count = 0;
+    vm->capture_base = 0;
+    return vm_run(vm, chunk->code + chunk->count);
+}
+
+void vm_repl_locals_clear(VM* vm) {
+    /* Emulates the mirror reset vm_interpret performs per run without
+       releasing the mirrored values (matching that reset exactly). Used by
+       the REPL's stuck-state emulation. */
+    if (vm == NULL) return;
+    vm->repl_local_count = 0;
 }

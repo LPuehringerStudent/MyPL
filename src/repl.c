@@ -39,6 +39,18 @@ typedef struct {
     Context ctx;
     DBDriver driver;
     int driver_open;
+    /* Incremental compilation engine (Phase 13 #37): one persistent chunk and
+       one persistent compiler across inputs; each input compiles only its own
+       fragment. The stuck states reproduce the old engine's poison
+       semantics: a failed statement/proc input stayed in the accumulated
+       source, so every later input re-failed with the same error. */
+    ReplCompiler* compiler;
+    int pending_init_offset;      /* queued persisted-package init run, -1 none */
+    int compile_stuck;            /* session poisoned by a compile error */
+    char compile_stuck_error[256];
+    int runtime_stuck;            /* session poisoned by a runtime error */
+    char runtime_stuck_error[256];
+    int runtime_stuck_inputs;     /* code inputs seen while runtime-stuck */
 } ReplSession;
 
 static void string_buffer_init(StringBuffer* buf) {
@@ -286,6 +298,13 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
     session->driver_open = 0;
     session->ctx.db_path = DEFAULT_DB_PATH;
     session->ctx.pager = NULL;
+    session->compiler = NULL;
+    session->pending_init_offset = -1;
+    session->compile_stuck = 0;
+    session->compile_stuck_error[0] = '\0';
+    session->runtime_stuck = 0;
+    session->runtime_stuck_error[0] = '\0';
+    session->runtime_stuck_inputs = 0;
 
     if (db_path != NULL) {
 #ifdef USE_SQLITE
@@ -316,6 +335,29 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
         string_buffer_append(&session->procedures, "\n");
         free(persisted);
     }
+
+    session->compiler = repl_compiler_create();
+    if (session->compiler == NULL) {
+        fprintf(stderr, "Out of memory\n");
+        return;
+    }
+    /* Compile the persisted package/procedure definitions once so later
+       inputs can call them. Their initializer run is queued and executed
+       silently right before the first user fragment (the old engine ran the
+       inits as part of the first input's validation run). A broken persisted
+       source poisons the session exactly like a broken input did before. */
+    if (session->procedures.len > 0) {
+        char error[256];
+        if (repl_compiler_compile(session->compiler, session->procedures.data,
+                                  1, &session->chunk, error, sizeof(error), ctx)) {
+            session->pending_init_offset = repl_compiler_exec_offset(session->compiler);
+        } else {
+            session->compile_stuck = 1;
+            snprintf(session->compile_stuck_error,
+                     sizeof(session->compile_stuck_error), "%s",
+                     error[0] != '\0' ? error : "unknown error");
+        }
+    }
 }
 
 static void repl_session_free(ReplSession* session) {
@@ -326,6 +368,10 @@ static void repl_session_free(ReplSession* session) {
     }
     session->var_count = 0;
     history_free(session);
+    if (session->compiler != NULL) {
+        repl_compiler_free(session->compiler);
+        session->compiler = NULL;
+    }
     if (session->vm != NULL) {
         vm_free(session->vm);
         session->vm = NULL;
@@ -418,58 +464,299 @@ static void record_var_name(ReplSession* session, const char* line) {
     session->var_names[session->var_count++] = name;
 }
 
-static int compose_source(ReplSession* session, const char* current_line,
-                          int current_is_expr, StringBuffer* out) {
-    string_buffer_init(out);
-    if (out->data == NULL) return 0;
-
-    if (!string_buffer_append(out, session->procedures.data)) return 0;
-    if (session->procedures.len > 0 &&
-        !string_buffer_append(out, "\n")) return 0;
-
-    if (!string_buffer_append(out, "proc main() -> int { ")) return 0;
-    if (session->main_body.len > 0) {
-        if (!string_buffer_append(out, session->main_body.data)) return 0;
-        if (!string_buffer_append(out, " ")) return 0;
+/* Number of lines the procedures buffer contributes before the wrapper main
+   in the old whole-program layout: procedures, a blank line, then main. */
+static int procedures_line_count(const ReplSession* session) {
+    int lines = 0;
+    for (const char* p = session->procedures.data; p != NULL && *p != '\0'; p++) {
+        if (*p == '\n') lines++;
     }
-    if (current_is_expr) {
-        if (!string_buffer_append(out, "return ")) return 0;
-        if (!string_buffer_append(out, current_line)) return 0;
-        if (!string_buffer_append(out, ";")) return 0;
-    } else {
-        if (!string_buffer_append(out, "return 0;")) return 0;
+    return lines;
+}
+
+static int string_buffer_append_newlines(StringBuffer* buf, int count) {
+    for (int i = 0; i < count; i++) {
+        if (!string_buffer_append(buf, "\n")) return 0;
     }
-    if (!string_buffer_append(out, " }\n")) return 0;
     return 1;
 }
 
-static int run_source(ReplSession* session, const char* source) {
-    free_chunk(&session->chunk);
-    init_chunk(&session->chunk);
-    char error[256];
-    Context* ctx = session->driver_open ? NULL : &session->ctx;
-    if (!compile_with_context_and_path(source, &session->chunk, NULL,
-                                       error, sizeof(error), ctx)) {
-        fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
-        return 1;
+/* Build a fragment source whose diagnostics land exactly where the old
+   whole-program compose placed them: definitions start at line
+   (procedures_lines_before + 1), the wrapper main at line
+   (procedures_lines_after + 2). The REPL prepends the procedures prefix as
+   blank lines. */
+static char* build_fragment_source(const char* body,
+                                   int line_prefix) {
+    StringBuffer buf;
+    string_buffer_init(&buf);
+    if (buf.data == NULL) return NULL;
+    if (!string_buffer_append_newlines(&buf, line_prefix) ||
+        !string_buffer_append(&buf, body)) {
+        string_buffer_free(&buf);
+        return NULL;
     }
+    char* result = buf.data;
+    return result;
+}
 
-    if (session->vm == NULL) {
-        session->vm = vm_init();
-        if (session->vm != NULL) {
-            if (session->driver_open) {
-                vm_set_driver(session->vm, &session->driver);
-            } else {
-                vm_set_context(session->vm, &session->ctx);
-            }
+/* Build the statement/expression wrapper: the exact text the old
+   compose_source produced (minus the procedures prefix), so positions in
+   error messages match the old engine. `complete` is included for statements
+   (already appended to main_body) and becomes the return expression for
+   expression inputs. */
+static char* build_wrapper_source(const ReplSession* session, const char* complete,
+                                  int current_is_expr, int line_prefix) {
+    StringBuffer buf;
+    string_buffer_init(&buf);
+    if (buf.data == NULL) return NULL;
+    if (!string_buffer_append_newlines(&buf, line_prefix)) goto oom;
+    if (!string_buffer_append(&buf, "proc main() -> int { ")) goto oom;
+    if (session->main_body.len > 0) {
+        if (!string_buffer_append(&buf, session->main_body.data)) goto oom;
+        if (!string_buffer_append(&buf, " ")) goto oom;
+    }
+    if (current_is_expr) {
+        if (!string_buffer_append(&buf, "return ")) goto oom;
+        if (!string_buffer_append(&buf, complete)) goto oom;
+        if (!string_buffer_append(&buf, ";")) goto oom;
+    } else {
+        if (!string_buffer_append(&buf, "return 0;")) goto oom;
+    }
+    if (!string_buffer_append(&buf, " }\n")) goto oom;
+    return buf.data;
+oom:
+    string_buffer_free(&buf);
+    return NULL;
+}
+
+/* Fallback for poisoned sessions: recompose the ENTIRE accumulated source
+   (procedures + wrapper main) and compile+run it in a throwaway chunk, which
+   is exactly what the pre-#37 engine did on every input. A session is
+   poisoned once a failed statement/procedure stays accumulated (the old
+   engine validated after committing, so the broken text never leaves); the
+   recomposed compile then re-fails, and any later input that introduces an
+   earlier error (e.g. a parse error) changes the reported error exactly like
+   before. A runtime-poisoned session converts to a compile-poisoned one when
+   a later input fails to compile. */
+static void run_stuck_input(ReplSession* session, const char* complete,
+                            int is_expr) {
+    StringBuffer composed;
+    string_buffer_init(&composed);
+    int oom = composed.data == NULL;
+    if (!oom && !string_buffer_append(&composed, session->procedures.data)) oom = 1;
+    if (!oom && session->procedures.len > 0 &&
+        !string_buffer_append(&composed, "\n")) oom = 1;
+    if (!oom && !string_buffer_append(&composed, "proc main() -> int { ")) oom = 1;
+    if (!oom && session->main_body.len > 0) {
+        if (!string_buffer_append(&composed, session->main_body.data)) oom = 1;
+        if (!oom && !string_buffer_append(&composed, " ")) oom = 1;
+    }
+    if (!oom) {
+        if (is_expr) {
+            if (!string_buffer_append(&composed, "return ")) oom = 1;
+            if (!oom && !string_buffer_append(&composed, complete)) oom = 1;
+            if (!oom && !string_buffer_append(&composed, ";")) oom = 1;
+        } else {
+            if (!string_buffer_append(&composed, "return 0;")) oom = 1;
         }
     }
+    if (!oom && !string_buffer_append(&composed, " }\n")) oom = 1;
+    if (oom) {
+        fprintf(stderr, "Out of memory\n");
+        string_buffer_free(&composed);
+        return;
+    }
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    Context* ctx = session->driver_open ? NULL : &session->ctx;
+    if (!compile_with_context_and_path(composed.data, &chunk, NULL,
+                                       error, sizeof(error), ctx)) {
+        fprintf(stderr, "Compile error: %s\n",
+                error[0] != '\0' ? error : "unknown error");
+        session->compile_stuck = 1;
+        snprintf(session->compile_stuck_error,
+                 sizeof(session->compile_stuck_error), "%s",
+                 error[0] != '\0' ? error : "unknown error");
+        string_buffer_free(&composed);
+        free_chunk(&chunk);
+        return;
+    }
+    string_buffer_free(&composed);
+
+    InterpretResult result = vm_interpret(session->vm, &chunk);
+    /* The old engine's poisoned runs executed main one frame below the
+       bootstrap at a residual frame count >= 1, so its per-run mirror reset
+       was never followed by a re-capture: .vars stayed empty after the
+       second consecutive failure. Mirror that here. */
+    vm_repl_locals_clear(session->vm);
+    if (result == INTERPRET_OK) {
+        Value v = vm_pop(session->vm);
+        value_print(v);
+        printf("\n");
+        value_release(v);
+    } else {
+        const char* err = vm_get_error(session->vm);
+        fprintf(stderr, "Runtime error: %s\n",
+                err != NULL ? err : "unknown error");
+        session->runtime_stuck = 1;
+        snprintf(session->runtime_stuck_error,
+                 sizeof(session->runtime_stuck_error), "%s",
+                 err != NULL ? err : "unknown error");
+    }
+    free_chunk(&chunk);
+}
+
+/* Execute the current fragment (and any queued persisted-package init before
+   it, silently). Prints the popped result like the old run_source unless
+   silent. A runtime error poisons the session (runtime_stuck), mirroring the
+   old engine, where the failed statement stayed in the accumulated main body
+   and made every later run fail. Returns 0 on success. */
+static int session_execute(ReplSession* session, int silent) {
     if (session->vm == NULL) {
         fprintf(stderr, "Out of memory\n");
         return 1;
     }
+    if (session->pending_init_offset >= 0) {
+        InterpretResult init_result =
+            vm_interpret_from(session->vm, &session->chunk,
+                              session->pending_init_offset);
+        session->pending_init_offset = -1;
+        if (init_result == INTERPRET_OK) {
+            Value v = vm_pop(session->vm);
+            value_release(v);
+        } else {
+            const char* err = vm_get_error(session->vm);
+            fprintf(stderr, "Runtime error: %s\n",
+                    err != NULL ? err : "unknown error");
+            session->runtime_stuck = 1;
+            snprintf(session->runtime_stuck_error,
+                     sizeof(session->runtime_stuck_error), "%s",
+                     err != NULL ? err : "unknown error");
+            return 1;
+        }
+    }
 
-    InterpretResult result = vm_interpret(session->vm, &session->chunk);
+    int offset = repl_compiler_exec_offset(session->compiler);
+    InterpretResult result = vm_interpret_from(session->vm, &session->chunk, offset);
+    if (result == INTERPRET_OK) {
+        if (!silent) {
+            Value v = vm_pop(session->vm);
+            value_print(v);
+            printf("\n");
+            value_release(v);
+        }
+        return 0;
+    }
+    const char* err = vm_get_error(session->vm);
+    fprintf(stderr, "Runtime error: %s\n", err != NULL ? err : "unknown error");
+    session->runtime_stuck = 1;
+    snprintf(session->runtime_stuck_error,
+             sizeof(session->runtime_stuck_error), "%s",
+             err != NULL ? err : "unknown error");
+    return 1;
+}
+
+/* Compile one fragment against the persistent compiler/chunk. On failure the
+   compiler rolls back internally; here we only report. */
+static int session_compile(ReplSession* session, const char* source, int is_def,
+                           char* error, size_t error_size) {
+    Context* ctx = session->driver_open ? NULL : &session->ctx;
+    return repl_compiler_compile(session->compiler, source, is_def,
+                                 &session->chunk, error, error_size, ctx);
+}
+
+/* Handle a proc/package definition input. The definition text has already
+   been appended to the procedures buffer (and persisted for packages), like
+   the old engine, which validated the accumulated source AFTER committing
+   the new definition. `prefix` is the procedures-buffer line count before
+   the append, so fragment diagnostics land on the same source lines as the
+   old whole-program compose. */
+static void run_input_definition(ReplSession* session, const char* complete,
+                                 int prefix) {
+    char* source = build_fragment_source(complete, prefix);
+    if (source == NULL) {
+        fprintf(stderr, "Out of memory\n");
+        return;
+    }
+
+    if (session->compile_stuck || session->runtime_stuck) {
+        free(source);
+        run_stuck_input(session, "0", 0);
+        return;
+    }
+
+    char error[256];
+    if (!session_compile(session, source, 1, error, sizeof(error))) {
+        session->compile_stuck = 1;
+        snprintf(session->compile_stuck_error,
+                 sizeof(session->compile_stuck_error), "%s",
+                 error[0] != '\0' ? error : "unknown error");
+        fprintf(stderr, "Compile error: %s\n", session->compile_stuck_error);
+        free(source);
+        return;
+    }
+    free(source);
+    session_execute(session, 0);
+}
+
+/* Handle a statement or expression input. Statements were already recorded
+   (var name + main body append), matching the old engine's commit-before-
+   validate order; the failed statement therefore stays accumulated and
+   poisons the session (compile_stuck). Expression inputs are never committed
+   and never poison. */
+static void run_input_statement(ReplSession* session, const char* complete,
+                                int is_expr) {
+    if (session->compile_stuck || session->runtime_stuck) {
+        run_stuck_input(session, complete, is_expr);
+        return;
+    }
+
+    /* Old compose: procedures, a blank line (only when any exist), then the
+       wrapper main on the following line. */
+    int plines = procedures_line_count(session);
+    int prefix = plines > 0 ? plines + 1 : 0;
+    char* source = build_wrapper_source(session, complete, is_expr, prefix);
+    if (source == NULL) {
+        fprintf(stderr, "Out of memory\n");
+        return;
+    }
+    char error[256];
+    if (!session_compile(session, source, 0, error, sizeof(error))) {
+        fprintf(stderr, "Compile error: %s\n",
+                error[0] != '\0' ? error : "unknown error");
+        if (!is_expr) {
+            session->compile_stuck = 1;
+            snprintf(session->compile_stuck_error,
+                     sizeof(session->compile_stuck_error), "%s",
+                     error[0] != '\0' ? error : "unknown error");
+        }
+        free(source);
+        return;
+    }
+    free(source);
+    session_execute(session, 0);
+}
+
+/* Compile+run a standalone source (used by .load) in a throwaway chunk so
+   the persistent REPL chunk is never clobbered. Observable behavior matches
+   the old run_source. */
+static int run_source_standalone(ReplSession* session, const char* source) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    Context* ctx = session->driver_open ? NULL : &session->ctx;
+    if (!compile_with_context_and_path(source, &chunk, NULL,
+                                       error, sizeof(error), ctx)) {
+        fprintf(stderr, "Compile error: %s\n",
+                error[0] != '\0' ? error : "unknown error");
+        free_chunk(&chunk);
+        return 1;
+    }
+
+    InterpretResult result = vm_interpret(session->vm, &chunk);
     int rc = 0;
     if (result == INTERPRET_OK) {
         Value v = vm_pop(session->vm);
@@ -481,18 +768,7 @@ static int run_source(ReplSession* session, const char* source) {
         fprintf(stderr, "Runtime error: %s\n", err != NULL ? err : "unknown error");
         rc = 1;
     }
-    return rc;
-}
-
-static int run_current_line(ReplSession* session, const char* line) {
-    StringBuffer composed;
-    int is_expr = !is_statement(line);
-    if (!compose_source(session, line, is_expr, &composed)) {
-        fprintf(stderr, "Out of memory\n");
-        return 1;
-    }
-    int rc = run_source(session, composed.data);
-    string_buffer_free(&composed);
+    free_chunk(&chunk);
     return rc;
 }
 
@@ -508,7 +784,12 @@ static int cmd_load(ReplSession* session, const char* path) {
     }
 
     /* Append any procedure definitions found in the file so they remain
-       available for later REPL input. */
+       available for later REPL input. The crude '}'-delimited scan is
+       intentionally unchanged from the old engine (including its breakage on
+       nested braces). */
+    int prefix_before = procedures_line_count(session);
+    StringBuffer new_defs;
+    string_buffer_init(&new_defs);
     const char* p = source;
     while (*p != '\0') {
         while (*p != '\0' && isspace((unsigned char)*p)) p++;
@@ -524,6 +805,10 @@ static int cmd_load(ReplSession* session, const char* path) {
                 def[len] = '\0';
                 string_buffer_append(&session->procedures, def);
                 string_buffer_append(&session->procedures, "\n");
+                if (new_defs.data != NULL) {
+                    string_buffer_append(&new_defs, def);
+                    string_buffer_append(&new_defs, "\n");
+                }
                 free(def);
             }
         } else {
@@ -531,22 +816,84 @@ static int cmd_load(ReplSession* session, const char* path) {
         }
     }
 
-    /* Run the loaded source. If the file has no main procedure, validate the
-       extracted procedure definitions with a synthetic main. */
     int has_main = strstr(source, "proc main") != NULL;
+
+    if (session->compile_stuck || session->runtime_stuck) {
+        /* Old engine behavior: no incremental registration, just run the
+           file (or validate the accumulated definitions) and leave the
+           stuck state untouched. */
+        string_buffer_free(&new_defs);
+        if (has_main) {
+            int rc = run_source_standalone(session, source);
+            free(source);
+            return rc;
+        }
+        StringBuffer validation;
+        string_buffer_init(&validation);
+        if (validation.data != NULL) {
+            string_buffer_append(&validation, session->procedures.data);
+            string_buffer_append(&validation, "proc main() -> int { return 0; }\n");
+            run_source_standalone(session, validation.data);
+            string_buffer_free(&validation);
+        }
+        free(source);
+        return 0;
+    }
+
+    /* Make the newly loaded definitions callable from later inputs (the old
+       engine got them for free by recompiling the procedures buffer). A
+       loaded `proc main` poisons the session: the old engine's next compose
+       built a synthetic main over the procedures buffer and rejected the
+       duplicate. For files WITH a main the old engine printed that error
+       only at the next code input (no validation run), so defer printing. */
+    if (new_defs.data != NULL && new_defs.len > 0) {
+        if (strstr(new_defs.data, "proc main") != NULL) {
+            session->compile_stuck = 1;
+            snprintf(session->compile_stuck_error,
+                     sizeof(session->compile_stuck_error), "%s",
+                     "error: Duplicate procedure 'main'");
+            if (!has_main) {
+                fprintf(stderr, "Compile error: %s\n",
+                        session->compile_stuck_error);
+            }
+        } else {
+            char* frag = build_fragment_source(new_defs.data, prefix_before);
+            if (frag != NULL) {
+                char error[256];
+                if (!session_compile(session, frag, 1, error, sizeof(error))) {
+                    fprintf(stderr, "Compile error: %s\n",
+                            error[0] != '\0' ? error : "unknown error");
+                    /* The broken text stays in the procedures buffer,
+                       poisoning later compiles, exactly like the old
+                       engine. */
+                    session->compile_stuck = 1;
+                    snprintf(session->compile_stuck_error,
+                             sizeof(session->compile_stuck_error), "%s",
+                             error[0] != '\0' ? error : "unknown error");
+                }
+                free(frag);
+            }
+        }
+    }
+    string_buffer_free(&new_defs);
+
+    /* Run the loaded source. If the file has no main procedure, validate the
+       extracted procedure definitions (the old engine composed procedures
+       plus a synthetic empty main and ran that, printing its 0). */
     if (has_main) {
-        int rc = run_source(session, source);
+        int rc = run_source_standalone(session, source);
         free(source);
         return rc;
     }
-    StringBuffer validation;
-    string_buffer_init(&validation);
-    if (validation.data != NULL) {
-        string_buffer_append(&validation, session->procedures.data);
-        string_buffer_append(&validation, "proc main() -> int { return 0; }\n");
-        run_source(session, validation.data);
-        string_buffer_free(&validation);
+    if (session->compile_stuck || session->runtime_stuck) {
+        run_stuck_input(session, "0", 0);
+        free(source);
+        return 0;
     }
+    session_execute(session, 0);
+    /* The old validation run reset the mirror and its synthetic empty main
+       re-captured nothing, leaving .vars empty after a no-main .load. */
+    vm_repl_locals_clear(session->vm);
     free(source);
     return 0;
 }
@@ -1174,14 +1521,15 @@ void repl_run(const char* db_path) {
         history_add(&session, complete);
 
         if (is_procedure_definition(complete)) {
+            int prefix = procedures_line_count(&session); /* before the append */
             if (!string_buffer_append(&session.procedures, complete) ||
                 !string_buffer_append(&session.procedures, "\n")) {
                 fprintf(stderr, "Out of memory\n");
                 break;
             }
-            /* Execute the procedure definition to validate it. */
-            run_current_line(&session, "0");
+            run_input_definition(&session, complete, prefix);
         } else if (is_package_definition(complete)) {
+            int prefix = procedures_line_count(&session); /* before the append */
             if (!string_buffer_append(&session.procedures, complete) ||
                 !string_buffer_append(&session.procedures, "\n")) {
                 fprintf(stderr, "Out of memory\n");
@@ -1190,10 +1538,10 @@ void repl_run(const char* db_path) {
             DBDriver* driver = session.driver_open ? &session.driver : NULL;
             Context* ctx = session.driver_open ? NULL : &session.ctx;
             packages_save_source(driver, ctx, session.procedures.data, 1);
-            /* Execute the package definition to validate it. */
-            run_current_line(&session, "0");
+            run_input_definition(&session, complete, prefix);
         } else {
-            if (is_statement(complete)) {
+            int is_expr = !is_statement(complete);
+            if (!is_expr) {
                 record_var_name(&session, complete);
                 if (!string_buffer_append(&session.main_body, complete) ||
                     !string_buffer_append(&session.main_body, " ")) {
@@ -1201,7 +1549,7 @@ void repl_run(const char* db_path) {
                     break;
                 }
             }
-            run_current_line(&session, complete);
+            run_input_statement(&session, complete, is_expr);
         }
 
         string_buffer_free(&accumulated);
