@@ -2312,12 +2312,12 @@ static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
     return external_call_invoke(vm, "external_call", EXT_INT, argc, argv, out);
 }
 
-static int native_external_call_float(VM* vm, int argc, Value* argv, Value* out) {
-    return external_call_invoke(vm, "external_call_float", EXT_FLOAT, argc, argv, out);
+static int native_external_call_f(VM* vm, int argc, Value* argv, Value* out) {
+    return external_call_invoke(vm, "external_call_f", EXT_FLOAT, argc, argv, out);
 }
 
-static int native_external_call_string(VM* vm, int argc, Value* argv, Value* out) {
-    return external_call_invoke(vm, "external_call_string", EXT_STRING, argc, argv, out);
+static int native_external_call_s(VM* vm, int argc, Value* argv, Value* out) {
+    return external_call_invoke(vm, "external_call_s", EXT_STRING, argc, argv, out);
 }
 
 static NativeDef natives[] = {
@@ -2426,8 +2426,8 @@ static NativeDef natives[] = {
     {"currval", 1, native_currval},
     {"drop_sequence", 1, native_drop_sequence},
     {"external_call", 3, native_external_call},
-    {"external_call_float", 3, native_external_call_float},
-    {"external_call_string", 3, native_external_call_string},
+    {"external_call_f", 3, native_external_call_f},
+    {"external_call_s", 3, native_external_call_s},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},

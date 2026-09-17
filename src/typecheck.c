@@ -569,8 +569,8 @@ static int is_native(const char* name) {
            strcmp(name, "currval") == 0 ||
            strcmp(name, "drop_sequence") == 0 ||
            strcmp(name, "external_call") == 0 ||
-           strcmp(name, "external_call_float") == 0 ||
-           strcmp(name, "external_call_string") == 0 ||
+           strcmp(name, "external_call_f") == 0 ||
+           strcmp(name, "external_call_s") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1686,8 +1686,8 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         return &type_int;
     }
     if (strcmp(name, "external_call") == 0 ||
-        strcmp(name, "external_call_float") == 0 ||
-        strcmp(name, "external_call_string") == 0) {
+        strcmp(name, "external_call_f") == 0 ||
+        strcmp(name, "external_call_s") == 0) {
         if (arg_count != 3) {
             type_error(tc, loc, "%s expects 3 arguments", name);
             return NULL;
@@ -1703,8 +1703,8 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
             third->kind != TYPE_FLOAT && third->kind != TYPE_STRING) {
             type_error(tc, loc, "%s expects an int, float or string argument", name);
         }
-        if (strcmp(name, "external_call_float") == 0) return &type_float;
-        if (strcmp(name, "external_call_string") == 0) return &type_string;
+        if (strcmp(name, "external_call_f") == 0) return &type_float;
+        if (strcmp(name, "external_call_s") == 0) return &type_string;
         return &type_int;
     }
     return NULL;

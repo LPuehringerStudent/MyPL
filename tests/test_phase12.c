@@ -526,7 +526,7 @@ TEST(phase12_dbms_sql_close_invalidates_handle) {
 }
 
 static int build_marshal_shared_lib(void) {
-    FILE* f = fopen("/tmp/test_phase12_ext.c", "w");
+    FILE* f = fopen("/tmp/test_phase12_marshal.c", "w");
     if (f == NULL) return 0;
     fprintf(f,
         "#include <string.h>\n"
@@ -544,17 +544,17 @@ static int build_marshal_shared_lib(void) {
         "const char* ext_float_label(double x) { return x < 0 ? \"neg\" : \"nonneg\"; }\n"
         "const char* ext_null(const char* s) { (void)s; return NULL; }\n");
     fclose(f);
-    int rc = system("cc -shared -fPIC -o /tmp/test_phase12_ext.so /tmp/test_phase12_ext.c");
+    int rc = system("cc -shared -fPIC -o /tmp/test_phase12_marshal.so /tmp/test_phase12_marshal.c");
     return rc == 0;
 }
 
-TEST(phase12_external_call_float_return) {
+TEST(phase12_external_call_f_return) {
     ASSERT_INT_EQ(1, build_marshal_shared_lib());
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    float h = external_call_float(\"/tmp/test_phase12_ext.so\", \"ext_half\", 7);\n"
-        "    float s = external_call_float(\"/tmp/test_phase12_ext.so\", \"ext_scale\", 1.5);\n"
+        "    float h = external_call_f(\"/tmp/test_phase12_marshal.so\", \"ext_half\", 7);\n"
+        "    float s = external_call_f(\"/tmp/test_phase12_marshal.so\", \"ext_scale\", 1.5);\n"
         "    print float_to_string(h);\n"
         "    print float_to_string(s);\n"
         "    return 0;\n"
@@ -570,8 +570,8 @@ TEST(phase12_external_call_int_return_from_float_and_string) {
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    int f = external_call(\"/tmp/test_phase12_ext.so\", \"ext_floor\", 9.75);\n"
-        "    int n = external_call(\"/tmp/test_phase12_ext.so\", \"ext_len\", \"marshal\");\n"
+        "    int f = external_call(\"/tmp/test_phase12_marshal.so\", \"ext_floor\", 9.75);\n"
+        "    int n = external_call(\"/tmp/test_phase12_marshal.so\", \"ext_len\", \"marshal\");\n"
         "    print int_to_string(f);\n"
         "    print int_to_string(n);\n"
         "    return 0;\n"
@@ -581,14 +581,14 @@ TEST(phase12_external_call_int_return_from_float_and_string) {
     ASSERT_INT_EQ(1, output_contains(out, "9\n7\n"));
 }
 
-TEST(phase12_external_call_string_return) {
+TEST(phase12_external_call_s_return) {
     ASSERT_INT_EQ(1, build_marshal_shared_lib());
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    string g = external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_greet\", \"mypl\");\n"
-        "    string a = external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_label\", 3);\n"
-        "    string b = external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_float_label\", -0.5);\n"
+        "    string g = external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_greet\", \"mypl\");\n"
+        "    string a = external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_label\", 3);\n"
+        "    string b = external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_float_label\", -0.5);\n"
         "    print g;\n"
         "    print a;\n"
         "    print b;\n"
@@ -599,14 +599,14 @@ TEST(phase12_external_call_string_return) {
     ASSERT_INT_EQ(1, output_contains(out, "hello, mypl\npositive\nneg\n"));
 }
 
-TEST(phase12_external_call_string_result_is_copied) {
+TEST(phase12_external_call_s_result_is_copied) {
     ASSERT_INT_EQ(1, build_marshal_shared_lib());
     char out[256];
     /* ext_greet reuses one static buffer; the first result must not change. */
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    string first = external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_greet\", \"one\");\n"
-        "    string second = external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_greet\", \"two\");\n"
+        "    string first = external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_greet\", \"one\");\n"
+        "    string second = external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_greet\", \"two\");\n"
         "    print first;\n"
         "    print second;\n"
         "    return 0;\n"
@@ -616,12 +616,12 @@ TEST(phase12_external_call_string_result_is_copied) {
     ASSERT_INT_EQ(1, output_contains(out, "hello, one\nhello, two\n"));
 }
 
-TEST(phase12_external_call_string_null_return_is_null) {
+TEST(phase12_external_call_s_null_return_is_null) {
     ASSERT_INT_EQ(1, build_marshal_shared_lib());
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    print nvl(external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_null\", \"x\"), \"fallback\");\n"
+        "    print nvl(external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_null\", \"x\"), \"fallback\");\n"
         "    return 0;\n"
         "}\n",
         out, sizeof(out));
@@ -633,36 +633,36 @@ TEST(phase12_external_call_rejects_bool_argument) {
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    external_call_float(\"/tmp/test_phase12_ext.so\", \"ext_scale\", true);\n"
+        "    external_call_f(\"/tmp/test_phase12_marshal.so\", \"ext_scale\", true);\n"
         "    return 0;\n"
         "}\n",
         out, sizeof(out));
     ASSERT_INT_EQ(1, rc);
-    ASSERT_INT_EQ(1, output_contains(out, "external_call_float expects an int, float or string argument"));
+    ASSERT_INT_EQ(1, output_contains(out, "external_call_f expects an int, float or string argument"));
 }
 
-TEST(phase12_external_call_string_result_type_is_checked) {
+TEST(phase12_external_call_s_result_type_is_checked) {
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    int n = external_call_string(\"/tmp/test_phase12_ext.so\", \"ext_label\", 1);\n"
+        "    int n = external_call_s(\"/tmp/test_phase12_marshal.so\", \"ext_label\", 1);\n"
         "    return n;\n"
         "}\n",
         out, sizeof(out));
     ASSERT_INT_EQ(1, rc);
 }
 
-TEST(phase12_external_call_string_missing_symbol_fails) {
+TEST(phase12_external_call_s_missing_symbol_fails) {
     ASSERT_INT_EQ(1, build_marshal_shared_lib());
     char out[256];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    external_call_string(\"/tmp/test_phase12_ext.so\", \"no_such_symbol\", \"x\");\n"
+        "    external_call_s(\"/tmp/test_phase12_marshal.so\", \"no_such_symbol\", \"x\");\n"
         "    return 0;\n"
         "}\n",
         out, sizeof(out));
     ASSERT_INT_EQ(1, rc);
-    ASSERT_INT_EQ(1, output_contains(out, "external_call_string:"));
+    ASSERT_INT_EQ(1, output_contains(out, "external_call_s:"));
 }
 
 #ifdef USE_SQLITE
@@ -1113,14 +1113,14 @@ int main(void) {
     RUN_TEST(phase12_dbms_sql_fetch_rows);
     RUN_TEST(phase12_dbms_sql_column_value);
     RUN_TEST(phase12_dbms_sql_close_invalidates_handle);
-    RUN_TEST(phase12_external_call_float_return);
+    RUN_TEST(phase12_external_call_f_return);
     RUN_TEST(phase12_external_call_int_return_from_float_and_string);
-    RUN_TEST(phase12_external_call_string_return);
-    RUN_TEST(phase12_external_call_string_result_is_copied);
-    RUN_TEST(phase12_external_call_string_null_return_is_null);
+    RUN_TEST(phase12_external_call_s_return);
+    RUN_TEST(phase12_external_call_s_result_is_copied);
+    RUN_TEST(phase12_external_call_s_null_return_is_null);
     RUN_TEST(phase12_external_call_rejects_bool_argument);
-    RUN_TEST(phase12_external_call_string_result_type_is_checked);
-    RUN_TEST(phase12_external_call_string_missing_symbol_fails);
+    RUN_TEST(phase12_external_call_s_result_type_is_checked);
+    RUN_TEST(phase12_external_call_s_missing_symbol_fails);
 #ifdef USE_SQLITE
     RUN_TEST(phase12_dbms_sql_sqlite_bind_and_execute);
     RUN_TEST(phase12_dbms_sql_sqlite_bind_string_with_quote);

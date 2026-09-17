@@ -27,7 +27,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - [x] Initialize packages declared in imported modules
 - [ ] Allow user packages to override/replace built-in packages
 - [ ] `utl_file` expansion: append/seek/flush, larger handle table, directory objects
-- [x] `external_call` marshalling for float and string signatures (`external_call_float` / `external_call_string`; int, float or string argument)
+- [x] `external_call` marshalling for float and string signatures (`external_call_f` / `external_call_s`; int, float or string argument)
 - [x] CLI flag definitions for conditional compilation (e.g. `mypl -DDEBUG file.mypl`)
 
 ### Phase 13 — Hardening & Tooling
