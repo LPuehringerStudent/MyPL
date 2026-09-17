@@ -1927,6 +1927,15 @@ static int native_utl_file_put_line(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_utl_file_fseek(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 2 || argv[0].type != VAL_INT || argv[1].type != VAL_INT) {
+        vm_set_error(vm, "utl_file_fseek expects (int, int)");
+        return 0;
+    }
+    *out = value_int(vm_utl_file_fseek(vm, argv[0].as.as_int, argv[1].as.as_int));
+    return 1;
+}
+
 static int native_utl_file_fclose(VM* vm, int argc, Value* argv, Value* out) {
     if (argc != 1 || argv[0].type != VAL_INT) {
         vm_set_error(vm, "utl_file_fclose expects an int handle");
@@ -2408,6 +2417,7 @@ static NativeDef natives[] = {
     {"utl_file_fopen", 2, native_utl_file_fopen},
     {"utl_file_get_line", 1, native_utl_file_get_line},
     {"utl_file_put_line", 2, native_utl_file_put_line},
+    {"utl_file_fseek", 2, native_utl_file_fseek},
     {"utl_file_fclose", 1, native_utl_file_fclose},
     {"dbms_sql_execute", 1, native_dbms_sql_execute},
     {"dbms_sql_query", 1, native_dbms_sql_query},
