@@ -381,6 +381,22 @@ static Type* resolve_percent_type(TypeChecker* tc, Type* t, SourceLoc loc) {
     return t;
 }
 
+/* Type of `var.field` where var is an untyped local such as a SQL loop row.
+ * With a database context the column type comes from the bound query. */
+static Type* sql_row_field_type(TypeChecker* tc, const char* var_name,
+                                const char* field_name, SourceLoc loc) {
+    RowBinding* row = find_row(tc, var_name);
+    if (row != NULL && tc->ctx != NULL) {
+        int sql_type;
+        if (sql_query_column_type(tc->ctx, row->query, field_name, &sql_type)) {
+            return sql_type_to_type(sql_type);
+        }
+        type_error(tc, loc, "Unknown column '%s' for row variable '%s'",
+                   field_name, var_name);
+    }
+    return &type_unknown;
+}
+
 static Type* resolve_field_type(TypeChecker* tc, Type* base, const char* field_name,
                                 SourceLoc loc) {
     if (base == NULL || field_name == NULL) return NULL;
@@ -551,7 +567,11 @@ static int is_native(const char* name) {
            strcmp(name, "utl_file_fopen") == 0 ||
            strcmp(name, "utl_file_get_line") == 0 ||
            strcmp(name, "utl_file_put_line") == 0 ||
+           strcmp(name, "utl_file_fseek") == 0 ||
+           strcmp(name, "utl_file_fflush") == 0 ||
            strcmp(name, "utl_file_fclose") == 0 ||
+           strcmp(name, "utl_file_mkdir") == 0 ||
+           strcmp(name, "utl_file_remove") == 0 ||
            strcmp(name, "dbms_sql_execute") == 0 ||
            strcmp(name, "dbms_sql_query") == 0 ||
            strcmp(name, "dbms_sql_open_cursor") == 0 ||
@@ -1494,6 +1514,32 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return &type_int;
     }
+    if (strcmp(name, "utl_file_fseek") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "utl_file_fseek expects 2 arguments");
+            return NULL;
+        }
+        Type* handle = infer_expr(tc, args[0], NULL);
+        Type* offset = infer_expr(tc, args[1], NULL);
+        if (handle != &type_unknown && handle != NULL && handle->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fseek expects an int handle");
+        }
+        if (offset != &type_unknown && offset != NULL && offset->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fseek expects an int offset");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_fflush") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "utl_file_fflush expects 1 argument");
+            return NULL;
+        }
+        Type* handle = infer_expr(tc, args[0], NULL);
+        if (handle != &type_unknown && handle != NULL && handle->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fflush expects an int handle");
+        }
+        return &type_int;
+    }
     if (strcmp(name, "utl_file_fclose") == 0) {
         if (arg_count != 1) {
             type_error(tc, loc, "utl_file_fclose expects 1 argument");
@@ -1502,6 +1548,17 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* a = infer_expr(tc, args[0], NULL);
         if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
             type_error(tc, loc, "utl_file_fclose expects an int handle");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_mkdir") == 0 || strcmp(name, "utl_file_remove") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "%s expects 1 argument", name);
+            return NULL;
+        }
+        Type* path = infer_expr(tc, args[0], NULL);
+        if (path != &type_unknown && path != NULL && path->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects a string path", name);
         }
         return &type_int;
     }
@@ -1979,18 +2036,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                            expr->as.field.row);
                 return &type_unknown;
             }
-            RowBinding* row = find_row(tc, expr->as.field.row);
-            if (row != NULL && tc->ctx != NULL) {
-                int sql_type;
-                if (sql_query_column_type(tc->ctx, row->query, expr->as.field.field, &sql_type)) {
-                    return sql_type_to_type(sql_type);
-                }
-                type_error(tc, expr->loc,
-                           "Unknown column '%s' for row variable '%s'",
-                           expr->as.field.field, expr->as.field.row);
-                return &type_unknown;
-            }
-            return &type_unknown;
+            return sql_row_field_type(tc, expr->as.field.row, expr->as.field.field, expr->loc);
         }
 
         case EXPR_SQL_PARAM: {
@@ -2029,6 +2075,14 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
         }
 
         case EXPR_ROW_FIELD: {
+            /* A `for x in select` loop variable is an untyped local, like `row`. */
+            Expr* row_expr = expr->as.row_field.row;
+            if (row_expr != NULL && row_expr->kind == EXPR_VARIABLE &&
+                find_row(tc, row_expr->as.variable.name) != NULL &&
+                resolve_local(tc, row_expr->as.variable.name) == &type_unknown) {
+                return sql_row_field_type(tc, row_expr->as.variable.name,
+                                          expr->as.row_field.field, expr->loc);
+            }
             Type* base = infer_expr(tc, expr->as.row_field.row, NULL);
             if (tc->had_error) return NULL;
             Type* ft = resolve_field_type(tc, base, expr->as.row_field.field, expr->loc);
@@ -2268,13 +2322,11 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 }
             }
             int saved_row_count = tc->row_count;
-            if (tc->ctx != NULL) {
-                if (!bind_row(tc, f->var_name, f->sql_query)) {
-                    type_error(tc, stmt->loc, "too many row bindings");
-                    tc->row_count = saved_row_count;
-                    pop_scope(tc);
-                    return;
-                }
+            if (!bind_row(tc, f->var_name, f->sql_query)) {
+                type_error(tc, stmt->loc, "too many row bindings");
+                tc->row_count = saved_row_count;
+                pop_scope(tc);
+                return;
             }
             if (!add_local(tc, f->var_name, &type_unknown)) {
                 type_error(tc, stmt->loc, "Too many local variables");

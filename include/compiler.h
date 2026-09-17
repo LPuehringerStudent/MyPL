@@ -256,4 +256,12 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
                          char* error, size_t error_size, struct Context* ctx,
                          const CompileOptions* options);
 
+/* Conditional-compilation pass run by compile_with_options before parsing.
+ * Returns a malloc'd copy of source with directive lines and excluded
+ * regions blanked (newlines kept, same length), or NULL with a message in
+ * error_buf. */
+char* cc_preprocess(const char* source, const char* source_path,
+                    const CompileOptions* options,
+                    char* error_buf, size_t error_size);
+
 #endif

@@ -59,9 +59,33 @@ make clean && make USE_SQLITE=0 && make USE_SQLITE=0 test
    Run `act -j test`, `act -j warnings-as-errors`, `act -j asan-ubsan` if you
    have `act` locally.
 5. **Examples.** New features should come with a runnable example in
-   `examples/` — keep the existing ones working.
+   `examples/` — keep the existing ones working. `make test` runs every
+   example through `tests/run_examples.sh` (also `make examples-test`) and
+   requires exit 0. If an example needs arguments, another example run first,
+   SQLite or Linux, say so with `// smoke:` comment lines (`args --db :memory:`,
+   `setup other.mypl`, `requires sqlite`, `requires linux`, `skip <reason>`).
 6. **AGENTS.md** is a gitignored handoff document: update it when you change
    architecture, conventions, or known limitations.
+
+## Fuzzing
+
+`tests/fuzz` has libFuzzer targets for the lexer (`fuzz_lexer.c`), the parser
+(`fuzz_parser.c`) and the conditional-compilation preprocessor
+(`fuzz_preprocessor.c`; the first input byte selects which `-D` flags are
+set). They check for crashes, sanitizer errors and a few invariants, e.g. the
+preprocessor keeping the source length and every newline in place.
+
+```bash
+make fuzz                 # build bin/fuzz_* with clang (FUZZ_CC=...)
+make fuzz-run FUZZ_TIME=300 FUZZ_LEAKS=0  # leaks off: see NEXT_STEPS.md
+```
+
+New corpus entries and crash inputs land in `build/fuzz/`. To keep a crash
+fixed, minimize it (`bin/fuzz_parser -minimize_crash=1 -runs=10000 <input>`),
+commit it under `tests/fuzz/regressions/<target>/` and add a unit test.
+`make test` replays the seed corpus and every regression input with your
+normal compiler via `make fuzz-replay`, so no clang is needed there. The
+`Fuzz` workflow runs each target for 60 s on PRs and 10 min weekly.
 
 ## What not to commit
 

@@ -13,6 +13,12 @@ char* packages_load_source(DBDriver* driver, Context* ctx);
    Caller must free the returned string. */
 char* packages_load_builtins(void);
 
+/* Return a copy of `loaded` without the package specs and bodies whose names
+   are declared (as `package NAME` or `package body NAME`) in `source`, so a
+   declaration in `source` replaces the loaded one. Returns NULL if `loaded`
+   is NULL or nothing but whitespace remains. Caller must free the result. */
+char* packages_filter_redefined(const char* loaded, const char* source);
+
 /* Persist package source code from the given source string.
    If append is non-zero, the source is appended to existing persisted
    packages; otherwise it replaces them. Returns 1 on success, 0 on failure. */

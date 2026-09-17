@@ -1,0 +1,4 @@
+proc main() -> int {
+    int x = (;)(1);
+    return 0;
+}

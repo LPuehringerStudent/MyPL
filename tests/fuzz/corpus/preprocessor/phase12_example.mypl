@@ -1,4 +1,4 @@
-// Phase 12: command-line conditional-compilation flags.
+1// Phase 12: command-line conditional-compilation flags.
 //
 // Flags can be defined in source with $define or supplied on the command
 // line, and apply to the file and its imports:
@@ -6,9 +6,6 @@
 //   ./bin/mypl -DDEBUG examples/phase12_conditional_flags.mypl  -> "debug logging enabled"
 //   ./bin/mypl -DDEBUG -DTRACE examples/phase12_conditional_flags.mypl
 //                                                               -> trace line too
-// smoke: args
-// smoke: args -DDEBUG
-// smoke: args -DDEBUG -DTRACE
 proc main() -> int {
 $if DEBUG $then
     print "debug logging enabled";

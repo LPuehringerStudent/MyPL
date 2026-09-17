@@ -1,0 +1,9 @@
+?$if DEBUG $then
+$if A $then
+$if B $then
+$if TRACE $then
+proc main() -> int { return 0; }
+$end
+$end
+$end
+$end

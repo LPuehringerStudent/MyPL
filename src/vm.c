@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "vm.h"
 #include "ast.h"
@@ -21,7 +22,7 @@ typedef struct {
     Value*   stack_top;
 } TryFrame;
 
-#define UTL_FILE_MAX_HANDLES 16
+#define UTL_FILE_MAX_HANDLES 64
 #define SEQUENCE_MAX 16
 #define SEQUENCE_NAME_MAX 64
 #define DBMS_SQL_MAX_CURSORS 16
@@ -350,6 +351,22 @@ int vm_utl_file_put_line(VM* vm, int handle, const char* text) {
     return 1;
 }
 
+int vm_utl_file_fseek(VM* vm, int handle, int offset) {
+    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES ||
+        vm->utl_file_handles[handle] == NULL) {
+        return -1;
+    }
+    return fseek(vm->utl_file_handles[handle], offset, SEEK_SET);
+}
+
+int vm_utl_file_fflush(VM* vm, int handle) {
+    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES ||
+        vm->utl_file_handles[handle] == NULL) {
+        return 0;
+    }
+    return fflush(vm->utl_file_handles[handle]) == 0;
+}
+
 int vm_utl_file_fclose(VM* vm, int handle) {
     if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL) {
         return 0;
@@ -357,6 +374,16 @@ int vm_utl_file_fclose(VM* vm, int handle) {
     int ok = fclose(vm->utl_file_handles[handle]) == 0;
     vm->utl_file_handles[handle] = NULL;
     return ok;
+}
+
+int vm_utl_file_mkdir(const char* path) {
+    if (path == NULL) return -1;
+    return mkdir(path, 0777);
+}
+
+int vm_utl_file_remove(const char* path) {
+    if (path == NULL) return -1;
+    return remove(path);
 }
 
 int vm_dbms_sql_execute(VM* vm, const char* sql) {

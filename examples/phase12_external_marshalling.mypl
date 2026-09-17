@@ -5,6 +5,7 @@
 //   external_call_float  -> float
 //   external_call_string -> string (copied; a NULL char* becomes NULL)
 // Calls into libc and libm via dlopen/dlsym (Linux).
+// smoke: requires linux
 proc main() -> int {
     int n = external_call("libc.so.6", "strlen", "marshalling");
     print int_to_string(n);

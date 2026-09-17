@@ -1,0 +1,2 @@
+0$if DEBUG $then
+proc main() -> int { return 0; }

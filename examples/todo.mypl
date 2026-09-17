@@ -1,3 +1,6 @@
+// smoke: requires sqlite
+// smoke: args --db :memory:
+
 proc init() -> int {
     create table if not exists todos (
         id integer primary key autoincrement,

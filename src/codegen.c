@@ -33,6 +33,7 @@ typedef struct {
     int length;
     int depth;
     Type* type;
+    int is_sql_row; /* `for x in select` iterator: fields come from the current row */
 } Local;
 
 typedef struct {
@@ -377,6 +378,7 @@ static int add_local(Compiler* compiler, const char* name, int length, Type* typ
     local->length = length;
     local->depth = compiler->scope_depth;
     local->type = type;
+    local->is_sql_row = 0;
     return compiler->local_count++;
 }
 
@@ -836,8 +838,17 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         }
         case EXPR_ROW_FIELD: {
             RowFieldExpr* rf = &expr->as.row_field;
-            compile_expr(compiler, rf->row);
-            if (compiler->had_error) return;
+            /* x.field on a SQL loop iterator reads the current row, as row.field does. */
+            int sql_row = 0;
+            if (rf->row->kind == EXPR_VARIABLE) {
+                const char* var = rf->row->as.variable.name;
+                int slot = resolve_local(compiler, var, (int)strlen(var));
+                sql_row = slot >= 0 && compiler->locals[slot].is_sql_row;
+            }
+            if (!sql_row) {
+                compile_expr(compiler, rf->row);
+                if (compiler->had_error) return;
+            }
             char* field_name = malloc((size_t)strlen(rf->field) + 1);
             if (field_name == NULL) {
                 error(compiler, "out of memory");
@@ -850,7 +861,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 error(compiler, "too many constants");
                 return;
             }
-            emit_byte(compiler, OP_ROW_GET);
+            emit_byte(compiler, sql_row ? OP_GET_FIELD : OP_ROW_GET);
             emit_u16(compiler, (uint16_t)field_idx);
             break;
         }
@@ -1286,6 +1297,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, "too many locals");
                 return;
             }
+            compiler->locals[slot].is_sql_row = 1;
             emit_byte(compiler, OP_CONST);
             emit_u16(compiler, (uint16_t)add_constant(compiler->chunk, value_int(0)));
             emit_byte(compiler, OP_SET_LOCAL);
@@ -2349,10 +2361,11 @@ static int cc_seed_flags(char flags[][CC_NAME_MAX], int* flag_count,
 }
 
 /* Returns a malloc'd processed copy of source (same length), or NULL and
- * writes an error message into error_buf. */
-static char* cc_preprocess(const char* source, const char* source_path,
-                           const CompileOptions* options,
-                           char* error_buf, size_t error_size) {
+ * writes an error message into error_buf. Declared in compiler.h so the
+ * fuzz harness can drive the preprocessor directly. */
+char* cc_preprocess(const char* source, const char* source_path,
+                    const CompileOptions* options,
+                    char* error_buf, size_t error_size) {
     size_t len = strlen(source);
     char* out = malloc(len + 1);
     if (out == NULL) return NULL;
