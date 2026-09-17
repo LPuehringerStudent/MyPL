@@ -14,7 +14,6 @@
 #include "trigger.h"
 #include "typecheck.h"
 
-#define MAX_LOCALS 256
 #define MAX_PROCS 256
 #define MAX_CALL_PATCHES 1024
 #define MAX_MODULES 64
@@ -27,6 +26,9 @@
 /* One slot per compiled file (main plus every distinct imported module)
    that declares package-level state needing an initializer. */
 #define MAX_MODULE_INITS (MAX_MODULES + 1)
+/* Initial capacity of the per-procedure locals table; doubles on demand. */
+#define LOCALS_INITIAL_CAPACITY 256
+#define CURSOR_QUERIES_INITIAL_CAPACITY 16
 
 typedef struct {
     const char* name;
@@ -86,8 +88,11 @@ typedef struct {
 
 typedef struct {
     Chunk* chunk;
-    Local locals[MAX_LOCALS];
+    /* Per-procedure locals table: heap array, grows by doubling (locals
+       beyond the old MAX_LOCALS = 256 fixed ceiling are now supported). */
+    Local* locals;
     int local_count;
+    int local_capacity;
     int scope_depth;
     ProcEntry procs[MAX_PROCS];
     int proc_count;
@@ -108,8 +113,9 @@ typedef struct {
     int loop_count;
     int current_line;
     int current_column;
-    CursorQuery cursor_queries[MAX_LOCALS];
+    CursorQuery* cursor_queries;
     int cursor_query_count;
+    int cursor_query_capacity;
     const char* global_names[MAX_GLOBALS];
     int global_count;
     const char* current_package;
@@ -266,6 +272,28 @@ static void emit_u16(Compiler* compiler, uint16_t value) {
     write_chunk_u16_line(compiler->chunk, value, compiler->current_line, compiler->current_column);
 }
 
+/* Local-slot access: the narrow opcodes carry a 1-byte slot index; frames
+   with more than 256 locals use the 16-bit variants. */
+static void emit_get_local(Compiler* compiler, int slot) {
+    if (slot < 256) {
+        emit_byte(compiler, OP_GET_LOCAL);
+        emit_byte(compiler, (uint8_t)slot);
+    } else {
+        emit_byte(compiler, OP_GET_LOCAL16);
+        emit_u16(compiler, (uint16_t)slot);
+    }
+}
+
+static void emit_set_local(Compiler* compiler, int slot) {
+    if (slot < 256) {
+        emit_byte(compiler, OP_SET_LOCAL);
+        emit_byte(compiler, (uint8_t)slot);
+    } else {
+        emit_byte(compiler, OP_SET_LOCAL16);
+        emit_u16(compiler, (uint16_t)slot);
+    }
+}
+
 static int emit_jump(Compiler* compiler, uint8_t op) {
     emit_byte(compiler, op);
     emit_u16(compiler, 0);
@@ -371,8 +399,20 @@ static Type* resolve_local_type(Compiler* compiler, const char* name, int length
     return NULL;
 }
 
+static int ensure_local_capacity(Compiler* compiler, int needed) {
+    if (needed <= compiler->local_capacity) return 1;
+    int new_capacity = compiler->local_capacity == 0 ? LOCALS_INITIAL_CAPACITY
+                                                       : compiler->local_capacity;
+    while (new_capacity < needed) new_capacity *= 2;
+    Local* new_locals = realloc(compiler->locals, sizeof(Local) * (size_t)new_capacity);
+    if (new_locals == NULL) return 0;
+    compiler->locals = new_locals;
+    compiler->local_capacity = new_capacity;
+    return 1;
+}
+
 static int add_local(Compiler* compiler, const char* name, int length, Type* type) {
-    if (compiler->local_count >= MAX_LOCALS) return -1;
+    if (!ensure_local_capacity(compiler, compiler->local_count + 1)) return -1;
     Local* local = &compiler->locals[compiler->local_count];
     local->name = name;
     local->length = length;
@@ -453,7 +493,14 @@ static void register_cursor_query(Compiler* compiler, const char* name, int leng
             return;
         }
     }
-    if (compiler->cursor_query_count >= MAX_LOCALS) return;
+    if (compiler->cursor_query_count >= compiler->cursor_query_capacity) {
+        int new_capacity = compiler->cursor_query_capacity == 0 ? CURSOR_QUERIES_INITIAL_CAPACITY
+                                                                : compiler->cursor_query_capacity * 2;
+        CursorQuery* new_queries = realloc(compiler->cursor_queries, sizeof(CursorQuery) * (size_t)new_capacity);
+        if (new_queries == NULL) return;
+        compiler->cursor_queries = new_queries;
+        compiler->cursor_query_capacity = new_capacity;
+    }
     compiler->cursor_queries[compiler->cursor_query_count].name = name;
     compiler->cursor_queries[compiler->cursor_query_count].length = length;
     compiler->cursor_queries[compiler->cursor_query_count].query = query;
@@ -589,8 +636,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                     error(compiler, "too many constants");
                     return;
                 }
-                emit_byte(compiler, OP_GET_LOCAL);
-                emit_byte(compiler, (uint8_t)self_slot);
+                emit_get_local(compiler, self_slot);
                 emit_byte(compiler, OP_ROW_GET);
                 emit_u16(compiler, (uint16_t)field_idx);
                 break;
@@ -601,8 +647,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 error(compiler, msg);
                 return;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_get_local(compiler, slot);
             break;
         }
         case EXPR_BINARY: {
@@ -640,8 +685,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                     if (find_proc(compiler, mangled) >= 0) {
                         int recv_slot = resolve_local(compiler, c->package_name,
                                                       (int)strlen(c->package_name));
-                        emit_byte(compiler, OP_GET_LOCAL);
-                        emit_byte(compiler, (uint8_t)recv_slot);
+                        emit_get_local(compiler, recv_slot);
                         for (int i = 0; i < c->arg_count; i++) {
                             compile_expr(compiler, c->args[i]);
                             if (compiler->had_error) { free(mangled); return; }
@@ -704,7 +748,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 }
 
                 int out_count = 0;
-                uint8_t out_slots[64];
+                int out_slots[64];
                 int out_positions[64];
                 for (int i = 0; i < c->arg_count; i++) {
                     ParamMode mode = (modes != NULL && i < compiler->procs[proc_idx].param_count)
@@ -737,7 +781,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                             return;
                         }
                         out_positions[out_count] = i;
-                        out_slots[out_count++] = (uint8_t)slot;
+                        out_slots[out_count++] = slot;
                     }
                 }
 
@@ -757,8 +801,8 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                     emit_byte(compiler, (uint8_t)c->arg_count);
                     emit_byte(compiler, (uint8_t)out_count);
                     for (int i = 0; i < out_count; i++) {
-                        emit_byte(compiler, (uint8_t)out_positions[i]);
-                        emit_byte(compiler, out_slots[i]);
+                        emit_u16(compiler, (uint16_t)out_positions[i]);
+                        emit_u16(compiler, (uint16_t)out_slots[i]);
                     }
                 } else {
                     emit_call(compiler, effective_name, c->arg_count);
@@ -805,8 +849,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 error(compiler, msg);
                 return;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_get_local(compiler, slot);
             break;
         }
         case EXPR_CURSOR_ATTR: {
@@ -830,8 +873,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 error(compiler, "too many constants");
                 return;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_get_local(compiler, slot);
             emit_byte(compiler, OP_CURSOR_ATTR);
             emit_u16(compiler, (uint16_t)attr_idx);
             break;
@@ -954,8 +996,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     error(compiler, "too many locals");
                     return;
                 }
-                emit_byte(compiler, OP_SET_LOCAL);
-                emit_byte(compiler, (uint8_t)slot);
+                emit_set_local(compiler, slot);
             }
             break;
         }
@@ -982,8 +1023,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     error(compiler, "too many constants");
                     return;
                 }
-                emit_byte(compiler, OP_GET_LOCAL);
-                emit_byte(compiler, (uint8_t)self_slot);
+                emit_get_local(compiler, self_slot);
                 emit_byte(compiler, OP_CONST);
                 emit_u16(compiler, (uint16_t)field_idx);
                 compile_expr(compiler, a->value);
@@ -1011,8 +1051,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, msg);
                 return;
             }
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_set_local(compiler, slot);
             break;
         }
         case STMT_FIELD_ASSIGN: {
@@ -1096,44 +1135,34 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             if (compiler->had_error) return;
             int array_slot = add_local(compiler, "__fe_array", 12, &type_unknown);
             if (array_slot < 0) { error(compiler, "too many locals"); return; }
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)array_slot);
+            emit_set_local(compiler, array_slot);
             emit_constant(compiler, value_int(0));
             int idx_slot = add_local(compiler, "__fe_idx", 9, &type_int);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_set_local(compiler, idx_slot);
             emit_constant(compiler, value_int(0));
             int var_slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)var_slot);
+            emit_set_local(compiler, var_slot);
             int loop_start = compiler->chunk->count;
             if (!push_loop(compiler, loop_start, start_count, start_count + 3)) return;
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)array_slot);
+            emit_get_local(compiler, idx_slot);
+            emit_get_local(compiler, array_slot);
             int len_native = native_find("length");
             emit_byte(compiler, OP_NATIVE_CALL);
             emit_u16(compiler, (uint16_t)len_native);
             emit_byte(compiler, 1);
             emit_byte(compiler, OP_LT);
             int exit_jump = emit_jump(compiler, OP_JZ);
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)array_slot);
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_get_local(compiler, array_slot);
+            emit_get_local(compiler, idx_slot);
             emit_byte(compiler, OP_INDEX_GET);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)var_slot);
+            emit_set_local(compiler, var_slot);
             emit_byte(compiler, OP_POP);
             compile_block(compiler, f->body);
             if (compiler->had_error) return;
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_get_local(compiler, idx_slot);
             emit_constant(compiler, value_int(1));
             emit_byte(compiler, OP_ADD);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_set_local(compiler, idx_slot);
             emit_byte(compiler, OP_POP);
             int back = emit_jump(compiler, OP_JMP);
             patch_jump_to(compiler, back, loop_start);
@@ -1153,48 +1182,37 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, msg);
                 return;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)array_slot);
+            emit_get_local(compiler, array_slot);
             int tmp_array_slot = add_local(compiler, "__fa_array", 11, &type_unknown);
             if (tmp_array_slot < 0) { error(compiler, "too many locals"); return; }
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)tmp_array_slot);
+            emit_set_local(compiler, tmp_array_slot);
             emit_constant(compiler, value_int(0));
             int idx_slot = add_local(compiler, "__fa_idx", 9, &type_int);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_set_local(compiler, idx_slot);
             emit_constant(compiler, value_int(0));
             int var_slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)var_slot);
+            emit_set_local(compiler, var_slot);
             int loop_start = compiler->chunk->count;
             if (!push_loop(compiler, loop_start, start_count, start_count + 3)) return;
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)tmp_array_slot);
+            emit_get_local(compiler, idx_slot);
+            emit_get_local(compiler, tmp_array_slot);
             int len_native = native_find("length");
             emit_byte(compiler, OP_NATIVE_CALL);
             emit_u16(compiler, (uint16_t)len_native);
             emit_byte(compiler, 1);
             emit_byte(compiler, OP_LT);
             int exit_jump = emit_jump(compiler, OP_JZ);
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)tmp_array_slot);
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_get_local(compiler, tmp_array_slot);
+            emit_get_local(compiler, idx_slot);
             emit_byte(compiler, OP_INDEX_GET);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)var_slot);
+            emit_set_local(compiler, var_slot);
             emit_byte(compiler, OP_POP);
             compile_stmt(compiler, f->sql_stmt);
             if (compiler->had_error) return;
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_get_local(compiler, idx_slot);
             emit_constant(compiler, value_int(1));
             emit_byte(compiler, OP_ADD);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)idx_slot);
+            emit_set_local(compiler, idx_slot);
             emit_byte(compiler, OP_POP);
             int back = emit_jump(compiler, OP_JMP);
             patch_jump_to(compiler, back, loop_start);
@@ -1300,8 +1318,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             compiler->locals[slot].is_sql_row = 1;
             emit_byte(compiler, OP_CONST);
             emit_u16(compiler, (uint16_t)add_constant(compiler->chunk, value_int(0)));
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_set_local(compiler, slot);
 
             compile_block(compiler, f->body);
             if (compiler->had_error) return;
@@ -1457,7 +1474,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_byte(compiler, OP_TRY);
             int catch_offset = compiler->chunk->count;
             emit_u16(compiler, 0);
-            emit_byte(compiler, (uint8_t)local_count_at_try);
+            emit_u16(compiler, (uint16_t)local_count_at_try);
             int after_try_operands = compiler->chunk->count;
 
             compile_block(compiler, tc->try_block);
@@ -1526,8 +1543,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             /* Initialize cursor slot to a closed cursor object. */
             emit_constant(compiler, value_cursor(NULL));
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_set_local(compiler, slot);
             if (d->sql_query != NULL) {
                 register_cursor_query(compiler, d->name, (int)strlen(d->name), d->sql_query);
             }
@@ -1577,13 +1593,11 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, "too many constants");
                 return;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_get_local(compiler, slot);
             emit_byte(compiler, OP_CURSOR_OPEN);
             emit_u16(compiler, (uint16_t)query_idx);
             emit_u16(compiler, (uint16_t)stmt->loc.line);
-            emit_byte(compiler, OP_SET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_set_local(compiler, slot);
             emit_byte(compiler, OP_POP);
             break;
         }
@@ -1596,7 +1610,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, msg);
                 return;
             }
-            uint8_t into_slots[64];
+            int into_slots[64];
             if (f->into_count > 64) {
                 error(compiler, "too many fetch targets");
                 return;
@@ -1609,14 +1623,13 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     error(compiler, msg);
                     return;
                 }
-                into_slots[i] = (uint8_t)var_slot;
+                into_slots[i] = var_slot;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_get_local(compiler, slot);
             emit_byte(compiler, OP_CURSOR_FETCH);
             emit_byte(compiler, (uint8_t)f->into_count);
             for (int i = 0; i < f->into_count; i++) {
-                emit_byte(compiler, into_slots[i]);
+                emit_u16(compiler, (uint16_t)into_slots[i]);
             }
             break;
         }
@@ -1629,8 +1642,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, msg);
                 return;
             }
-            emit_byte(compiler, OP_GET_LOCAL);
-            emit_byte(compiler, (uint8_t)slot);
+            emit_get_local(compiler, slot);
             emit_byte(compiler, OP_CURSOR_CLOSE);
             break;
         }
@@ -1736,8 +1748,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             if (into_array) {
                 int slot = resolve_local(compiler, s->into_vars[0], (int)strlen(s->into_vars[0]));
                 emit_byte(compiler, OP_SQL_TO_ARRAY);
-                emit_byte(compiler, OP_SET_LOCAL);
-                emit_byte(compiler, (uint8_t)slot);
+                emit_set_local(compiler, slot);
                 emit_byte(compiler, OP_POP);
             } else {
                 int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
@@ -1746,8 +1757,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     int slot = resolve_local(compiler, s->into_vars[i], (int)strlen(s->into_vars[i]));
                     emit_byte(compiler, OP_SQL_GET_COLUMN);
                     emit_u16(compiler, (uint16_t)i);
-                    emit_byte(compiler, OP_SET_LOCAL);
-                    emit_byte(compiler, (uint8_t)slot);
+                    emit_set_local(compiler, slot);
                     emit_byte(compiler, OP_POP);
                 }
 
@@ -2741,7 +2751,12 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
                          const CompileOptions* options) {
     Compiler compiler;
     compiler.chunk = chunk;
+    compiler.locals = NULL;
     compiler.local_count = 0;
+    compiler.local_capacity = 0;
+    compiler.cursor_queries = NULL;
+    compiler.cursor_query_count = 0;
+    compiler.cursor_query_capacity = 0;
     compiler.scope_depth = 0;
     compiler.proc_count = 0;
     compiler.patch_count = 0;
@@ -2777,6 +2792,8 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
         free_module_init_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
+        free(compiler.locals);
+        free(compiler.cursor_queries);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
         return 0;
@@ -2792,6 +2809,8 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
         free_module_init_entries(&compiler);
         free_proc_entries(&compiler);
         free_global_names(&compiler);
+        free(compiler.locals);
+        free(compiler.cursor_queries);
         for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
         for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
         return 0;
@@ -2810,6 +2829,8 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
             free_module_init_entries(&compiler);
             free_proc_entries(&compiler);
             free_global_names(&compiler);
+            free(compiler.locals);
+            free(compiler.cursor_queries);
             for (int j = 0; j < compiler.patch_count; j++) free((void*)compiler.patches[j].name);
             for (int j = 0; j < compiler.loaded_count; j++) free(compiler.loaded_paths[j]);
             return 0;
@@ -2844,6 +2865,8 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
     free_module_init_entries(&compiler);
     free_proc_entries(&compiler);
     free_global_names(&compiler);
+    free(compiler.locals);
+    free(compiler.cursor_queries);
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
     for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
     return 1;
