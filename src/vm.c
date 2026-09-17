@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "vm.h"
 #include "ast.h"
@@ -373,6 +374,16 @@ int vm_utl_file_fclose(VM* vm, int handle) {
     int ok = fclose(vm->utl_file_handles[handle]) == 0;
     vm->utl_file_handles[handle] = NULL;
     return ok;
+}
+
+int vm_utl_file_mkdir(const char* path) {
+    if (path == NULL) return -1;
+    return mkdir(path, 0777);
+}
+
+int vm_utl_file_remove(const char* path) {
+    if (path == NULL) return -1;
+    return remove(path);
 }
 
 int vm_dbms_sql_execute(VM* vm, const char* sql) {
