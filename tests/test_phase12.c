@@ -1092,6 +1092,75 @@ TEST(phase12_dbms_sql_sqlite_bind_string_with_quote) {
 }
 #endif
 
+TEST(phase12_utl_file_seek_append_and_flush) {
+    remove("/tmp/test_phase12_utl_file.txt");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int w = utl_file.fopen(\"/tmp/test_phase12_utl_file.txt\", \"w\");\n"
+        "    utl_file.put_line(w, \"one\");\n"
+        "    utl_file.fflush(w);\n"
+        "    print read_file(\"/tmp/test_phase12_utl_file.txt\");\n"
+        "    utl_file.fclose(w);\n"
+        "    int a = utl_file.fopen(\"/tmp/test_phase12_utl_file.txt\", \"a\");\n"
+        "    utl_file.put_line(a, \"two\");\n"
+        "    utl_file.fclose(a);\n"
+        "    int r = utl_file.fopen(\"/tmp/test_phase12_utl_file.txt\", \"r\");\n"
+        "    string first = utl_file.get_line(r);\n"
+        "    string second = utl_file.get_line(r);\n"
+        "    print concat(first, second);\n"
+        "    print int_to_string(utl_file.fseek(r, 0));\n"
+        "    print utl_file.get_line(r);\n"
+        "    utl_file.fclose(r);\n"
+        "    return 0;\n"
+        "}\n", out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "onetwo"));
+    ASSERT_INT_EQ(1, output_contains(out, "0"));
+    remove("/tmp/test_phase12_utl_file.txt");
+}
+
+TEST(phase12_utl_file_many_open_handles) {
+    remove("/tmp/test_phase12_utl_many.txt");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    array<int> handles;\n"
+        "    int i = 0;\n"
+        "    while i < 24 {\n"
+        "        append(handles, utl_file.fopen(\"/tmp/test_phase12_utl_many.txt\", \"a\"));\n"
+        "        if handles[i] < 0 { return 1; }\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    print int_to_string(length(handles));\n"
+        "    i = 0;\n"
+        "    while i < length(handles) { utl_file.fclose(handles[i]); i = i + 1; }\n"
+        "    return 0;\n"
+        "}\n", out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "24"));
+    remove("/tmp/test_phase12_utl_many.txt");
+}
+
+TEST(phase12_utl_file_directory_operations) {
+    remove("/tmp/test_phase12_utl_dir/file.txt");
+    remove("/tmp/test_phase12_utl_dir");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    print int_to_string(utl_file.mkdir(\"/tmp/test_phase12_utl_dir\"));\n"
+        "    int h = utl_file.fopen(\"/tmp/test_phase12_utl_dir/file.txt\", \"w\");\n"
+        "    utl_file.fclose(h);\n"
+        "    print int_to_string(utl_file.remove(\"/tmp/test_phase12_utl_dir/file.txt\"));\n"
+        "    print int_to_string(utl_file.remove(\"/tmp/test_phase12_utl_dir\"));\n"
+        "    if utl_file.remove(\"/tmp/test_phase12_utl_dir\") == 0 { return 1; }\n"
+        "    return 0;\n"
+        "}\n", out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(0, access("/tmp/test_phase12_utl_dir/file.txt", F_OK) == 0);
+    ASSERT_INT_EQ(0, access("/tmp/test_phase12_utl_dir", F_OK) == 0);
+}
+
 int main(void) {
     printf("test_phase12:\n");
     RUN_TEST(phase12_nextval_persists_across_restarts);
@@ -1138,5 +1207,8 @@ int main(void) {
     RUN_TEST(phase12_sqlite_row_trigger_update_and_delete);
     RUN_TEST(phase12_sqlite_row_trigger_persists_across_restarts);
 #endif
+    RUN_TEST(phase12_utl_file_seek_append_and_flush);
+    RUN_TEST(phase12_utl_file_many_open_handles);
+    RUN_TEST(phase12_utl_file_directory_operations);
     TEST_SUMMARY();
 }
