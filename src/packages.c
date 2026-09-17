@@ -46,6 +46,7 @@ static char* strip_main_procedure(const char* source);
     "    func get_line(handle int) -> string;\n" \
     "    proc put_line(handle int, text string) -> int;\n" \
     "    func fseek(handle int, offset int) -> int;\n" \
+    "    proc fflush(handle int) -> int;\n" \
     "    proc fclose(handle int) -> int;\n" \
     "end utl_file;\n" \
     "\n" \
@@ -65,6 +66,10 @@ static char* strip_main_procedure(const char* source);
     "\n" \
     "    func fseek(handle int, offset int) -> int {\n" \
     "        return utl_file_fseek(handle, offset);\n" \
+    "    }\n" \
+    "\n" \
+    "    proc fflush(handle int) -> int {\n" \
+    "        return utl_file_fflush(handle);\n" \
     "    }\n" \
     "\n" \
     "    proc fclose(handle int) -> int {\n" \
