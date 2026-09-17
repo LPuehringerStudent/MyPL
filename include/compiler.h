@@ -26,9 +26,14 @@ typedef enum {
     OBJ_CURSOR
 } ObjType;
 
-typedef struct {
+typedef struct Obj {
     ObjType type;
     int ref_count;
+    /* Cycle-collector bookkeeping (src/value.c): gc_index is the object's slot
+       in the container registry (-1 when not registered: strings and cursors,
+       which hold no container references), gc_mark is the trace mark bit. */
+    int gc_index;
+    unsigned char gc_mark;
 } Obj;
 
 struct CursorObj {
@@ -214,6 +219,31 @@ void value_retain(Value v);
 void value_release(Value v);
 int  value_ref_count(Value v);
 
+/* ---------------------------------------------------------------------------
+ * Cycle collector (implemented in src/value.c, driven by src/vm.c).
+ *
+ * Every ArrayObj/MapObj/RowObj registers itself on allocation and unregisters
+ * when its refcount reaches zero. Reference counting alone cannot reclaim
+ * reference cycles, so the VM periodically traces all roots (value stack,
+ * REPL locals, globals, chunk constants, SQL params, dbms_output buffer,
+ * dbms_sql binds), marks reachable containers, and sweeps the unreachable
+ * ones: internal edges are broken (child refcounts decremented, slots
+ * cleared) and string children released exactly once, then zero-refcount
+ * containers are freed through their normal destructors. Cursors and strings
+ * are never registered (they hold no container references).
+ *
+ * vm_gc_collect() may only run in the top-level VM between bytecode
+ * instructions; child VMs (trigger firing, autonomous transactions) never
+ * collect. vm_free() finishes with a roots-free sweep so teardown stays
+ * leak-free even with cyclic garbage still registered.
+ * ------------------------------------------------------------------------- */
+void gc_trace_value(Value v);            /* mark one root value + drain */
+int  gc_begin_collection(void);          /* pre-grow trace/work stacks; 0 = skip */
+int  gc_sweep_unreachable(void);         /* sweep unmarked containers; returns freed count */
+long gc_container_allocations(void);     /* container allocs since last reset */
+void gc_reset_container_allocations(void);
+int  gc_container_count(void);           /* live registered containers */
+
 ArrayObj* array_new(void);
 void      array_free(ArrayObj* array);
 int       array_append(ArrayObj* array, Value value);
@@ -222,7 +252,6 @@ void      array_set(ArrayObj* array, int index, Value value);
 int       array_length(ArrayObj* array);
 int       array_extend(ArrayObj* array, int count);
 int       array_trim(ArrayObj* array, int count);
-void      array_pool_free_all(void);
 
 MapObj*   map_new(void);
 void      map_free(MapObj* map);

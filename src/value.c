@@ -16,7 +16,6 @@ struct ArrayObj {
     Value* items;
     int count;
     int capacity;
-    ArrayObj* next;
 };
 
 struct RowObj {
@@ -31,6 +30,8 @@ CursorObj* cursor_obj_new(DBDriver* driver) {
     if (cursor == NULL) return NULL;
     cursor->obj.type = OBJ_CURSOR;
     cursor->obj.ref_count = 1;
+    cursor->obj.gc_index = -1;
+    cursor->obj.gc_mark = 0;
     cursor->driver = driver;
     cursor->result_handle = NULL;
     cursor->row_handle = NULL;
@@ -40,9 +41,247 @@ CursorObj* cursor_obj_new(DBDriver* driver) {
     return cursor;
 }
 
-static ArrayObj* array_pool = NULL;
+/* ---------------------------------------------------------------------------
+ * Container registry and cycle collector.
+ *
+ * Every live ArrayObj/MapObj/RowObj sits in g_gc_registry (slot stored in
+ * Obj.gc_index, removal is O(1) swap-with-last). The VM traces its roots and
+ * calls gc_sweep_unreachable(); unreachable containers keep their refcounts
+ * only through each other, so the sweep first breaks those internal edges
+ * (decrement child refcounts, clear the slots, release string children) and
+ * then frees every container whose adjusted refcount reached zero through
+ * its normal destructor. Edge breaking and freeing are separate passes, so
+ * no destructor ever runs while one of its children is being processed and
+ * no refcount is adjusted twice. Strings and cursors are not registered.
+ * ------------------------------------------------------------------------- */
 
-void row_obj_free(RowObj* row);
+static Obj** g_gc_registry = NULL;
+static int   g_gc_count = 0;
+static int   g_gc_capacity = 0;
+static long  g_gc_allocations = 0;
+
+static Obj** g_gc_mark_stack = NULL;
+static int   g_gc_mark_count = 0;
+static int   g_gc_mark_capacity = 0;
+
+static Obj** g_gc_worklist = NULL;
+static int   g_gc_work_count = 0;
+static int   g_gc_work_capacity = 0;
+
+/* Grows on demand; on OOM the object is left registered (swept by a later
+ * collection or teardown) rather than overflowing the list. */
+static void gc_worklist_push(Obj* obj) {
+    if (g_gc_work_count >= g_gc_work_capacity) {
+        int new_capacity = g_gc_work_capacity == 0 ? 256 : g_gc_work_capacity * 2;
+        Obj** grown = realloc(g_gc_worklist, sizeof(Obj*) * (size_t)new_capacity);
+        if (grown == NULL) return;
+        g_gc_worklist = grown;
+        g_gc_work_capacity = new_capacity;
+    }
+    g_gc_worklist[g_gc_work_count++] = obj;
+}
+
+static int gc_registry_add(Obj* obj) {
+    if (g_gc_count == g_gc_capacity) {
+        int new_capacity = g_gc_capacity == 0 ? 256 : g_gc_capacity * 2;
+        Obj** grown = realloc(g_gc_registry, sizeof(Obj*) * (size_t)new_capacity);
+        if (grown == NULL) return 0;
+        g_gc_registry = grown;
+        g_gc_capacity = new_capacity;
+    }
+    obj->gc_index = g_gc_count;
+    obj->gc_mark = 0;
+    g_gc_registry[g_gc_count++] = obj;
+    g_gc_allocations++;
+    return 1;
+}
+
+static void gc_registry_remove(Obj* obj) {
+    int idx = obj->gc_index;
+    if (idx < 0 || idx >= g_gc_count || g_gc_registry[idx] != obj) return;
+    g_gc_count--;
+    if (idx != g_gc_count) {
+        Obj* last = g_gc_registry[g_gc_count];
+        g_gc_registry[idx] = last;
+        last->gc_index = idx;
+    }
+    obj->gc_index = -1;
+}
+
+static void gc_mark_obj(Obj* obj) {
+    if (obj == NULL || obj->gc_mark) return;
+    obj->gc_mark = 1;
+    /* Capacity is guaranteed by gc_begin_collection (<= live containers). */
+    g_gc_mark_stack[g_gc_mark_count++] = obj;
+}
+
+static void gc_mark_drain(void) {
+    while (g_gc_mark_count > 0) {
+        Obj* obj = g_gc_mark_stack[--g_gc_mark_count];
+        switch (obj->type) {
+            case OBJ_ARRAY: {
+                ArrayObj* array = (ArrayObj*)obj;
+                for (int i = 0; i < array->count; i++) {
+                    Value v = array->items[i];
+                    if (v.type == VAL_ARRAY) gc_mark_obj(&v.as.as_array->obj);
+                    else if (v.type == VAL_MAP) gc_mark_obj(&v.as.as_map->obj);
+                    else if (v.type == VAL_ROW && v.as.as_row_handle != NULL)
+                        gc_mark_obj(&((RowObj*)v.as.as_row_handle)->obj);
+                }
+                break;
+            }
+            case OBJ_MAP: {
+                MapObj* map = (MapObj*)obj;
+                for (int i = 0; i < map->count; i++) {
+                    Value k = map->keys[i];
+                    Value v = map->values[i];
+                    if (k.type == VAL_ARRAY) gc_mark_obj(&k.as.as_array->obj);
+                    else if (k.type == VAL_MAP) gc_mark_obj(&k.as.as_map->obj);
+                    else if (k.type == VAL_ROW && k.as.as_row_handle != NULL)
+                        gc_mark_obj(&((RowObj*)k.as.as_row_handle)->obj);
+                    if (v.type == VAL_ARRAY) gc_mark_obj(&v.as.as_array->obj);
+                    else if (v.type == VAL_MAP) gc_mark_obj(&v.as.as_map->obj);
+                    else if (v.type == VAL_ROW && v.as.as_row_handle != NULL)
+                        gc_mark_obj(&((RowObj*)v.as.as_row_handle)->obj);
+                }
+                break;
+            }
+            case OBJ_ROW: {
+                RowObj* row = (RowObj*)obj;
+                for (int i = 0; i < row->column_count; i++) {
+                    Value v = row->column_values[i];
+                    if (v.type == VAL_ARRAY) gc_mark_obj(&v.as.as_array->obj);
+                    else if (v.type == VAL_MAP) gc_mark_obj(&v.as.as_map->obj);
+                    else if (v.type == VAL_ROW && v.as.as_row_handle != NULL)
+                        gc_mark_obj(&((RowObj*)v.as.as_row_handle)->obj);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+void gc_trace_value(Value v) {
+    if (v.type == VAL_ARRAY && v.as.as_array != NULL) gc_mark_obj(&v.as.as_array->obj);
+    else if (v.type == VAL_MAP && v.as.as_map != NULL) gc_mark_obj(&v.as.as_map->obj);
+    else if (v.type == VAL_ROW && v.as.as_row_handle != NULL)
+        gc_mark_obj(&((RowObj*)v.as.as_row_handle)->obj);
+    gc_mark_drain();
+}
+
+int gc_begin_collection(void) {
+    if (g_gc_mark_capacity < g_gc_count) {
+        int new_capacity = g_gc_mark_capacity == 0 ? 256 : g_gc_mark_capacity;
+        while (new_capacity < g_gc_count) new_capacity *= 2;
+        Obj** grown = realloc(g_gc_mark_stack, sizeof(Obj*) * (size_t)new_capacity);
+        if (grown == NULL) return 0;
+        g_gc_mark_stack = grown;
+        g_gc_mark_capacity = new_capacity;
+    }
+    if (g_gc_work_capacity < g_gc_count) {
+        int new_capacity = g_gc_work_capacity == 0 ? 256 : g_gc_work_capacity;
+        while (new_capacity < g_gc_count) new_capacity *= 2;
+        Obj** grown = realloc(g_gc_worklist, sizeof(Obj*) * (size_t)new_capacity);
+        if (grown == NULL) return 0;
+        g_gc_worklist = grown;
+        g_gc_work_capacity = new_capacity;
+    }
+    g_gc_mark_count = 0;
+    g_gc_work_count = 0;
+    return 1;
+}
+
+/* Break one child edge of an unreachable container being swept: internal
+ * container edges (child unmarked) are removed by decrementing the child
+ * refcount and clearing the slot; edges to marked containers stay in place
+ * so the owner's destructor releases them exactly once; string/scalar edges
+ * are released right away (scalars are no-ops). */
+static void gc_break_edge(Value* slot) {
+    Value v = *slot;
+    if (v.type == VAL_ARRAY || v.type == VAL_MAP ||
+        (v.type == VAL_ROW && v.as.as_row_handle != NULL)) {
+        Obj* child = v.type == VAL_ARRAY ? &v.as.as_array->obj
+                     : v.type == VAL_MAP ? &v.as.as_map->obj
+                     : &((RowObj*)v.as.as_row_handle)->obj;
+        if (!child->gc_mark) {
+            if (child->ref_count > 0) {
+                child->ref_count--;
+                if (child->ref_count == 0) gc_worklist_push(child);
+            }
+            *slot = value_null();
+        }
+        /* Marked children are unreachable from this owner but kept alive by
+         * real roots: leave slot and count untouched; the destructor drops
+         * the edge when it frees the owner. */
+        return;
+    }
+    value_release(v);
+    *slot = value_null();
+}
+
+int gc_sweep_unreachable(void) {
+    int freed = 0;
+    /* Pass 1: break internal edges of every unmarked container and release
+     * their string children. Reachable (marked) containers only get their
+     * mark bit cleared. The registry does not change in this pass. */
+    for (int i = 0; i < g_gc_count; i++) {
+        Obj* obj = g_gc_registry[i];
+        if (obj->gc_mark) {
+            obj->gc_mark = 0;
+            continue;
+        }
+        switch (obj->type) {
+            case OBJ_ARRAY: {
+                ArrayObj* array = (ArrayObj*)obj;
+                for (int j = 0; j < array->count; j++) gc_break_edge(&array->items[j]);
+                break;
+            }
+            case OBJ_MAP: {
+                MapObj* map = (MapObj*)obj;
+                for (int j = 0; j < map->count; j++) {
+                    gc_break_edge(&map->keys[j]);
+                    gc_break_edge(&map->values[j]);
+                }
+                break;
+            }
+            case OBJ_ROW: {
+                RowObj* row = (RowObj*)obj;
+                for (int j = 0; j < row->column_count; j++)
+                    gc_break_edge(&row->column_values[j]);
+                break;
+            }
+            default:
+                break;
+        }
+        /* No end-of-object push here: an unreachable container reaches
+         * refcount zero exactly when its last internal owner edge is broken
+         * in gc_break_edge (registry objects always start with refcount >= 1
+         * and only this pass decrements them), and that is the single place
+         * that queues for freeing. */
+    }
+    /* Pass 2: free zero-refcount containers. Their internal slots are
+     * already cleared, so the destructors only drop the (marked) children
+     * they still reference. Freeing is worklist-driven, never recursive. */
+    while (g_gc_work_count > 0) {
+        Obj* obj = g_gc_worklist[--g_gc_work_count];
+        if (obj->gc_index < 0) continue;
+        gc_registry_remove(obj);
+        switch (obj->type) {
+            case OBJ_ARRAY:  array_free((ArrayObj*)obj);   break;
+            case OBJ_MAP:    map_free((MapObj*)obj);       break;
+            case OBJ_ROW:    row_obj_free((RowObj*)obj);   break;
+            default: break;
+        }
+        freed++;
+    }
+    return freed;
+}
+
+long gc_container_allocations(void) { return g_gc_allocations; }
+void gc_reset_container_allocations(void) { g_gc_allocations = 0; }
+int  gc_container_count(void) { return g_gc_count; }
 
 static StringObj* string_obj_from_chars(const char* chars) {
     if (chars == NULL) return NULL;
@@ -90,6 +329,8 @@ Value value_string(char* s) {
     }
     obj->obj.type = OBJ_STRING;
     obj->obj.ref_count = 1;
+    obj->obj.gc_index = -1;
+    obj->obj.gc_mark = 0;
     memcpy(obj->chars, s, len + 1);
     free(s);
     value.as.as_string = obj->chars;
@@ -119,6 +360,8 @@ Value value_date(char* s) {
     }
     obj->obj.type = OBJ_STRING;
     obj->obj.ref_count = 1;
+    obj->obj.gc_index = -1;
+    obj->obj.gc_mark = 0;
     memcpy(obj->chars, s, len + 1);
     free(s);
     value.as.as_string = obj->chars;
@@ -141,6 +384,8 @@ Value value_timestamp(char* s) {
     }
     obj->obj.type = OBJ_STRING;
     obj->obj.ref_count = 1;
+    obj->obj.gc_index = -1;
+    obj->obj.gc_mark = 0;
     memcpy(obj->chars, s, len + 1);
     free(s);
     value.as.as_string = obj->chars;
@@ -472,24 +717,21 @@ ArrayObj* array_new(void) {
     if (array == NULL) return NULL;
     array->obj.type = OBJ_ARRAY;
     array->obj.ref_count = 1;
+    array->obj.gc_index = -1;
+    array->obj.gc_mark = 0;
     array->items = NULL;
     array->count = 0;
     array->capacity = 0;
-    array->next = array_pool;
-    array_pool = array;
+    if (!gc_registry_add(&array->obj)) {
+        free(array);
+        return NULL;
+    }
     return array;
 }
 
 void array_free(ArrayObj* array) {
     if (array == NULL) return;
-    ArrayObj** current = &array_pool;
-    while (*current != NULL) {
-        if (*current == array) {
-            *current = array->next;
-            break;
-        }
-        current = &(*current)->next;
-    }
+    gc_registry_remove(&array->obj);
     for (int i = 0; i < array->count; i++) {
         value_release(array->items[i]);
     }
@@ -497,19 +739,13 @@ void array_free(ArrayObj* array) {
     free(array);
 }
 
-void array_pool_free_all(void) {
-    while (array_pool != NULL) {
-        ArrayObj* next = array_pool->next;
-        array_free(array_pool);
-        array_pool = next;
-    }
-}
-
 RowObj* row_obj_new(int column_count) {
     RowObj* row = malloc(sizeof(RowObj));
     if (row == NULL) return NULL;
     row->obj.type = OBJ_ROW;
     row->obj.ref_count = 1;
+    row->obj.gc_index = -1;
+    row->obj.gc_mark = 0;
     row->column_count = column_count;
     row->column_names = calloc((size_t)column_count, sizeof(char*));
     if (row->column_names == NULL && column_count > 0) {
@@ -522,11 +758,18 @@ RowObj* row_obj_new(int column_count) {
         free(row);
         return NULL;
     }
+    if (!gc_registry_add(&row->obj)) {
+        free(row->column_names);
+        free(row->column_values);
+        free(row);
+        return NULL;
+    }
     return row;
 }
 
 void row_obj_free(RowObj* row) {
     if (row == NULL) return;
+    gc_registry_remove(&row->obj);
     for (int i = 0; i < row->column_count; i++) {
         free(row->column_names[i]);
         value_release(row->column_values[i]);
@@ -662,15 +905,22 @@ MapObj* map_new(void) {
     if (map == NULL) return NULL;
     map->obj.type = OBJ_MAP;
     map->obj.ref_count = 1;
+    map->obj.gc_index = -1;
+    map->obj.gc_mark = 0;
     map->keys = NULL;
     map->values = NULL;
     map->count = 0;
     map->capacity = 0;
+    if (!gc_registry_add(&map->obj)) {
+        free(map);
+        return NULL;
+    }
     return map;
 }
 
 void map_free(MapObj* map) {
     if (map == NULL) return;
+    gc_registry_remove(&map->obj);
     for (int i = 0; i < map->count; i++) {
         value_release(map->keys[i]);
         value_release(map->values[i]);
