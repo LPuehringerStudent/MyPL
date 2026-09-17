@@ -952,6 +952,282 @@ TEST(phase12_dbms_sql_sqlite_bind_string_with_quote) {
 }
 #endif
 
+/* ===== Issue #28: user packages can override built-in packages =====
+ *
+ * Built-in packages (dbms_output, utl_file, dbms_sql) are prepended to the
+ * user source on every compilation (src/main.c). Today a user source that
+ * declares e.g. `package dbms_output is ... end dbms_output;` fails with
+ * "Duplicate package member 'dbms_output.put_line'". Desired behavior: the
+ * user declaration replaces the built-in for that compilation and qualified
+ * calls resolve to the user's version; packages the user does NOT declare
+ * keep their built-in behavior. */
+
+static void clean_override_db(void) {
+    remove("mypl.db");
+    remove("mypl.db.packages");
+    remove("mypl.db.programs");
+}
+
+TEST(phase12_issue28_user_package_overrides_builtin_dbms_output) {
+    clean_override_db();
+    char out[512];
+    /* The user-declared dbms_output replaces the built-in: put_line must
+       resolve to the user body, which prints a distinguishable marker. */
+    int rc = run_mypl(
+        "package dbms_output is\n"
+        "    proc put_line(s string) -> int;\n"
+        "end dbms_output;\n"
+        "\n"
+        "package body dbms_output is\n"
+        "    proc put_line(s string) -> int {\n"
+        "        print concat(\"[custom] \", s);\n"
+        "        return 0;\n"
+        "    }\n"
+        "end dbms_output;\n"
+        "\n"
+        "proc main() -> int {\n"
+        "    dbms_output.put_line(\"hi\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "[custom] hi"));
+    clean_override_db();
+}
+
+TEST(phase12_issue28_non_overridden_builtin_still_works) {
+    clean_override_db();
+    char out[512];
+    /* Only utl_file is overridden here; the built-in dbms_output must keep
+       its standard buffered behavior (enable/put_line/get_lines). */
+    int rc = run_mypl(
+        "package utl_file is\n"
+        "    proc put_line(handle int, text string) -> int;\n"
+        "end utl_file;\n"
+        "\n"
+        "package body utl_file is\n"
+        "    proc put_line(handle int, text string) -> int {\n"
+        "        print concat(\"[custom-utl] \", text);\n"
+        "        return 0;\n"
+        "    }\n"
+        "end utl_file;\n"
+        "\n"
+        "proc main() -> int {\n"
+        "    utl_file.put_line(0, \"fileline\");\n"
+        "    dbms_output.enable(1000);\n"
+        "    dbms_output.put_line(\"plain\");\n"
+        "    array<string> lines = dbms_output.get_lines();\n"
+        "    print length(lines);\n"
+        "    print lines[0];\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "[custom-utl] fileline"));
+    ASSERT_INT_EQ(1, output_contains(out, "plain"));
+    ASSERT_INT_EQ(1, output_contains(out, "1"));
+    clean_override_db();
+}
+
+/* ===== Issue #29: utl_file expansion =====
+ *
+ * The built-in utl_file package (src/packages.c) today exposes only
+ * fopen/get_line/put_line/fclose over a 16-entry handle table
+ * (UTL_FILE_MAX_HANDLES in src/vm.c). This pins the expanded API, all
+ * implemented via VM natives and declared in the utl_file package:
+ *   - fopen(path, "a") appends without truncating (libc mode passthrough,
+ *     pinned here so it keeps working),
+ *   - func fseek(handle int, offset int) -> int repositions the read cursor
+ *     (0 on success),
+ *   - proc fflush(handle int) pushes buffered writes to disk,
+ *   - the handle table must hold well more than 16 open files,
+ *   - func mkdir(path string) -> int and func remove(path string) -> int
+ *     (0 on success, nonzero on failure). */
+
+TEST(phase12_issue29_utl_file_append_and_fseek) {
+    remove("/tmp/test_phase12_utl_append.txt");
+    char out[512];
+    /* Write 3 lines, append a 4th via "a" (nothing may be truncated), then
+       fseek back to 0 and re-read the first line. */
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int w = utl_file.fopen(\"/tmp/test_phase12_utl_append.txt\", \"w\");\n"
+        "    utl_file.put_line(w, \"one\");\n"
+        "    utl_file.put_line(w, \"two\");\n"
+        "    utl_file.put_line(w, \"three\");\n"
+        "    utl_file.fclose(w);\n"
+        "\n"
+        "    int a = utl_file.fopen(\"/tmp/test_phase12_utl_append.txt\", \"a\");\n"
+        "    utl_file.put_line(a, \"four\");\n"
+        "    utl_file.fclose(a);\n"
+        "\n"
+        "    int r = utl_file.fopen(\"/tmp/test_phase12_utl_append.txt\", \"r\");\n"
+        "    string first = utl_file.get_line(r);\n"
+        "    string second = utl_file.get_line(r);\n"
+        "    int pos = utl_file.fseek(r, 0);\n"
+        "    string again = utl_file.get_line(r);\n"
+        "    utl_file.fclose(r);\n"
+        "\n"
+        "    print concat(\"1:\", first);\n"
+        "    print concat(\"2:\", second);\n"
+        "    print concat(\"seek:\", int_to_string(pos));\n"
+        "    print concat(\"re:\", again);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* append mode must not truncate: the original first lines survive */
+    ASSERT_INT_EQ(1, output_contains(out, "1:one"));
+    ASSERT_INT_EQ(1, output_contains(out, "2:two"));
+    /* fseek succeeded (0) and the first line is re-read after seeking */
+    ASSERT_INT_EQ(1, output_contains(out, "seek:0"));
+    ASSERT_INT_EQ(1, output_contains(out, "re:one"));
+    remove("/tmp/test_phase12_utl_append.txt");
+}
+
+TEST(phase12_issue29_utl_file_fflush_makes_line_visible) {
+    remove("/tmp/test_phase12_utl_flush.txt");
+    char out[512];
+    /* After put_line + fflush (handle still open, no close), the line must
+       be readable from disk through the read_file native. */
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int w = utl_file.fopen(\"/tmp/test_phase12_utl_flush.txt\", \"w\");\n"
+        "    utl_file.put_line(w, \"flushed-line\");\n"
+        "    utl_file.fflush(w);\n"
+        "    string s = read_file(\"/tmp/test_phase12_utl_flush.txt\");\n"
+        "    print s;\n"
+        "    utl_file.fclose(w);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "flushed-line"));
+    remove("/tmp/test_phase12_utl_flush.txt");
+}
+
+TEST(phase12_issue29_utl_file_many_open_handles) {
+    char out[512];
+    /* The handle table holds 16 entries today; opening 24 files at once
+       must succeed once the table is grown. */
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    array<int> hs;\n"
+        "    int i = 0;\n"
+        "    while i < 24 {\n"
+        "        int h = utl_file.fopen(\"/tmp/test_phase12_utl_many.txt\", \"a\");\n"
+        "        if h < 0 {\n"
+        "            print concat(\"bad-handle-at:\", int_to_string(i));\n"
+        "            return 1;\n"
+        "        }\n"
+        "        append(hs, h);\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    print concat(\"opened:\", int_to_string(length(hs)));\n"
+        "    i = 0;\n"
+        "    while i < length(hs) {\n"
+        "        utl_file.fclose(hs[i]);\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "opened:24"));
+    ASSERT_INT_EQ(0, output_contains(out, "bad-handle-at:"));
+    remove("/tmp/test_phase12_utl_many.txt");
+}
+
+TEST(phase12_issue29_utl_file_mkdir_and_remove) {
+    char out[512];
+    /* mkdir creates a directory (0 on success), remove deletes a file and
+       then the now-empty directory; removing a nonexistent path fails with
+       a nonzero result. */
+    remove("/tmp/test_phase12_utl_dir/f.txt");
+    remove("/tmp/test_phase12_utl_dir");
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int rc = utl_file.mkdir(\"/tmp/test_phase12_utl_dir\");\n"
+        "    print concat(\"mkdir:\", int_to_string(rc));\n"
+        "    int h = utl_file.fopen(\"/tmp/test_phase12_utl_dir/f.txt\", \"w\");\n"
+        "    utl_file.put_line(h, \"in-dir\");\n"
+        "    utl_file.fclose(h);\n"
+        "    int r1 = utl_file.remove(\"/tmp/test_phase12_utl_dir/f.txt\");\n"
+        "    print concat(\"rmfile:\", int_to_string(r1));\n"
+        "    int r2 = utl_file.remove(\"/tmp/test_phase12_utl_dir\");\n"
+        "    print concat(\"rmdir:\", int_to_string(r2));\n"
+        "    int r3 = utl_file.remove(\"/tmp/test_phase12_utl_dir\");\n"
+        "    if r3 == 0 {\n"
+        "        print \"rm-missing-returned-zero\";\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "mkdir:0"));
+    ASSERT_INT_EQ(1, output_contains(out, "rmfile:0"));
+    ASSERT_INT_EQ(1, output_contains(out, "rmdir:0"));
+    ASSERT_INT_EQ(0, output_contains(out, "rm-missing-returned-zero"));
+    /* both must actually be gone from the host filesystem */
+    ASSERT_INT_EQ(0, access("/tmp/test_phase12_utl_dir/f.txt", F_OK) == 0);
+    ASSERT_INT_EQ(0, access("/tmp/test_phase12_utl_dir", F_OK) == 0);
+}
+
+/* ===== Issue #30: external_call float/string marshalling =====
+ *
+ * external_call (src/natives.c) is hardcoded to an int(int) signature via
+ * dlopen/dlsym. These tests pin the two new marshalling natives beside it:
+ *   - func external_call_f(lib string, sym string, arg float) -> float
+ *     calls a C double f(double),
+ *   - func external_call_s(lib string, sym string, arg string) -> string
+ *     calls a C char* s(const char*) that returns a transformed copy,
+ * and regress that the existing int external_call keeps working. The shared
+ * library is built like tests/test_phase10.c does. */
+
+static int build_phase12_shared_lib(void) {
+    FILE* f = fopen("/tmp/test_phase12_ext.c", "w");
+    if (f == NULL) return 0;
+    fprintf(f, "#include <ctype.h>\n");
+    fprintf(f, "#include <stdlib.h>\n");
+    fprintf(f, "#include <string.h>\n");
+    fprintf(f, "int mypl_double(int x) { return x * 2; }\n");
+    fprintf(f, "double mypl_triple(double x) { return x * 3.0; }\n");
+    fprintf(f, "char* mypl_shout(const char* s) {\n");
+    fprintf(f, "    size_t n = strlen(s);\n");
+    fprintf(f, "    char* out = malloc(n + 1);\n");
+    fprintf(f, "    if (out == NULL) return NULL;\n");
+    fprintf(f, "    for (size_t i = 0; i < n; i++)\n");
+    fprintf(f, "        out[i] = (char)toupper((unsigned char)s[i]);\n");
+    fprintf(f, "    out[n] = '\\0';\n");
+    fprintf(f, "    return out;\n");
+    fprintf(f, "}\n");
+    fclose(f);
+    int rc = system("cc -shared -fPIC -o /tmp/test_phase12_ext.so /tmp/test_phase12_ext.c");
+    return rc == 0;
+}
+
+TEST(phase12_issue30_external_call_float_and_string) {
+    ASSERT_INT_EQ(1, build_phase12_shared_lib());
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    float rf = external_call_f(\"/tmp/test_phase12_ext.so\", \"mypl_triple\", 1.5);\n"
+        "    print concat(\"float:\", float_to_string(rf));\n"
+        "    string rs = external_call_s(\"/tmp/test_phase12_ext.so\", \"mypl_shout\", \"hello\");\n"
+        "    print concat(\"string:\", rs);\n"
+        "    int ri = external_call(\"/tmp/test_phase12_ext.so\", \"mypl_double\", 21);\n"
+        "    print concat(\"int:\", int_to_string(ri));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "float:4.5"));
+    ASSERT_INT_EQ(1, output_contains(out, "string:HELLO"));
+    ASSERT_INT_EQ(1, output_contains(out, "int:42"));
+    remove("/tmp/test_phase12_ext.c");
+    remove("/tmp/test_phase12_ext.so");
+}
+
 int main(void) {
     printf("test_phase12:\n");
     RUN_TEST(phase12_nextval_persists_across_restarts);
@@ -990,5 +1266,12 @@ int main(void) {
     RUN_TEST(phase12_sqlite_row_trigger_update_and_delete);
     RUN_TEST(phase12_sqlite_row_trigger_persists_across_restarts);
 #endif
+    RUN_TEST(phase12_issue28_user_package_overrides_builtin_dbms_output);
+    RUN_TEST(phase12_issue28_non_overridden_builtin_still_works);
+    RUN_TEST(phase12_issue29_utl_file_append_and_fseek);
+    RUN_TEST(phase12_issue29_utl_file_fflush_makes_line_visible);
+    RUN_TEST(phase12_issue29_utl_file_many_open_handles);
+    RUN_TEST(phase12_issue29_utl_file_mkdir_and_remove);
+    RUN_TEST(phase12_issue30_external_call_float_and_string);
     TEST_SUMMARY();
 }
