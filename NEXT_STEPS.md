@@ -7,7 +7,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
 - The custom engine ignores `?var` bind params for static SQL (`tests/test_phase6.c` has 4 pre-existing failures in `USE_SQLITE=0` builds); the `dbms_sql` cursor API substitutes `?N` at execute time instead.
 - `utl_file` is still a thin wrapper (16 handles, 1 KB lines, no directory objects); `external_call` takes a single int/float/string argument; built-in packages cannot be overridden; REPL recompiles everything per input; reference counting has no cycle collection.
-- No fuzzing, examples not covered by CI, no install target, README lags the feature set, POSIX-only.
+- The parser leaks partially built AST nodes on many syntax-error paths (found by fuzzing; the `Fuzz` workflow runs with `FUZZ_LEAKS=0` until fixed); examples not covered by CI, no install target, README lags the feature set, POSIX-only.
 
 ## Phased Roadmap
 
@@ -31,7 +31,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - [x] CLI flag definitions for conditional compilation (e.g. `mypl -DDEBUG file.mypl`)
 
 ### Phase 13 — Hardening & Tooling
-- [ ] Fuzzing harness for the lexer, parser, and conditional-compilation preprocessor (libFuzzer/AFL++)
+- [x] Fuzzing harness for the lexer, parser, and conditional-compilation preprocessor (libFuzzer: `make fuzz` / `make fuzz-run`, seeds and regressions replayed by `make test`, `Fuzz` CI workflow)
 - [ ] Run all `examples/*.mypl` as smoke tests in CI
 - [ ] Makefile `install` target and a man page
 - [ ] Rewrite README to document the full Phase 1–10 feature set

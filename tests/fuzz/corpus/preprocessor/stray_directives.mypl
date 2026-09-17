@@ -1,0 +1,4 @@
+0$else
+$end
+$elsif X $then
+$bogus
