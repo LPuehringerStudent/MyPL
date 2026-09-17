@@ -2,7 +2,7 @@
 
 This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete (see git history and the closed issues #1–#22 for details). The phases below address the known gaps that remain after Phase 11.
 
-## Known Gaps (as of Phase 12 in progress)
+## Known Gaps (as of Phase 13 completion)
 
 - The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
 - The custom engine ignores `?var` bind params for static SQL (`tests/test_phase6.c` has 4 pre-existing failures in `USE_SQLITE=0` builds); the `dbms_sql` cursor API substitutes `?N` at execute time instead.
@@ -33,11 +33,11 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 ### Phase 13 — Hardening & Tooling
 - [x] Fuzzing harness for the lexer, parser, and conditional-compilation preprocessor (libFuzzer: `make fuzz` / `make fuzz-run`, seeds and regressions replayed by `make test`, `Fuzz` CI workflow)
 - [x] Run all `examples/*.mypl` as smoke tests in CI (`make examples-test`, part of `make test`; per-example `// smoke:` directives in `tests/run_examples.sh`)
-- [ ] Makefile `install` target and a man page
-- [ ] Rewrite README to document the full Phase 1–10 feature set
-- [ ] Replace fixed ceilings (`STACK_MAX`, `MAX_LOCALS`, handle tables) with dynamic growth
-- [ ] Incremental REPL compilation instead of full recompile per input
-- [ ] Cycle detection or cycle-safe collection for reference-counted arrays/maps
+- [x] Makefile `install` target and a man page (PREFIX/DESTDIR, `mypl.1`)
+- [x] Rewrite README to document the full feature set through Phase 12
+- [x] Replace fixed ceilings (`STACK_MAX`, `MAX_LOCALS`, handle tables) with dynamic growth (value stack, frame arrays, locals tables grow to a 2^20 cap)
+- [x] Incremental REPL compilation instead of full recompile per input (persistent chunk/compiler; fragments compiled once)
+- [x] Cycle detection or cycle-safe collection for reference-counted arrays/maps (tracing collector over containers, adaptive threshold)
 
 ## How to Use This Document
 
