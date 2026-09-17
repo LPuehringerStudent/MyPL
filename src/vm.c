@@ -92,6 +92,9 @@ struct VM {
     char          sql_errm[256];
     Value         globals[256];
     int           global_count;
+    /* 1 in short-lived child VMs (trigger firing, autonomous transactions):
+       children never run the cycle collector; only the top-level VM does. */
+    int           is_child;
     int           dbms_output_enabled;
     int           dbms_output_limit;
     ArrayObj*     dbms_output_buffer;
@@ -154,6 +157,7 @@ VM* vm_init(void) {
     vm->dbms_output_enabled = 0;
     vm->dbms_output_limit = 0;
     vm->dbms_output_buffer = NULL;
+    vm->is_child = 0;
     for (int i = 0; i < UTL_FILE_MAX_HANDLES; i++) {
         vm->utl_file_handles[i] = NULL;
     }
@@ -1048,6 +1052,9 @@ void vm_free(VM* vm) {
     for (int i = 0; i < vm->repl_local_count; i++) {
         value_release(vm->repl_locals[i]);
     }
+    for (int i = 0; i < vm->global_count; i++) {
+        value_release(vm->globals[i]);
+    }
     if (vm->driver != NULL && vm->result_handle != NULL) {
         vm->driver->result_free(vm->driver, vm->result_handle);
     } else if (vm->driver == NULL) {
@@ -1067,7 +1074,10 @@ void vm_free(VM* vm) {
             dbms_sql_cursor_close_internal(vm, &vm->dbms_sql_cursors[i]);
         }
     }
-    array_pool_free_all();
+    /* All roots are released: sweep every remaining registered container.
+     * This frees cyclic garbage exactly (the sweep breaks internal edges
+     * before freeing) so leak-checking teardown runs stay clean. */
+    gc_sweep_unreachable();
     free(vm->stack);
     free(vm->frames);
     free(vm->return_ips);
@@ -1233,6 +1243,51 @@ static void vm_free_child(VM* vm);
 static InterpretResult vm_run(VM* vm, uint8_t* end);
 
 /* --------------------------------------------------------------------------
+ * Cycle collector driver (Phase 13 #38)
+ *
+ * The interpreter loop checks an allocation counter at every instruction
+ * boundary (only in the top-level VM; child VMs never collect) and runs a
+ * mark/sweep when it crosses an adaptive threshold. The threshold floor is
+ * GC_MIN_INTERVAL container allocations; after each collection it doubles
+ * the live-container count so huge live sets are not re-traced constantly.
+ * Collection runs only between instructions, where the VM holds no raw
+ * pointers into container interiors.
+ * ------------------------------------------------------------------------ */
+
+#define GC_MIN_INTERVAL 1024
+
+static long g_gc_next_collection = GC_MIN_INTERVAL;
+
+static void vm_gc_collect(VM* vm) {
+    if (!gc_begin_collection()) {
+        /* Cannot pre-grow the trace stack: skip this cycle entirely. */
+        gc_reset_container_allocations();
+        return;
+    }
+    for (Value* p = vm->stack; p < vm->stack_top; p++) gc_trace_value(*p);
+    for (int i = 0; i < vm->repl_local_count; i++) gc_trace_value(vm->repl_locals[i]);
+    for (int i = 0; i < vm->global_count; i++) gc_trace_value(vm->globals[i]);
+    if (vm->chunk != NULL) {
+        for (int i = 0; i < vm->chunk->constants_count; i++)
+            gc_trace_value(vm->chunk->constants[i]);
+    }
+    for (int i = 0; i < vm->sql_param_count; i++) gc_trace_value(vm->sql_params[i]);
+    if (vm->dbms_output_buffer != NULL) gc_trace_value(value_array(vm->dbms_output_buffer));
+    for (int i = 0; i < DBMS_SQL_MAX_CURSORS; i++) {
+        DBMS_SQL_Cursor* cursor = &vm->dbms_sql_cursors[i];
+        if (cursor->active) {
+            for (int j = 0; j < cursor->bind_count; j++) gc_trace_value(cursor->binds[j]);
+        }
+    }
+    gc_sweep_unreachable();
+    gc_reset_container_allocations();
+    long live = gc_container_count();
+    long next = live * 2;
+    if (next < GC_MIN_INTERVAL) next = GC_MIN_INTERVAL;
+    g_gc_next_collection = next;
+}
+
+/* --------------------------------------------------------------------------
  * Runtime trigger firing (dynamic SQL)
  *
  * Static SQL statements fire triggers via calls emitted at compile time
@@ -1249,6 +1304,7 @@ static int vm_fire_trigger(VM* vm, int offset) {
         set_runtime_error(vm, "Out of memory");
         return 0;
     }
+    child->is_child = 1;
     child->chunk = vm->chunk;
     child->ip = child->chunk->code + offset;
     child->frame_base = child->stack;
@@ -1349,6 +1405,7 @@ static int vm_fire_row_trigger(VM* vm, int offset, Value new_row, Value old_row)
         set_runtime_error(vm, "Out of memory");
         return 0;
     }
+    child->is_child = 1;
     child->chunk = vm->chunk;
     child->driver = vm->driver;
     child->context = vm->context;
@@ -1712,6 +1769,9 @@ int vm_dynamic_exec(VM* vm, const char* sql) {
 static InterpretResult vm_run(VM* vm, uint8_t* end) {
     for (;;) {
 dispatch:
+        if (!vm->is_child && gc_container_allocations() >= g_gc_next_collection) {
+            vm_gc_collect(vm);
+        }
         if (vm->ip >= end) {
             set_runtime_error(vm, "Runtime error");
             THROW(vm);
@@ -3201,6 +3261,7 @@ static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
         set_runtime_error(parent, "Out of memory");
         return 0;
     }
+    child->is_child = 1;
     DBDriver auto_driver;
     parent->driver->init(&auto_driver);
     if (!auto_driver.open(&auto_driver, parent->driver->connection_string)) {
