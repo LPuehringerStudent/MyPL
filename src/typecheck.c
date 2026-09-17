@@ -147,19 +147,6 @@ static ProcSignature* resolve_proc_in_package(TypeChecker* tc, const char* packa
     return sig;
 }
 
-static int package_has_public_member(Program* program, const char* package_name, const char* member_name) {
-    for (int i = 0; i < program->spec_count; i++) {
-        PackageSpecDecl* spec = &program->specs[i];
-        if (strcmp(spec->name, package_name) != 0) continue;
-        for (int p = 0; p < spec->proc_count; p++) {
-            if (strcmp(spec->procs[p].name, member_name) == 0) return 1;
-        }
-        for (int p = 0; p < spec->func_count; p++) {
-            if (strcmp(spec->funcs[p].name, member_name) == 0) return 1;
-        }
-    }
-    return 0;
-}
 
 static int bind_row(TypeChecker* tc, const char* var_name, const char* query) {
     if (tc->row_count >= MAX_ROWS) return 0;
@@ -1865,7 +1852,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                 if (!is_method_call &&
                     (tc->current_package == NULL ||
                     strcmp(tc->current_package, package_name) != 0)) {
-                    if (!package_has_public_member(tc->program, package_name, call_name)) {
+                    if (!sig->is_public) {
                         type_error(tc, expr->loc,
                                    "Package member '%s.%s' is private",
                                    package_name, call_name);
@@ -2687,6 +2674,7 @@ int typecheck_program(Program* program,
             combined_procs[i].param_types = param_types;
             combined_procs[i].param_modes = param_modes;
             combined_procs[i].param_count = proc->param_count;
+            combined_procs[i].is_public = 0;
         }
         for (int i = 0; i < proc_count; i++) {
             combined_procs[program->proc_count + i] = procs[i];

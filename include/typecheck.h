@@ -12,6 +12,9 @@ struct ProcSignature {
     Type** param_types;
     ParamMode* param_modes;
     int param_count;
+    /* Set for a package member declared in its package's spec (interface);
+       clear for a body-only helper. Meaningless outside package members. */
+    int is_public;
 };
 
 int typecheck_program(Program* program,
