@@ -1,0 +1,32 @@
+// Phase 12: user packages override built-in packages.
+//
+// Declaring a package with the name of a built-in (dbms_output, utl_file,
+// dbms_sql) replaces the built-in; the others keep their standard behavior.
+// Run with: ./bin/mypl examples/phase12_package_override.mypl
+//
+// Packages are stored with the database (mypl.db.packages, or the SQLite
+// database with --db), so the override also applies to later programs run
+// against the same database. Delete mypl.db.packages to get the built-in back.
+
+package dbms_sql is
+    proc execute(sql string) -> int;
+end dbms_sql;
+
+package body dbms_sql is
+    // Log statements instead of running them, e.g. for a dry run.
+    proc execute(sql string) -> int {
+        print concat("[dry run] ", sql);
+        return 0;
+    }
+end dbms_sql;
+
+proc main() -> int {
+    dbms_sql.execute("delete from orders");
+
+    // dbms_output was not overridden and still buffers lines.
+    dbms_output.enable(1000);
+    dbms_output.put_line("dbms_output is still the built-in");
+    array<string> lines = dbms_output.get_lines();
+    print lines[0];
+    return 0;
+}
