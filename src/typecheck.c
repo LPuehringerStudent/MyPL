@@ -552,6 +552,7 @@ static int is_native(const char* name) {
            strcmp(name, "utl_file_get_line") == 0 ||
            strcmp(name, "utl_file_put_line") == 0 ||
            strcmp(name, "utl_file_fseek") == 0 ||
+           strcmp(name, "utl_file_fflush") == 0 ||
            strcmp(name, "utl_file_fclose") == 0 ||
            strcmp(name, "dbms_sql_execute") == 0 ||
            strcmp(name, "dbms_sql_query") == 0 ||
@@ -1507,6 +1508,17 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         if (offset != &type_unknown && offset != NULL && offset->kind != TYPE_INT) {
             type_error(tc, loc, "utl_file_fseek expects an int offset");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_fflush") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "utl_file_fflush expects 1 argument");
+            return NULL;
+        }
+        Type* handle = infer_expr(tc, args[0], NULL);
+        if (handle != &type_unknown && handle != NULL && handle->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fflush expects an int handle");
         }
         return &type_int;
     }
