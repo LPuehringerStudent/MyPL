@@ -48,6 +48,8 @@ static char* strip_main_procedure(const char* source);
     "    func fseek(handle int, offset int) -> int;\n" \
     "    proc fflush(handle int) -> int;\n" \
     "    proc fclose(handle int) -> int;\n" \
+    "    func mkdir(path string) -> int;\n" \
+    "    func remove(path string) -> int;\n" \
     "end utl_file;\n" \
     "\n" \
     "package body utl_file is\n" \
@@ -75,6 +77,14 @@ static char* strip_main_procedure(const char* source);
     "    proc fclose(handle int) -> int {\n" \
     "        utl_file_fclose(handle);\n" \
     "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    func mkdir(path string) -> int {\n" \
+    "        return utl_file_mkdir(path);\n" \
+    "    }\n" \
+    "\n" \
+    "    func remove(path string) -> int {\n" \
+    "        return utl_file_remove(path);\n" \
     "    }\n" \
     "end utl_file;"
 
