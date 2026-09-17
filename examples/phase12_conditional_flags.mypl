@@ -6,6 +6,9 @@
 //   ./bin/mypl -DDEBUG examples/phase12_conditional_flags.mypl  -> "debug logging enabled"
 //   ./bin/mypl -DDEBUG -DTRACE examples/phase12_conditional_flags.mypl
 //                                                               -> trace line too
+// smoke: args
+// smoke: args -DDEBUG
+// smoke: args -DDEBUG -DTRACE
 proc main() -> int {
 $if DEBUG $then
     print "debug logging enabled";

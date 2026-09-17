@@ -24,7 +24,7 @@ LIB_OBJECTS = $(filter-out $(OBJDIR)/main.o,$(OBJECTS))
 
 TARGET      = $(BINDIR)/mypl
 
-.PHONY: all clean test fuzz fuzz-run fuzz-replay
+.PHONY: all clean test examples-test fuzz fuzz-run fuzz-replay
 
 all: $(TARGET)
 
@@ -107,6 +107,12 @@ ifeq ($(USE_SQLITE),1)
 	$(BINDIR)/test_sqlite
 endif
 	$(MAKE) --no-print-directory fuzz-replay
+	$(MAKE) --no-print-directory examples-test
+
+# Run every examples/*.mypl and require exit 0; see tests/run_examples.sh for
+# the `// smoke:` directives an example can use (arguments, setup, skips).
+examples-test: $(TARGET)
+	tests/run_examples.sh $(TARGET)
 
 # Fuzzing (tests/fuzz). `make fuzz` builds libFuzzer targets for the lexer,
 # parser and conditional-compilation preprocessor with clang; `make fuzz-run`

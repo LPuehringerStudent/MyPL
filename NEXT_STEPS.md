@@ -7,7 +7,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
 - The custom engine ignores `?var` bind params for static SQL (`tests/test_phase6.c` has 4 pre-existing failures in `USE_SQLITE=0` builds); the `dbms_sql` cursor API substitutes `?N` at execute time instead.
 - `utl_file` lines are still limited to 1 KB; `external_call` takes a single int/float/string argument; REPL recompiles everything per input; reference counting has no cycle collection.
-- The parser leaks partially built AST nodes on many syntax-error paths (found by fuzzing; the `Fuzz` workflow runs with `FUZZ_LEAKS=0` until fixed); examples not covered by CI, no install target, README lags the feature set, POSIX-only.
+- The parser leaks partially built AST nodes on many syntax-error paths (found by fuzzing; the `Fuzz` workflow runs with `FUZZ_LEAKS=0` until fixed); custom-engine programs cannot loop over a table they create in the same run (columns are checked against the catalog at compile time), so several examples need `--db`; reported error line numbers include the prepended built-in package source; no install target, README lags the feature set, POSIX-only.
 
 ## Phased Roadmap
 
@@ -32,7 +32,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 
 ### Phase 13 — Hardening & Tooling
 - [x] Fuzzing harness for the lexer, parser, and conditional-compilation preprocessor (libFuzzer: `make fuzz` / `make fuzz-run`, seeds and regressions replayed by `make test`, `Fuzz` CI workflow)
-- [ ] Run all `examples/*.mypl` as smoke tests in CI
+- [x] Run all `examples/*.mypl` as smoke tests in CI (`make examples-test`, part of `make test`; per-example `// smoke:` directives in `tests/run_examples.sh`)
 - [ ] Makefile `install` target and a man page
 - [ ] Rewrite README to document the full Phase 1–10 feature set
 - [ ] Replace fixed ceilings (`STACK_MAX`, `MAX_LOCALS`, handle tables) with dynamic growth

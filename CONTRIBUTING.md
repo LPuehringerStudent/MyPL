@@ -59,7 +59,11 @@ make clean && make USE_SQLITE=0 && make USE_SQLITE=0 test
    Run `act -j test`, `act -j warnings-as-errors`, `act -j asan-ubsan` if you
    have `act` locally.
 5. **Examples.** New features should come with a runnable example in
-   `examples/` — keep the existing ones working.
+   `examples/` — keep the existing ones working. `make test` runs every
+   example through `tests/run_examples.sh` (also `make examples-test`) and
+   requires exit 0. If an example needs arguments, another example run first,
+   SQLite or Linux, say so with `// smoke:` comment lines (`args --db :memory:`,
+   `setup other.mypl`, `requires sqlite`, `requires linux`, `skip <reason>`).
 6. **AGENTS.md** is a gitignored handoff document: update it when you change
    architecture, conventions, or known limitations.
 

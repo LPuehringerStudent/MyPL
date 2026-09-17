@@ -4,6 +4,8 @@
  * Migrates customer records from a legacy schema into a clean schema,
  * normalizing names and classifying ages along the way.
  */
+// smoke: requires sqlite
+// smoke: args --db :memory:
 
 proc setup_legacy_data() -> int {
     create table legacy_customers (

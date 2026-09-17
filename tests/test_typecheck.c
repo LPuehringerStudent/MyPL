@@ -414,6 +414,60 @@ TEST(typecheck_rejects_field_on_undefined_variable) {
     free_program(program);
 }
 
+/* The loop variable of `for x in select` is a row whatever it is named;
+ * only `row` used to be accepted (examples/inventory.mypl uses `p`). */
+TEST(typecheck_accepts_named_row_variable_field) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for p in SELECT id FROM users { return p.id; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, NULL, error, sizeof(error)));
+    free_program(program);
+}
+
+TEST(typecheck_resolves_named_row_variable_field_type) {
+    char db_path[] = "/tmp/mypl_test_typecheck_sql5_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id", "name"};
+    int types[] = {VAL_INT, VAL_STRING};
+    Table* t = catalog_create_table(&ctx, "users", cols, types, 2);
+    ASSERT_PTR_NOT_NULL(t);
+
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { for p in SELECT id, name FROM users { return p.id; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, &ctx, NULL, error, sizeof(error)));
+    free_program(program);
+
+    program = parse(
+        "proc main() -> int { for p in SELECT name FROM users { int x = p.name; return x; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, &ctx, NULL, error, sizeof(error)));
+    free_program(program);
+
+    program = parse(
+        "proc main() -> int { for p in SELECT name FROM users { return p.id; } return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, &ctx, NULL, error, sizeof(error)));
+    ASSERT_PTR_NOT_NULL(strstr(error, "Unknown column 'id' for row variable 'p'"));
+    free_program(program);
+
+    catalog_close(&ctx);
+    unlink(db_path);
+}
+
 TEST(typecheck_rejects_field_on_non_row_variable) {
     char error[256];
     Program* program = parse("proc main() -> int { int x = 1; return x.y; }", error, sizeof(error));
@@ -748,6 +802,8 @@ int main(void) {
     RUN_TEST(typecheck_rejects_row_field_not_selected);
     RUN_TEST(typecheck_accepts_row_field_with_select_star);
     RUN_TEST(typecheck_rejects_field_on_undefined_variable);
+    RUN_TEST(typecheck_accepts_named_row_variable_field);
+    RUN_TEST(typecheck_resolves_named_row_variable_field_type);
     RUN_TEST(typecheck_rejects_field_on_non_row_variable);
     RUN_TEST(typecheck_accepts_string_concat);
     RUN_TEST(typecheck_rejects_string_plus_int);

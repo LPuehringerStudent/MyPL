@@ -2,6 +2,7 @@
 // package-level state declared in an imported module. Before Phase 12 the
 // initializer (counter = 41) never ran for imported modules, so get()
 // returned the zero value instead of 41.
+// smoke: skip imported by phase12_import_packages.mypl
 package counter is
     counter int;
     func get() -> int;

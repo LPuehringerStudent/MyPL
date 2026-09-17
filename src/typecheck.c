@@ -381,6 +381,22 @@ static Type* resolve_percent_type(TypeChecker* tc, Type* t, SourceLoc loc) {
     return t;
 }
 
+/* Type of `var.field` where var is an untyped local such as a SQL loop row.
+ * With a database context the column type comes from the bound query. */
+static Type* sql_row_field_type(TypeChecker* tc, const char* var_name,
+                                const char* field_name, SourceLoc loc) {
+    RowBinding* row = find_row(tc, var_name);
+    if (row != NULL && tc->ctx != NULL) {
+        int sql_type;
+        if (sql_query_column_type(tc->ctx, row->query, field_name, &sql_type)) {
+            return sql_type_to_type(sql_type);
+        }
+        type_error(tc, loc, "Unknown column '%s' for row variable '%s'",
+                   field_name, var_name);
+    }
+    return &type_unknown;
+}
+
 static Type* resolve_field_type(TypeChecker* tc, Type* base, const char* field_name,
                                 SourceLoc loc) {
     if (base == NULL || field_name == NULL) return NULL;
@@ -2020,18 +2036,7 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
                            expr->as.field.row);
                 return &type_unknown;
             }
-            RowBinding* row = find_row(tc, expr->as.field.row);
-            if (row != NULL && tc->ctx != NULL) {
-                int sql_type;
-                if (sql_query_column_type(tc->ctx, row->query, expr->as.field.field, &sql_type)) {
-                    return sql_type_to_type(sql_type);
-                }
-                type_error(tc, expr->loc,
-                           "Unknown column '%s' for row variable '%s'",
-                           expr->as.field.field, expr->as.field.row);
-                return &type_unknown;
-            }
-            return &type_unknown;
+            return sql_row_field_type(tc, expr->as.field.row, expr->as.field.field, expr->loc);
         }
 
         case EXPR_SQL_PARAM: {
@@ -2070,6 +2075,14 @@ static Type* infer_expr(TypeChecker* tc, Expr* expr, Type* hint) {
         }
 
         case EXPR_ROW_FIELD: {
+            /* A `for x in select` loop variable is an untyped local, like `row`. */
+            Expr* row_expr = expr->as.row_field.row;
+            if (row_expr != NULL && row_expr->kind == EXPR_VARIABLE &&
+                find_row(tc, row_expr->as.variable.name) != NULL &&
+                resolve_local(tc, row_expr->as.variable.name) == &type_unknown) {
+                return sql_row_field_type(tc, row_expr->as.variable.name,
+                                          expr->as.row_field.field, expr->loc);
+            }
             Type* base = infer_expr(tc, expr->as.row_field.row, NULL);
             if (tc->had_error) return NULL;
             Type* ft = resolve_field_type(tc, base, expr->as.row_field.field, expr->loc);
@@ -2309,13 +2322,11 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 }
             }
             int saved_row_count = tc->row_count;
-            if (tc->ctx != NULL) {
-                if (!bind_row(tc, f->var_name, f->sql_query)) {
-                    type_error(tc, stmt->loc, "too many row bindings");
-                    tc->row_count = saved_row_count;
-                    pop_scope(tc);
-                    return;
-                }
+            if (!bind_row(tc, f->var_name, f->sql_query)) {
+                type_error(tc, stmt->loc, "too many row bindings");
+                tc->row_count = saved_row_count;
+                pop_scope(tc);
+                return;
             }
             if (!add_local(tc, f->var_name, &type_unknown)) {
                 type_error(tc, stmt->loc, "Too many local variables");
