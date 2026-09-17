@@ -21,7 +21,7 @@ typedef struct {
     Value*   stack_top;
 } TryFrame;
 
-#define UTL_FILE_MAX_HANDLES 16
+#define UTL_FILE_MAX_HANDLES 64
 #define SEQUENCE_MAX 16
 #define SEQUENCE_NAME_MAX 64
 #define DBMS_SQL_MAX_CURSORS 16
