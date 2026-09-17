@@ -554,6 +554,8 @@ static int is_native(const char* name) {
            strcmp(name, "utl_file_fseek") == 0 ||
            strcmp(name, "utl_file_fflush") == 0 ||
            strcmp(name, "utl_file_fclose") == 0 ||
+           strcmp(name, "utl_file_mkdir") == 0 ||
+           strcmp(name, "utl_file_remove") == 0 ||
            strcmp(name, "dbms_sql_execute") == 0 ||
            strcmp(name, "dbms_sql_query") == 0 ||
            strcmp(name, "dbms_sql_open_cursor") == 0 ||
@@ -1530,6 +1532,17 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* a = infer_expr(tc, args[0], NULL);
         if (a != &type_unknown && a != NULL && a->kind != TYPE_INT) {
             type_error(tc, loc, "utl_file_fclose expects an int handle");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_mkdir") == 0 || strcmp(name, "utl_file_remove") == 0) {
+        if (arg_count != 1) {
+            type_error(tc, loc, "%s expects 1 argument", name);
+            return NULL;
+        }
+        Type* path = infer_expr(tc, args[0], NULL);
+        if (path != &type_unknown && path != NULL && path->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects a string path", name);
         }
         return &type_int;
     }
