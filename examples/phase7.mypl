@@ -1,3 +1,5 @@
+// smoke: setup phase7_setup.mypl
+
 proc main() -> int {
     // column %TYPE and table %ROWTYPE
     employees.id%type emp_id;

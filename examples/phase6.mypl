@@ -1,5 +1,7 @@
 // Phase 6: Collections & Bulk Binds
 // Run with: ./bin/mypl --db :memory: examples/phase6.mypl
+// smoke: requires sqlite
+// smoke: args --db :memory:
 
 proc main() -> int {
     // Associative array (map) with string keys

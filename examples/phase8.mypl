@@ -1,6 +1,8 @@
 // Phase 8 example: stored code, AUTHID, savepoints, and autonomous transactions.
 // Run with a SQLite database, e.g.:
 //   ./bin/mypl examples/phase8.mypl --db /tmp/phase8.db
+// smoke: requires sqlite
+// smoke: args --db phase8.db
 
 // A persisted procedure marked as running with definer rights.
 proc log_event(msg string) -> int authid definer {

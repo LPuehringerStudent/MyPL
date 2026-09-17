@@ -4,6 +4,8 @@
  * Creates a small orders table and prints a formatted sales summary,
  * including total revenue, revenue per product, and top customers.
  */
+// smoke: requires sqlite
+// smoke: args --db :memory:
 
 proc setup() -> int {
     create table orders (

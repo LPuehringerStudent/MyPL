@@ -4,6 +4,8 @@
  * Manages a small product catalog, lists stock, flags low-stock items,
  * and processes a sale with quantity validation.
  */
+// smoke: requires sqlite
+// smoke: args --db :memory:
 
 proc init_catalog() -> int {
     create table products (
