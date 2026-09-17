@@ -446,6 +446,49 @@ TEST(parser_parses_nested_typed_array) {
     free_program(program);
 }
 
+/* Regressions for crashes found by the fuzz harness (tests/fuzz). Each input
+ * is invalid; the parser must report an error rather than crash. */
+
+TEST(parser_rejects_integer_literal_overflow) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int x = 2147483647; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    free_program(program);
+    program = parse("proc main() -> int { int x = 99999999999; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "integer literal too large"));
+}
+
+TEST(parser_map_literal_missing_colon_is_error) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { map<string, int> m = {\"a\": 1, \"b\" 2}; return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "expected ':' after map key"));
+}
+
+TEST(parser_failed_operand_before_field_access_is_error) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int x = (;).y; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "expected expression"));
+}
+
+TEST(parser_failed_operand_before_cursor_attr_is_error) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int x = (;)%rowcount; return 0; }", error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "expected expression"));
+}
+
+TEST(parser_failed_operand_before_call_is_error) {
+    char error[256];
+    Program* program = parse("proc main() -> int { int x = (;)(1); return 0; }", error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_PTR_NOT_NULL(strstr(error, "expected expression"));
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -492,5 +535,10 @@ int main(void) {
     RUN_TEST(parser_parses_import_statement);
     RUN_TEST(parser_parses_typed_array_variable);
     RUN_TEST(parser_parses_nested_typed_array);
+    RUN_TEST(parser_rejects_integer_literal_overflow);
+    RUN_TEST(parser_map_literal_missing_colon_is_error);
+    RUN_TEST(parser_failed_operand_before_field_access_is_error);
+    RUN_TEST(parser_failed_operand_before_cursor_attr_is_error);
+    RUN_TEST(parser_failed_operand_before_call_is_error);
     TEST_SUMMARY();
 }
