@@ -551,6 +551,7 @@ static int is_native(const char* name) {
            strcmp(name, "utl_file_fopen") == 0 ||
            strcmp(name, "utl_file_get_line") == 0 ||
            strcmp(name, "utl_file_put_line") == 0 ||
+           strcmp(name, "utl_file_fseek") == 0 ||
            strcmp(name, "utl_file_fclose") == 0 ||
            strcmp(name, "dbms_sql_execute") == 0 ||
            strcmp(name, "dbms_sql_query") == 0 ||
@@ -1491,6 +1492,21 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         Type* b = infer_expr(tc, args[1], NULL);
         if (b != &type_unknown && b != NULL && b->kind != TYPE_STRING) {
             type_error(tc, loc, "utl_file_put_line expects a string");
+        }
+        return &type_int;
+    }
+    if (strcmp(name, "utl_file_fseek") == 0) {
+        if (arg_count != 2) {
+            type_error(tc, loc, "utl_file_fseek expects 2 arguments");
+            return NULL;
+        }
+        Type* handle = infer_expr(tc, args[0], NULL);
+        Type* offset = infer_expr(tc, args[1], NULL);
+        if (handle != &type_unknown && handle != NULL && handle->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fseek expects an int handle");
+        }
+        if (offset != &type_unknown && offset != NULL && offset->kind != TYPE_INT) {
+            type_error(tc, loc, "utl_file_fseek expects an int offset");
         }
         return &type_int;
     }
