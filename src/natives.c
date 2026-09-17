@@ -2216,10 +2216,17 @@ static int native_drop_sequence(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
-static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
+/* external_call marshalling: MyPL int, float and string map to C int, double
+ * and const char*. The argument's C type follows the runtime type of argv[2];
+ * the return type is selected by which external_call* native was called. */
+typedef enum { EXT_INT, EXT_FLOAT, EXT_STRING } ExtKind;
+
+static int external_call_invoke(VM* vm, const char* who, ExtKind ret, int argc, Value* argv, Value* out) {
     if (argc != 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING ||
-        argv[2].type != VAL_INT) {
-        vm_set_error(vm, "external_call expects (string, string, int)");
+        (argv[2].type != VAL_INT && argv[2].type != VAL_FLOAT && argv[2].type != VAL_STRING)) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "%s expects (string, string, int|float|string)", who);
+        vm_set_error(vm, msg);
         return 0;
     }
     const char* lib = argv[0].as.as_string ? argv[0].as.as_string : "";
@@ -2229,7 +2236,7 @@ static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
     void* handle = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
     if (handle == NULL) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "external_call: %s", dlerror());
+        snprintf(msg, sizeof(msg), "%s: %s", who, dlerror());
         vm_set_error(vm, msg);
         return 0;
     }
@@ -2238,16 +2245,79 @@ static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
     const char* sym_err = dlerror();
     if (sym_err != NULL) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "external_call: %s", sym_err);
+        snprintf(msg, sizeof(msg), "%s: %s", who, sym_err);
         dlclose(handle);
         vm_set_error(vm, msg);
         return 0;
     }
-    typedef int (*ExtFn)(int);
-    ExtFn fn;
-    memcpy(&fn, &addr, sizeof(fn));
-    *out = value_int(fn(argv[2].as.as_int));
+
+    ExtKind arg = argv[2].type == VAL_INT ? EXT_INT :
+                  argv[2].type == VAL_FLOAT ? EXT_FLOAT : EXT_STRING;
+    int i_arg = arg == EXT_INT ? argv[2].as.as_int : 0;
+    double f_arg = arg == EXT_FLOAT ? argv[2].as.as_float : 0.0;
+    const char* s_arg = arg == EXT_STRING && argv[2].as.as_string ? argv[2].as.as_string : "";
+
+    /* Function pointers are copied out of the void* with memcpy, as the
+     * object-to-function pointer cast is not valid ISO C. */
+    int i_ret = 0;
+    double f_ret = 0.0;
+    const char* s_ret = NULL;
+#define EXT_DISPATCH(RetT, ret_var)                                         \
+    switch (arg) {                                                          \
+        case EXT_INT: {                                                     \
+            RetT (*fn)(int);                                                \
+            memcpy(&fn, &addr, sizeof(fn));                                 \
+            ret_var = fn(i_arg);                                            \
+            break;                                                          \
+        }                                                                   \
+        case EXT_FLOAT: {                                                   \
+            RetT (*fn)(double);                                             \
+            memcpy(&fn, &addr, sizeof(fn));                                 \
+            ret_var = fn(f_arg);                                            \
+            break;                                                          \
+        }                                                                   \
+        case EXT_STRING: {                                                  \
+            RetT (*fn)(const char*);                                        \
+            memcpy(&fn, &addr, sizeof(fn));                                 \
+            ret_var = fn(s_arg);                                            \
+            break;                                                          \
+        }                                                                   \
+    }
+    switch (ret) {
+        case EXT_INT:    EXT_DISPATCH(int, i_ret); break;
+        case EXT_FLOAT:  EXT_DISPATCH(double, f_ret); break;
+        case EXT_STRING: EXT_DISPATCH(const char*, s_ret); break;
+    }
+#undef EXT_DISPATCH
+
+    if (ret == EXT_INT) {
+        *out = value_int(i_ret);
+    } else if (ret == EXT_FLOAT) {
+        *out = value_float(f_ret);
+    } else if (s_ret == NULL) {
+        *out = value_null();
+    } else {
+        /* The library owns the returned buffer: copy it, never free it. */
+        char* copy = strdup(s_ret);
+        if (copy == NULL) {
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        *out = value_string(copy);
+    }
     return 1;
+}
+
+static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
+    return external_call_invoke(vm, "external_call", EXT_INT, argc, argv, out);
+}
+
+static int native_external_call_float(VM* vm, int argc, Value* argv, Value* out) {
+    return external_call_invoke(vm, "external_call_float", EXT_FLOAT, argc, argv, out);
+}
+
+static int native_external_call_string(VM* vm, int argc, Value* argv, Value* out) {
+    return external_call_invoke(vm, "external_call_string", EXT_STRING, argc, argv, out);
 }
 
 static NativeDef natives[] = {
@@ -2356,6 +2426,8 @@ static NativeDef natives[] = {
     {"currval", 1, native_currval},
     {"drop_sequence", 1, native_drop_sequence},
     {"external_call", 3, native_external_call},
+    {"external_call_float", 3, native_external_call_float},
+    {"external_call_string", 3, native_external_call_string},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},
