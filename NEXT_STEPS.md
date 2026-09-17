@@ -20,10 +20,10 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - [x] `CREATE VIEW` / `DROP VIEW` with view resolution in SELECT
 
 ### Phase 12 — Persistence & Runtime Completeness
-- [ ] Persist sequences in the database catalog (survive process restarts)
-- [ ] Persist triggers in the catalog, add `DROP TRIGGER`, and fire triggers on dynamic SQL (`execute_immediate`, `dbms_sql.execute`)
-- [ ] Row-level triggers (`FOR EACH ROW`) with `:new` / `:old` row context
-- [ ] Full `dbms_sql` cursor API: `open_cursor`, `parse`, `bind_variable`, `execute`, `fetch_rows`, `column_value`, `close_cursor`
+- [x] Persist sequences in the database catalog (survive process restarts)
+- [x] Persist triggers in the catalog, add `DROP TRIGGER`, and fire triggers on dynamic SQL (`execute_immediate`, `dbms_sql.execute`)
+- [x] Row-level triggers (`FOR EACH ROW`) with `:new` / `:old` row context
+- [x] Full `dbms_sql` cursor API: `open_cursor`, `parse`, `bind_variable`, `execute`, `fetch_rows`, `column_value`, `close_cursor`
 - [x] Initialize packages declared in imported modules
 - [ ] Allow user packages to override/replace built-in packages
 - [ ] `utl_file` expansion: append/seek/flush, larger handle table, directory objects
