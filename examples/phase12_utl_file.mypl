@@ -1,0 +1,47 @@
+// Phase 12: utl_file expansion — append, seek, flush, and directory ops.
+// Run with: ./bin/mypl examples/phase12_utl_file.mypl
+// Writes under /tmp and cleans up after itself; prints "ok".
+
+proc main() -> int {
+    string path = "/tmp/mypl_phase12_utl_example.txt";
+
+    // Write two lines, then append a third without truncating.
+    int w = utl_file.fopen(path, "w");
+    if (w < 0) { print "open w failed"; return 1; }
+    utl_file.put_line(w, "first");
+    utl_file.put_line(w, "second");
+    utl_file.fclose(w);
+
+    int a = utl_file.fopen(path, "a");
+    if (a < 0) { print "open a failed"; return 1; }
+    utl_file.put_line(a, "third");
+    // Flush so another reader sees the line before we close.
+    utl_file.fflush(a);
+    utl_file.fclose(a);
+
+    // Seek back to the start and read the appended line as line 3.
+    int r = utl_file.fopen(path, "r");
+    if (r < 0) { print "open r failed"; return 1; }
+    string l1 = utl_file.get_line(r);
+    utl_file.fseek(r, 0);
+    string l1_again = utl_file.get_line(r);
+    if (l1 == l1_again) { } else { print "seek failed"; return 1; }
+    string l2 = utl_file.get_line(r);
+    string l3 = utl_file.get_line(r);
+    if (l3 == "third") { } else { print concat("append failed: ", l3); return 1; }
+    utl_file.fclose(r);
+
+    // Directory helpers: mkdir a scratch dir, write into it, remove both.
+    string dir = "/tmp/mypl_phase12_utl_dir";
+    if (utl_file.mkdir(dir) == 0) { } else { print "mkdir failed"; return 1; }
+    int d = utl_file.fopen(concat(dir, "/f.txt"), "w");
+    if (d < 0) { print "open dir file failed"; return 1; }
+    utl_file.put_line(d, "nested");
+    utl_file.fclose(d);
+    utl_file.remove(concat(dir, "/f.txt"));
+    utl_file.remove(dir);
+
+    utl_file.remove(path);
+    print "ok";
+    return 0;
+}
