@@ -1315,17 +1315,20 @@ TEST(phase12_issue29_utl_file_mkdir_and_remove) {
 
 /* ===== Issue #30: external_call float/string marshalling =====
  *
- * external_call (src/natives.c) is hardcoded to an int(int) signature via
- * dlopen/dlsym. These tests pin the two new marshalling natives beside it:
- *   - func external_call_f(lib string, sym string, arg float) -> float
+ * external_call (src/natives.c) was hardcoded to an int(int) signature via
+ * dlopen/dlsym. This test pins the two marshalling natives implemented in
+ * PR #44 (named external_call_float / external_call_string there rather
+ * than the _f/_s sketched in the issue comment):
+ *   - func external_call_float(lib string, sym string, arg float) -> float
  *     calls a C double f(double),
- *   - func external_call_s(lib string, sym string, arg string) -> string
+ *   - func external_call_string(lib string, sym string, arg string) -> string
  *     calls a C char* s(const char*) that returns a transformed copy,
- * and regress that the existing int external_call keeps working. The shared
- * library is built like tests/test_phase10.c does. */
+ * and regresses that the existing int external_call keeps working. The shared
+ * library is built like tests/test_phase10.c does; it uses its own file name
+ * so it cannot clobber the .so built by build_marshal_shared_lib above. */
 
 static int build_phase12_shared_lib(void) {
-    FILE* f = fopen("/tmp/test_phase12_ext.c", "w");
+    FILE* f = fopen("/tmp/test_phase12_ac_ext.c", "w");
     if (f == NULL) return 0;
     fprintf(f, "#include <ctype.h>\n");
     fprintf(f, "#include <stdlib.h>\n");
@@ -1342,7 +1345,7 @@ static int build_phase12_shared_lib(void) {
     fprintf(f, "    return out;\n");
     fprintf(f, "}\n");
     fclose(f);
-    int rc = system("cc -shared -fPIC -o /tmp/test_phase12_ext.so /tmp/test_phase12_ext.c");
+    int rc = system("cc -shared -fPIC -o /tmp/test_phase12_ac_ext.so /tmp/test_phase12_ac_ext.c");
     return rc == 0;
 }
 
@@ -1351,11 +1354,11 @@ TEST(phase12_issue30_external_call_float_and_string) {
     char out[512];
     int rc = run_mypl(
         "proc main() -> int {\n"
-        "    float rf = external_call_f(\"/tmp/test_phase12_ext.so\", \"mypl_triple\", 1.5);\n"
+        "    float rf = external_call_float(\"/tmp/test_phase12_ac_ext.so\", \"mypl_triple\", 1.5);\n"
         "    print concat(\"float:\", float_to_string(rf));\n"
-        "    string rs = external_call_s(\"/tmp/test_phase12_ext.so\", \"mypl_shout\", \"hello\");\n"
+        "    string rs = external_call_string(\"/tmp/test_phase12_ac_ext.so\", \"mypl_shout\", \"hello\");\n"
         "    print concat(\"string:\", rs);\n"
-        "    int ri = external_call(\"/tmp/test_phase12_ext.so\", \"mypl_double\", 21);\n"
+        "    int ri = external_call(\"/tmp/test_phase12_ac_ext.so\", \"mypl_double\", 21);\n"
         "    print concat(\"int:\", int_to_string(ri));\n"
         "    return 0;\n"
         "}\n",
@@ -1364,8 +1367,8 @@ TEST(phase12_issue30_external_call_float_and_string) {
     ASSERT_INT_EQ(1, output_contains(out, "float:4.5"));
     ASSERT_INT_EQ(1, output_contains(out, "string:HELLO"));
     ASSERT_INT_EQ(1, output_contains(out, "int:42"));
-    remove("/tmp/test_phase12_ext.c");
-    remove("/tmp/test_phase12_ext.so");
+    remove("/tmp/test_phase12_ac_ext.c");
+    remove("/tmp/test_phase12_ac_ext.so");
 }
 
 int main(void) {
