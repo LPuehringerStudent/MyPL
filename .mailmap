@@ -1,0 +1,10 @@
+# Contributor identity map: canonical name <email> aliases...
+# Keeps `git shortlog` / `git log --use-mailmap` and future history audits
+# consistent when someone commits under multiple addresses.
+# GitHub's contributor graph does NOT read this file — it counts by commit
+# author email — so the workflow in .github/workflows/attribution-check.yml
+# enforces the canonical emails at PR time.
+Muhammad Ayan <181332202+ayan2310@users.noreply.github.com> <ayanm6768@gmail.com>
+Muhammad Ayan <181332202+ayan2310@users.noreply.github.com> <m.ayan@students.htl-leonding.ac.at>
+David-Fruehwirt <181332355+David-Fruehwirt@users.noreply.github.com> <d.fruehwirt@students.htl-leonding.ac.at>
+LPuehringerStudent <181332338+LPuehringerStudent@users.noreply.github.com> <l.puehringer1@students.htl-leonding.ac.at>

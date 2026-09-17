@@ -1,0 +1,58 @@
+name: Contributor attribution check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-attribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify commit author emails and co-author trailers
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Canonical author emails (GitHub noreply forms of the three
+          # contributors). Anything else creates a phantom 4th/5th
+          # contributor on the repo home page.
+          ALLOWED_AUTHORS=$(cat <<'EOF'
+          181332202+ayan2310@users.noreply.github.com
+          181332355+David-Fruehwirt@users.noreply.github.com
+          181332338+LPuehringerStudent@users.noreply.github.com
+          EOF
+          )
+          # Co-Authored-By trailers with these emails are permitted; AI-tool
+          # trailers (anthropic.com, noreply@anthropic.com, ...) are not,
+          # because GitHub counts co-authors as contributors.
+          ALLOWED_COAUTHORS="$ALLOWED_AUTHORS"
+
+          fail=0
+          while IFS= read -r sha; do
+            email=$(git show -s --format='%ae' "$sha")
+            name=$(git show -s --format='%an' "$sha")
+            if ! grep -qx "$email" <<<"$ALLOWED_AUTHORS"; then
+              echo "::error::Commit $sha authored by '$name <$email>', which is not a canonical contributor email."
+              fail=1
+            fi
+            body=$(git show -s --format='%b' "$sha")
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              coemail=$(sed -E 's/^Co-Authored-By:[[:space:]]*[^<]*<([^>]*)>.*/\1/' <<<"$line")
+              if ! grep -qx "$coemail" <<<"$ALLOWED_COAUTHORS"; then
+                echo "::error::Commit $sha has a Co-Authored-By trailer that is not a canonical contributor: $line"
+                fail=1
+              fi
+            done < <(grep '^Co-Authored-By:' <<<"$body" || true)
+          done < <(git rev-list "$BASE..$HEAD")
+
+          if [ "$fail" -ne 0 ]; then
+            echo "See CONTRIBUTING.md for how to set git author identity."
+            exit 1
+          fi
+          echo "Attribution check passed."
