@@ -1,0 +1,14 @@
+3$define B
+$undefine A
+proc main() -> int {
+$if A $then
+    print "a";
+$elsif B $then
+    print "b";
+$elsif DEBUG $then
+    print "debug";
+$else
+    print "none";
+$end
+    return 0;
+}

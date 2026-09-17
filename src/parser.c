@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -456,7 +457,12 @@ static Expr* number(Parser* parser) {
     } else {
         int value = 0;
         for (int i = 0; i < parser->previous.length; i++) {
-            value = value * 10 + (parser->previous.start[i] - '0');
+            int digit = parser->previous.start[i] - '0';
+            if (value > (INT_MAX - digit) / 10) {
+                error_at_previous(parser, "integer literal too large");
+                return NULL;
+            }
+            value = value * 10 + digit;
         }
         expr = create_literal_expr(value_int(value));
     }
@@ -559,10 +565,12 @@ static Expr* map_literal(Parser* parser) {
             keys[count] = expression(parser);
             if (!match(parser, TOKEN_COLON)) {
                 error_at_current(parser, "expected ':' after map key");
-                for (int i = 0; i <= count; i++) {
+                /* values[count] has not been parsed yet. */
+                for (int i = 0; i < count; i++) {
                     free_expr(keys[i]);
                     free_expr(values[i]);
                 }
+                free_expr(keys[count]);
                 free(keys);
                 free(values);
                 return NULL;
@@ -823,7 +831,9 @@ static Expr* parse_precedence(Parser* parser, Precedence precedence) {
 
     Expr* left = prefix_rule(parser);
 
-    while (precedence <= get_rule(parser->current.type)->precedence) {
+    /* Infix rules dereference left, so stop once an operand failed. */
+    while (left != NULL && !parser->had_error &&
+           precedence <= get_rule(parser->current.type)->precedence) {
         advance(parser);
         InfixFn infix_rule = get_rule(parser->previous.type)->infix;
         left = infix_rule(parser, left);
@@ -1046,6 +1056,8 @@ static Stmt* assignment(Parser* parser) {
             }
         } else {
             Expr* left = create_variable_expr(name);
+            free(name);
+            name = NULL;
             if (match(parser, TOKEN_ASSIGN)) {
                 Expr* value = expression(parser);
                 stmt = create_field_assign_stmt(left, field_name, value);

@@ -1,0 +1,8 @@
+1$if DEBUG $then
+proc main() -> int {
+    print "debug";
+    return 0;
+}
+$else
+proc main() -> int { return 1; }
+$end

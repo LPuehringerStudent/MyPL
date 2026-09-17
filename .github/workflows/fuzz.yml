@@ -1,0 +1,46 @@
+name: Fuzz
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds to fuzz each target'
+        default: '600'
+
+jobs:
+  libfuzzer:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install clang
+      run: sudo apt-get update && sudo apt-get install -y clang
+
+    - name: Build fuzz targets
+      run: make fuzz
+
+    # Short runs on PRs and pushes; longer on the weekly schedule or manually.
+    # Leak detection stays off until the parser frees partial ASTs on its
+    # error paths (it leaks on many invalid inputs); crashes, UB and invariant
+    # failures still fail the job.
+    - name: Fuzz lexer, parser and preprocessor
+      run: |
+        make fuzz-run \
+          FUZZ_TIME=${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '600') || '60' }} \
+          FUZZ_LEAKS=0
+
+    - name: Upload crash inputs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-artifacts
+        path: build/fuzz/artifacts/
+        if-no-files-found: ignore

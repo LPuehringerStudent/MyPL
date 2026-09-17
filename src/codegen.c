@@ -2349,10 +2349,11 @@ static int cc_seed_flags(char flags[][CC_NAME_MAX], int* flag_count,
 }
 
 /* Returns a malloc'd processed copy of source (same length), or NULL and
- * writes an error message into error_buf. */
-static char* cc_preprocess(const char* source, const char* source_path,
-                           const CompileOptions* options,
-                           char* error_buf, size_t error_size) {
+ * writes an error message into error_buf. Declared in compiler.h so the
+ * fuzz harness can drive the preprocessor directly. */
+char* cc_preprocess(const char* source, const char* source_path,
+                    const CompileOptions* options,
+                    char* error_buf, size_t error_size) {
     size_t len = strlen(source);
     char* out = malloc(len + 1);
     if (out == NULL) return NULL;
