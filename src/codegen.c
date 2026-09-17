@@ -113,6 +113,7 @@ typedef struct {
     TriggerEntry triggers[MAX_TRIGGERS];
     int trigger_count;
     const StructDecl* current_struct;
+    const CompileOptions* options;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -2210,8 +2211,8 @@ static void compile_package_members(Compiler* compiler, Program* program) {
 /* their line numbers. Undefined flags evaluate to false.                     */
 /* -------------------------------------------------------------------------- */
 
-#define CC_MAX_FLAGS 64
-#define CC_NAME_MAX 64
+#define CC_MAX_FLAGS MYPL_CC_MAX_FLAGS
+#define CC_NAME_MAX MYPL_CC_FLAG_NAME_MAX
 #define CC_MAX_DEPTH 16
 
 typedef struct {
@@ -2233,9 +2234,45 @@ static int cc_flag_defined(char flags[][CC_NAME_MAX], int flag_count, const char
     return 0;
 }
 
+static int cc_seed_flags(char flags[][CC_NAME_MAX], int* flag_count,
+                         const CompileOptions* options, const char* source_path,
+                         char* error_buf, size_t error_size) {
+    if (options == NULL) return 1;
+    if (options->conditional_flag_count < 0 ||
+        options->conditional_flag_count > CC_MAX_FLAGS ||
+        (options->conditional_flag_count > 0 && options->conditional_flags == NULL)) {
+        format_error(error_buf, error_size, source_path, 0, 0,
+                     "conditional compilation: too many command-line flags");
+        return 0;
+    }
+
+    for (int i = 0; i < options->conditional_flag_count; i++) {
+        const char* name = options->conditional_flags[i];
+        size_t len = name != NULL ? strlen(name) : 0;
+        if (len == 0 || len >= CC_NAME_MAX) {
+            format_error(error_buf, error_size, source_path, 0, 0,
+                         "conditional compilation: invalid command-line flag name");
+            return 0;
+        }
+        for (size_t j = 0; j < len; j++) {
+            if (!cc_is_name_char(name[j])) {
+                format_error(error_buf, error_size, source_path, 0, 0,
+                             "conditional compilation: invalid command-line flag name");
+                return 0;
+            }
+        }
+        if (!cc_flag_defined(flags, *flag_count, name)) {
+            strcpy(flags[(*flag_count)++], name);
+        }
+    }
+    return 1;
+}
+
 /* Returns a malloc'd processed copy of source (same length), or NULL and
  * writes an error message into error_buf. */
-static char* cc_preprocess(const char* source, const char* source_path, char* error_buf, size_t error_size) {
+static char* cc_preprocess(const char* source, const char* source_path,
+                           const CompileOptions* options,
+                           char* error_buf, size_t error_size) {
     size_t len = strlen(source);
     char* out = malloc(len + 1);
     if (out == NULL) return NULL;
@@ -2243,6 +2280,10 @@ static char* cc_preprocess(const char* source, const char* source_path, char* er
 
     char flags[CC_MAX_FLAGS][CC_NAME_MAX];
     int flag_count = 0;
+    if (!cc_seed_flags(flags, &flag_count, options, source_path, error_buf, error_size)) {
+        free(out);
+        return NULL;
+    }
     CCFrame stack[CC_MAX_DEPTH];
     int depth = 0;
     int active = 1;
@@ -2376,7 +2417,8 @@ static char* cc_preprocess(const char* source, const char* source_path, char* er
 
 static int do_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
     char cc_error[256] = {0};
-    char* processed = cc_preprocess(source, compiler->source_path, cc_error, sizeof(cc_error));
+    char* processed = cc_preprocess(source, compiler->source_path, compiler->options,
+                                    cc_error, sizeof(cc_error));
     if (processed == NULL) {
         if (error != NULL && error_size > 0) {
             if (cc_error[0] != '\0') {
@@ -2599,7 +2641,9 @@ static void free_global_names(Compiler* compiler) {
     compiler->global_count = 0;
 }
 
-int compile_with_context_and_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size, struct Context* ctx) {
+int compile_with_options(const char* source, Chunk* chunk, const char* path,
+                         char* error, size_t error_size, struct Context* ctx,
+                         const CompileOptions* options) {
     Compiler compiler;
     compiler.chunk = chunk;
     compiler.local_count = 0;
@@ -2625,6 +2669,7 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     compiler.exception_count = 0;
     compiler.trigger_count = 0;
     compiler.current_struct = NULL;
+    compiler.options = options;
     add_exception(&compiler, "no_data_found", 100);
     add_exception(&compiler, "too_many_rows", -1422);
     for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;
@@ -2703,6 +2748,11 @@ int compile_with_context_and_path(const char* source, Chunk* chunk, const char* 
     for (int i = 0; i < compiler.patch_count; i++) free((void*)compiler.patches[i].name);
     for (int i = 0; i < compiler.loaded_count; i++) free(compiler.loaded_paths[i]);
     return 1;
+}
+
+int compile_with_context_and_path(const char* source, Chunk* chunk, const char* path,
+                                  char* error, size_t error_size, struct Context* ctx) {
+    return compile_with_options(source, chunk, path, error, error_size, ctx, NULL);
 }
 
 int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx) {

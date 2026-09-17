@@ -769,6 +769,105 @@ TEST(compiler_compiles_imported_procedure) {
     s_module_path[0] = '\0';
 }
 
+TEST(compiler_options_define_conditional_flag) {
+    const char* flags[] = {"DEBUG"};
+    CompileOptions options = {flags, 1};
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile_with_options(
+        "proc main() -> int {\n"
+        "$if DEBUG $then\n"
+        "return 42;\n"
+        "$else\n"
+        "return 0;\n"
+        "$end\n"
+        "}",
+        &chunk, NULL, NULL, 0, NULL, &options));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(42, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_source_can_undefine_option_flag) {
+    const char* flags[] = {"DEBUG"};
+    CompileOptions options = {flags, 1};
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile_with_options(
+        "$undefine DEBUG\n"
+        "proc main() -> int {\n"
+        "$if DEBUG $then\n"
+        "return 42;\n"
+        "$else\n"
+        "return 0;\n"
+        "$end\n"
+        "}",
+        &chunk, NULL, NULL, 0, NULL, &options));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(0, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
+TEST(compiler_options_apply_to_imported_modules) {
+    static int cleanup_registered = 0;
+    if (!cleanup_registered) {
+        atexit(cleanup_temp_modules);
+        cleanup_registered = 1;
+    }
+
+    snprintf(s_module_path, sizeof(s_module_path), "/tmp/mypl_test_module_XXXXXX");
+    int fd = mkstemp(s_module_path);
+    ASSERT_INT_EQ(1, fd >= 0);
+    close(fd);
+
+    FILE* f = fopen(s_module_path, "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+            "$if DEBUG $then\n"
+            "proc selected() -> int { return 42; }\n"
+            "$else\n"
+            "proc selected() -> int { return 0; }\n"
+            "$end\n");
+    fclose(f);
+
+    char source[512];
+    snprintf(source, sizeof(source),
+             "import \"%s\"; proc main() -> int { return selected(); }",
+             s_module_path);
+    const char* flags[] = {"DEBUG"};
+    CompileOptions options = {flags, 1};
+    Chunk chunk;
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(1, compile_with_options(source, &chunk, NULL, NULL, 0, NULL, &options));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(42, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+    remove(s_module_path);
+    s_module_path[0] = '\0';
+}
+
+TEST(compiler_options_reject_invalid_flag_name) {
+    const char* flags[] = {"DEBUG=1"};
+    CompileOptions options = {flags, 1};
+    Chunk chunk;
+    char error[256] = {0};
+    init_chunk(&chunk);
+    ASSERT_INT_EQ(0, compile_with_options("proc main() -> int { return 0; }",
+                                         &chunk, NULL, error, sizeof(error),
+                                         NULL, &options));
+    ASSERT_PTR_NOT_NULL(strstr(error, "invalid command-line flag name"));
+    free_chunk(&chunk);
+}
+
 TEST(compiler_reports_original_error_for_bad_import) {
     static int cleanup_registered = 0;
     if (!cleanup_registered) {
@@ -1307,6 +1406,10 @@ int main(void) {
     RUN_TEST(compiler_compiles_print);
     RUN_TEST(compiler_compiles_clock);
     RUN_TEST(compiler_compiles_imported_procedure);
+    RUN_TEST(compiler_options_define_conditional_flag);
+    RUN_TEST(compiler_source_can_undefine_option_flag);
+    RUN_TEST(compiler_options_apply_to_imported_modules);
+    RUN_TEST(compiler_options_reject_invalid_flag_name);
     RUN_TEST(compiler_reports_original_error_for_bad_import);
     RUN_TEST(compiler_rejects_too_many_imports);
     RUN_TEST(compiler_rejects_type_mismatch_in_assignment);

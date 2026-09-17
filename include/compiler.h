@@ -10,6 +10,14 @@ typedef struct RowObj RowObj;
 typedef struct CursorObj CursorObj;
 typedef struct DBDriver DBDriver;
 
+#define MYPL_CC_MAX_FLAGS 64
+#define MYPL_CC_FLAG_NAME_MAX 64
+
+typedef struct {
+    const char* const* conditional_flags;
+    int conditional_flag_count;
+} CompileOptions;
+
 typedef enum {
     OBJ_STRING,
     OBJ_ARRAY,
@@ -244,5 +252,8 @@ int compile(const char* source, Chunk* chunk, char* error, size_t error_size);
 int compile_with_context(const char* source, Chunk* chunk, char* error, size_t error_size, struct Context* ctx);
 int compile_with_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size);
 int compile_with_context_and_path(const char* source, Chunk* chunk, const char* path, char* error, size_t error_size, struct Context* ctx);
+int compile_with_options(const char* source, Chunk* chunk, const char* path,
+                         char* error, size_t error_size, struct Context* ctx,
+                         const CompileOptions* options);
 
 #endif
