@@ -45,6 +45,7 @@ static char* strip_main_procedure(const char* source);
     "    func fopen(path string, mode string) -> int;\n" \
     "    func get_line(handle int) -> string;\n" \
     "    proc put_line(handle int, text string) -> int;\n" \
+    "    func fseek(handle int, offset int) -> int;\n" \
     "    proc fclose(handle int) -> int;\n" \
     "end utl_file;\n" \
     "\n" \
@@ -60,6 +61,10 @@ static char* strip_main_procedure(const char* source);
     "    proc put_line(handle int, text string) -> int {\n" \
     "        utl_file_put_line(handle, text);\n" \
     "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    func fseek(handle int, offset int) -> int {\n" \
+    "        return utl_file_fseek(handle, offset);\n" \
     "    }\n" \
     "\n" \
     "    proc fclose(handle int) -> int {\n" \
