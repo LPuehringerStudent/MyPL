@@ -184,14 +184,97 @@ TEST(cli_initializes_packages_from_multiple_imported_modules_in_order) {
     system("rm -rf /tmp/mypl_import_pkginit_multi_test");
 }
 
+TEST(cli_accepts_conditional_flags_in_any_order) {
+    FILE* f = fopen("/tmp/cli_cc.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+            "$if DEBUG $then\n"
+            "func debug_value() -> int { return 40; }\n"
+            "$else\n"
+            "func debug_value() -> int { return 0; }\n"
+            "$end\n"
+            "proc main() -> int {\n"
+            "$if TRACE $then\n"
+            "    return debug_value() + 2;\n"
+            "$else\n"
+            "    return 0;\n"
+            "$end\n"
+            "}\n");
+    fclose(f);
+
+    int rc = system("./bin/mypl -DDEBUG /tmp/cli_cc.mypl -DTRACE -DDEBUG > /tmp/mypl_out.txt 2>&1");
+    ASSERT_INT_EQ(0, WEXITSTATUS(rc));
+    FILE* out = fopen("/tmp/mypl_out.txt", "r");
+    ASSERT_PTR_NOT_NULL(out);
+    char buf[64];
+    ASSERT_PTR_NOT_NULL(fgets(buf, sizeof(buf), out));
+    fclose(out);
+    ASSERT_INT_EQ(42, atoi(buf));
+    remove("/tmp/cli_cc.mypl");
+}
+
+TEST(cli_conditional_flags_apply_to_imports) {
+    system("rm -rf /tmp/mypl_cc_import_test");
+    system("mkdir -p /tmp/mypl_cc_import_test");
+
+    FILE* f = fopen("/tmp/mypl_cc_import_test/helper.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+            "$if FEATURE $then\n"
+            "proc feature_value() -> int { return 42; }\n"
+            "$else\n"
+            "proc feature_value() -> int { return 0; }\n"
+            "$end\n");
+    fclose(f);
+
+    f = fopen("/tmp/mypl_cc_import_test/main.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+            "import \"helper.mypl\";\n"
+            "proc main() -> int { return feature_value(); }\n");
+    fclose(f);
+
+    int rc = system("./bin/mypl -DFEATURE /tmp/mypl_cc_import_test/main.mypl > /tmp/mypl_out.txt 2>&1");
+    ASSERT_INT_EQ(0, WEXITSTATUS(rc));
+    FILE* out = fopen("/tmp/mypl_out.txt", "r");
+    ASSERT_PTR_NOT_NULL(out);
+    char buf[64];
+    ASSERT_PTR_NOT_NULL(fgets(buf, sizeof(buf), out));
+    fclose(out);
+    ASSERT_INT_EQ(42, atoi(buf));
+    system("rm -rf /tmp/mypl_cc_import_test");
+}
+
+TEST(cli_rejects_invalid_conditional_flag) {
+    int rc = system("./bin/mypl -DDEBUG=1 tests/fixtures/add.mypl > /tmp/mypl_out.txt 2>&1");
+    ASSERT_INT_EQ(1, WEXITSTATUS(rc));
+    FILE* out = fopen("/tmp/mypl_out.txt", "r");
+    ASSERT_PTR_NOT_NULL(out);
+    char buf[256] = {0};
+    ASSERT_PTR_NOT_NULL(fgets(buf, sizeof(buf), out));
+    fclose(out);
+    ASSERT_PTR_NOT_NULL(strstr(buf, "Invalid conditional-compilation flag"));
+}
+
+TEST(cli_rejects_conditional_flag_without_file) {
+    int rc = system("./bin/mypl -DDEBUG > /tmp/mypl_out.txt 2>&1");
+    ASSERT_INT_EQ(1, WEXITSTATUS(rc));
+}
+
 #ifdef USE_SQLITE
 TEST(cli_accepts_db_flag) {
     remove("/tmp/cli_test.db");
     FILE* f = fopen("/tmp/cli_db.mypl", "w");
     ASSERT_PTR_NOT_NULL(f);
-    fprintf(f, "proc main() -> int { create table t (id int); return 0; }\n");
+    fprintf(f,
+            "proc main() -> int {\n"
+            "$if DB_TEST $then\n"
+            "    create table t (id int);\n"
+            "$end\n"
+            "    return 0;\n"
+            "}\n");
     fclose(f);
-    int rc = system("./bin/mypl /tmp/cli_db.mypl --db /tmp/cli_test.db > /tmp/cli_db_out.txt 2>&1");
+    int rc = system("./bin/mypl /tmp/cli_db.mypl --db /tmp/cli_test.db -DDB_TEST > /tmp/cli_db_out.txt 2>&1");
     ASSERT_INT_EQ(0, WEXITSTATUS(rc));
     remove("/tmp/cli_db.mypl");
     remove("/tmp/cli_test.db");
@@ -206,6 +289,10 @@ int main(void) {
     RUN_TEST(cli_resolves_nested_import_relative_to_importing_file);
     RUN_TEST(cli_initializes_package_declared_in_imported_module);
     RUN_TEST(cli_initializes_packages_from_multiple_imported_modules_in_order);
+    RUN_TEST(cli_accepts_conditional_flags_in_any_order);
+    RUN_TEST(cli_conditional_flags_apply_to_imports);
+    RUN_TEST(cli_rejects_invalid_conditional_flag);
+    RUN_TEST(cli_rejects_conditional_flag_without_file);
 #ifdef USE_SQLITE
     RUN_TEST(cli_accepts_db_flag);
 #endif

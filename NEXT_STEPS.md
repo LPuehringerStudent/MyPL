@@ -28,7 +28,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - [ ] Allow user packages to override/replace built-in packages
 - [ ] `utl_file` expansion: append/seek/flush, larger handle table, directory objects
 - [ ] `external_call` marshalling for float and string signatures
-- [ ] CLI flag definitions for conditional compilation (e.g. `mypl -DDEBUG file.mypl`)
+- [x] CLI flag definitions for conditional compilation (e.g. `mypl -DDEBUG file.mypl`)
 
 ### Phase 13 — Hardening & Tooling
 - [ ] Fuzzing harness for the lexer, parser, and conditional-compilation preprocessor (libFuzzer/AFL++)
