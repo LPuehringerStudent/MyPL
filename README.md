@@ -246,6 +246,31 @@ package body math_utils is
 end math_utils;
 ```
 
+### Conditional compilation
+
+Use line-oriented directives to include code for selected builds. Flags can be
+defined in source with `$define` or supplied when running a file with `-DNAME`:
+
+```mypl
+proc main() -> int {
+$if DEBUG $then
+    print "debug logging enabled";
+$else
+    print "release mode";
+$end
+    return 0;
+}
+```
+
+```bash
+./bin/mypl -DDEBUG program.mypl
+./bin/mypl -DDEBUG -DTRACE program.mypl
+```
+
+Command-line flags are boolean, may be repeated, and apply to the input file
+and its imported modules. Use `$undefine NAME` within a source file to disable
+a flag for the rest of that compilation unit.
+
 ## Examples
 
 The `examples/` directory contains runnable programs that show what MyPL looks
@@ -343,6 +368,8 @@ Useful commands:
 - User-defined subtypes (`subtype name is base;`).
 - `%TYPE` and `%ROWTYPE` type attributes.
 - Import system for splitting code across files.
+- Conditional compilation with `$define`, `$undefine`, `$if`, `$elsif`,
+  `$else`, `$end`, and command-line `-DNAME` flags.
 - SQLite backend via `--db <path>` or `.connect <path>`.
 - Custom SQL engine fallback when no `--db` is supplied.
 - Standard library: `length`, `append`, `concat`, `split`, `join`, `replace`,
