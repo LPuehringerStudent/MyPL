@@ -32,6 +32,13 @@ static void print_version(void) {
     printf("MyPL 0.1.0\n");
 }
 
+static void replace_with_filtered(char** loaded, const char* source) {
+    if (*loaded == NULL) return;
+    char* filtered = packages_filter_redefined(*loaded, source);
+    free(*loaded);
+    *loaded = filtered;
+}
+
 static int run_file(const char* path, DBDriver* driver, const CompileOptions* options) {
     char* source = os_read_file(path);
     if (source == NULL) {
@@ -49,6 +56,16 @@ static int run_file(const char* path, DBDriver* driver, const CompileOptions* op
 
     char* builtin_source = packages_load_builtins();
     char* package_source = driver != NULL ? packages_load_source(driver, ctx) : NULL;
+    /* A package declared in the file replaces a stored package of the same
+       name, and either replaces a built-in one. Regions excluded by $if do
+       not declare anything. */
+    char cc_error[256];
+    char* active_source = cc_preprocess(source, path, options, cc_error, sizeof(cc_error));
+    const char* declaring_source = active_source != NULL ? active_source : source;
+    replace_with_filtered(&package_source, declaring_source);
+    replace_with_filtered(&builtin_source, declaring_source);
+    replace_with_filtered(&builtin_source, package_source);
+    free(active_source);
     char* program_source = driver != NULL ? stored_programs_load_source(driver, ctx) : NULL;
     if (program_source != NULL && source != NULL) {
         char* filtered = stored_programs_filter_redefined(program_source, source);

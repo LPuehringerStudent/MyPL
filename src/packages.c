@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "packages.h"
+#include "lexer.h"
 #include "os.h"
 
 #ifdef USE_SQLITE
@@ -143,6 +144,162 @@ char* packages_load_builtins(void) {
         strcat(result, builtin_packages[i]);
     }
     return result;
+}
+
+#define PACKAGE_NAME_MAX 64
+
+typedef struct {
+    const char* start; /* `create` or `package` keyword */
+    const char* end;   /* one past the ';' of `end NAME;` */
+    char name[PACKAGE_NAME_MAX];
+} PackageBlock;
+
+static int token_is_word(const Token* token, const char* word) {
+    size_t len = strlen(word);
+    return token->type == TOKEN_IDENT && (size_t)token->length == len &&
+           memcmp(token->start, word, len) == 0;
+}
+
+/* Tokenize source (comments and string literals are skipped by the lexer)
+   and collect every top-level `[create [or replace]] package [body] NAME is
+   ... end NAME;` block. Returns the block count, or -1 if out of memory. */
+static int find_package_blocks(const char* source, PackageBlock** out_blocks) {
+    *out_blocks = NULL;
+    Token* tokens = NULL;
+    int token_count = 0;
+    int token_cap = 0;
+    Lexer lexer;
+    lexer_init(&lexer, source);
+    for (;;) {
+        Token token = lexer_next_token(&lexer);
+        if (token.type == TOKEN_EOF) break;
+        if (token.type == TOKEN_ERROR) continue;
+        if (token_count == token_cap) {
+            int cap = token_cap == 0 ? 256 : token_cap * 2;
+            Token* grown = realloc(tokens, sizeof(Token) * (size_t)cap);
+            if (grown == NULL) {
+                free(tokens);
+                return -1;
+            }
+            tokens = grown;
+            token_cap = cap;
+        }
+        tokens[token_count++] = token;
+    }
+
+    PackageBlock* blocks = NULL;
+    int block_count = 0;
+    int block_cap = 0;
+    int depth = 0;
+    for (int i = 0; i < token_count; i++) {
+        if (tokens[i].type == TOKEN_LBRACE) {
+            depth++;
+            continue;
+        }
+        if (tokens[i].type == TOKEN_RBRACE) {
+            if (depth > 0) depth--;
+            continue;
+        }
+        if (depth > 0) continue;
+
+        int k = i;
+        if (tokens[k].type == TOKEN_CREATE) {
+            k++;
+            if (k + 1 < token_count && token_is_word(&tokens[k], "or") &&
+                token_is_word(&tokens[k + 1], "replace")) {
+                k += 2;
+            }
+        }
+        if (k >= token_count || tokens[k].type != TOKEN_PACKAGE) continue;
+        k++;
+        if (k < token_count && tokens[k].type == TOKEN_BODY) k++;
+        if (k >= token_count || tokens[k].type != TOKEN_IDENT ||
+            tokens[k].length >= PACKAGE_NAME_MAX) {
+            continue;
+        }
+        const Token* name = &tokens[k];
+
+        int close = -1;
+        for (int j = k + 1; j + 2 < token_count; j++) {
+            if (tokens[j].type == TOKEN_END &&
+                tokens[j + 1].type == TOKEN_IDENT &&
+                tokens[j + 1].length == name->length &&
+                memcmp(tokens[j + 1].start, name->start, (size_t)name->length) == 0 &&
+                tokens[j + 2].type == TOKEN_SEMICOLON) {
+                close = j + 2;
+                break;
+            }
+        }
+        if (close < 0) continue;
+
+        if (block_count == block_cap) {
+            int cap = block_cap == 0 ? 8 : block_cap * 2;
+            PackageBlock* grown = realloc(blocks, sizeof(PackageBlock) * (size_t)cap);
+            if (grown == NULL) {
+                free(blocks);
+                free(tokens);
+                return -1;
+            }
+            blocks = grown;
+            block_cap = cap;
+        }
+        PackageBlock* block = &blocks[block_count++];
+        block->start = tokens[i].start;
+        block->end = tokens[close].start + 1;
+        memcpy(block->name, name->start, (size_t)name->length);
+        block->name[name->length] = '\0';
+        i = close;
+    }
+
+    free(tokens);
+    *out_blocks = blocks;
+    return block_count;
+}
+
+static int package_block_named(const PackageBlock* blocks, int count, const char* name) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(blocks[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
+char* packages_filter_redefined(const char* loaded, const char* source) {
+    if (loaded == NULL || *loaded == '\0') return NULL;
+
+    PackageBlock* declared = NULL;
+    int declared_count = source != NULL ? find_package_blocks(source, &declared) : 0;
+    PackageBlock* blocks = NULL;
+    int block_count = declared_count > 0 ? find_package_blocks(loaded, &blocks) : 0;
+    if (declared_count < 0 || block_count < 0) {
+        free(declared);
+        free(blocks);
+        return strdup(loaded);
+    }
+
+    char* result = malloc(strlen(loaded) + 1);
+    if (result == NULL) {
+        free(declared);
+        free(blocks);
+        return strdup(loaded);
+    }
+    size_t out = 0;
+    const char* p = loaded;
+    for (int i = 0; i < block_count; i++) {
+        if (!package_block_named(declared, declared_count, blocks[i].name)) continue;
+        memcpy(result + out, p, (size_t)(blocks[i].start - p));
+        out += (size_t)(blocks[i].start - p);
+        p = blocks[i].end;
+        if (*p == '\n') p++;
+    }
+    strcpy(result + out, p);
+    free(declared);
+    free(blocks);
+
+    for (const char* q = result; *q != '\0'; q++) {
+        if (*q != ' ' && *q != '\t' && *q != '\n' && *q != '\r') return result;
+    }
+    free(result);
+    return NULL;
 }
 
 #ifdef USE_SQLITE
