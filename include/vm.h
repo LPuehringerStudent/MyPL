@@ -27,6 +27,15 @@ void            vm_set_driver(VM* vm, struct DBDriver* driver);
 struct DBDriver* vm_get_driver(VM* vm);
 void            vm_set_sql_rowcount(VM* vm, int rowcount);
 InterpretResult vm_interpret(VM* vm, Chunk* chunk);
+/* Incremental (REPL) entry: run one appended fragment starting at offset.
+   Unlike vm_interpret this does not reset the repl-local mirror (captures
+   accumulate across fragments) and sets capture_base=0 (the fragment body
+   runs at frame_count 0). Frame/stack state is left alone, exactly like
+   vm_interpret. */
+InterpretResult vm_interpret_from(VM* vm, Chunk* chunk, int offset);
+/* Reset the repl-local mirror without releasing values (used by the REPL to
+   emulate vm_interpret's per-run mirror reset in its stuck state). */
+void            vm_repl_locals_clear(VM* vm);
 const char*     vm_get_error(VM* vm);
 void            vm_set_error(VM* vm, const char* message);
 void            vm_set_error_with_code(VM* vm, const char* message, int code);

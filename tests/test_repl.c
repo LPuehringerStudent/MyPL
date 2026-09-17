@@ -170,6 +170,58 @@ TEST(repl_no_indexes_or_foreign_keys_in_custom_engine) {
     ASSERT_INT_EQ(1, output_contains(out, "(no foreign keys)"));
 }
 
+TEST(repl_runs_each_statement_once) {
+    /* Incremental engine (#37): a statement must not re-execute when later
+       inputs arrive. Under the old recompile-everything engine the print
+       repeated once per subsequent input. */
+    char out[4096];
+    run_repl("print \"marker\";\n"
+             "int x = 1;\n"
+             "x + 1\n"
+             ".exit\n",
+             out, sizeof(out));
+    int count = 0;
+    const char* p = out;
+    while ((p = strstr(p, "marker")) != NULL) {
+        count++;
+        p++;
+    }
+    ASSERT_INT_EQ(1, count);
+}
+
+TEST(repl_vars_accumulate_without_rerunning) {
+    /* Values persist across inputs: each statement runs exactly once on the
+       accumulated state (x: 1 -> 2 -> 3). */
+    char out[4096];
+    run_repl("int x = 1;\n"
+             "x = x + 1;\n"
+             "x = x + 1;\n"
+             ".vars\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "x = 3"));
+    ASSERT_INT_EQ(0, output_contains(out, "x = 1"));
+}
+
+TEST(repl_statement_failure_poisons_session) {
+    /* A failing statement stays accumulated (old quirk, preserved): the
+       same error repeats for later inputs. */
+    char out[4096];
+    run_repl("int x = 1;\n"
+             "var bad = ;\n"
+             "x + 1\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "Compile error"));
+    int error_count = 0;
+    const char* p = out;
+    while ((p = strstr(p, ": error:")) != NULL) {
+        error_count++;
+        p++;
+    }
+    ASSERT_INT_EQ(2, error_count);
+}
+
 #ifdef USE_SQLITE
 TEST(repl_lists_indexes_and_foreign_keys_in_sqlite) {
     system("rm -f /tmp/repl_fk.db");
@@ -204,6 +256,9 @@ int main(void) {
     RUN_TEST(repl_accepts_multiline_block_statement);
     RUN_TEST(repl_history_lists_previous_input);
     RUN_TEST(repl_no_indexes_or_foreign_keys_in_custom_engine);
+    RUN_TEST(repl_runs_each_statement_once);
+    RUN_TEST(repl_vars_accumulate_without_rerunning);
+    RUN_TEST(repl_statement_failure_poisons_session);
 #ifdef USE_SQLITE
     RUN_TEST(repl_lists_indexes_and_foreign_keys_in_sqlite);
 #endif

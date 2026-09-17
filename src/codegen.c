@@ -131,6 +131,11 @@ typedef struct {
        Called in this order from the bootstrap sequence before main() runs. */
     char* module_init_procs[MAX_MODULE_INITS];
     int module_init_count;
+    /* First index to use when naming the next __module_init_N proc. Always 0
+       for whole-program compiles; the REPL's incremental compiler keeps a
+       session-wide total here so each fragment's init proc has a unique name
+       across the persistent procedure table. */
+    int module_init_base;
     const CompileOptions* options;
 } Compiler;
 
@@ -2223,7 +2228,8 @@ static int compile_module_init_proc(Compiler* compiler, Program* program, char* 
     }
 
     char name[32];
-    snprintf(name, sizeof(name), "__module_init_%d", compiler->module_init_count);
+    snprintf(name, sizeof(name), "__module_init_%d",
+             compiler->module_init_base + compiler->module_init_count);
     char* mangled = strdup(name);
     if (mangled == NULL) { error(compiler, "out of memory"); return 0; }
 
@@ -2627,7 +2633,8 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
     }
 
     if (!typecheck_program(program, sigs, compiler->proc_count, compiler->ctx,
-                           compiler->source_path, error, error_size)) {
+                           compiler->source_path, error, error_size,
+                           NULL, NULL, 0)) {
         free(sigs);
         free_program(program);
         return 0;
@@ -2780,6 +2787,7 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
     compiler.trigger_count = 0;
     compiler.current_struct = NULL;
     compiler.module_init_count = 0;
+    compiler.module_init_base = 0;
     compiler.options = options;
     add_exception(&compiler, "no_data_found", 100);
     add_exception(&compiler, "too_many_rows", -1422);
@@ -2887,4 +2895,587 @@ int compile_with_path(const char* source, Chunk* chunk, const char* path, char* 
 
 int compile(const char* source, Chunk* chunk, char* error, size_t error_size) {
     return compile_with_context(source, chunk, error, error_size, NULL);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Incremental (REPL) compilation — Phase 13 #37.
+ *
+ * A ReplCompiler persists the procedure table (name -> chunk offset +
+ * signature), the global-name table, the trigger table, and the top-level
+ * main-body local table across compile calls. Each REPL input is compiled as
+ * ONE fragment and appended to a single growing Chunk:
+ *
+ *  - Statement/expression inputs arrive wrapped by the REPL as
+ *    "proc main() -> int { <main body so far> ... }" (the exact text the REPL
+ *    always built, minus the procedures prefix). Only the NEW top-level
+ *    statements plus the synthetic return are code-generated; the typechecker
+ *    sees previous top-level locals through a seed scope. The fragment ends
+ *    with the return's OP_RETURN and runs at frame_count 0 via
+ *    vm_interpret_from().
+ *
+ *  - Definition inputs (proc/package, i.e. the REPL's `procedures` buffer
+ *    entries) compile through the standard program path minus the entry
+ *    jump/bootstrap. Package-level state initializers become a
+ *    __module_init_N proc that the fragment's run sequence calls once (the
+ *    old engine re-ran all inits before every input).
+ *
+ * On fragment failure every table is rolled back to the watermarks taken at
+ * fragment start (the old engine discarded the whole compile), and the REPL
+ * reproduces the observable poison semantics (reprinting the first error for
+ * later inputs) at the repl.c level.
+ * ------------------------------------------------------------------------- */
+
+struct ReplCompiler {
+    Compiler compiler;
+    int      exec_offset;        /* chunk offset the current fragment runs from */
+    int      stmt_watermark;     /* wrapper main stmts already code-generated */
+    int      module_init_total;  /* session-wide __module_init_N counter */
+    int      published_triggers; /* chunk->triggers entries already published */
+    /* Seed arrays mirroring the persistent top-level locals for the
+       typechecker's wrapper-main scope. Entries are owned copies. */
+    char**   seed_names;
+    Type**   seed_types;
+    int      seed_count;
+    int      seed_capacity;
+    /* Rollback watermarks, captured at fragment start. */
+    int      mark_proc_count;
+    int      mark_global_count;
+    int      mark_trigger_count;
+    int      mark_local_count;
+    int      mark_chunk_count;
+    int      mark_lines_count;
+    int      mark_columns_count;
+    int      mark_constants_count;
+};
+
+static void repl_compiler_rollback(ReplCompiler* rc) {
+    Compiler* c = &rc->compiler;
+    for (int i = rc->mark_proc_count; i < c->proc_count; i++) {
+        free((void*)c->procs[i].name);
+        type_free(c->procs[i].return_type);
+        for (int p = 0; p < c->procs[i].param_count; p++) {
+            type_free(c->procs[i].param_types[p]);
+        }
+        free(c->procs[i].param_types);
+        free(c->procs[i].param_modes);
+    }
+    c->proc_count = rc->mark_proc_count;
+
+    for (int i = rc->mark_global_count; i < c->global_count; i++) {
+        free((void*)c->global_names[i]);
+        c->global_names[i] = NULL;
+    }
+    c->global_count = rc->mark_global_count;
+
+    for (int i = rc->mark_trigger_count; i < c->trigger_count; i++) {
+        free(c->triggers[i].proc_name);
+        free(c->triggers[i].table);
+    }
+    c->trigger_count = rc->mark_trigger_count;
+
+    c->local_count = rc->mark_local_count;
+
+    c->chunk->count = rc->mark_chunk_count;
+    c->chunk->lines_count = rc->mark_lines_count;
+    c->chunk->columns_count = rc->mark_columns_count;
+    /* Truncated constants are leaked deliberately: the old engine freed them
+       with the discarded chunk, but unwinding individual constant-pool entries
+       is not worth the bookkeeping for the rare failed-input case. */
+    c->chunk->constants_count = rc->mark_constants_count;
+
+    for (int i = 0; i < c->patch_count; i++) free((void*)c->patches[i].name);
+    c->patch_count = 0;
+    free_exception_entries(c);
+    c->exception_count = 0;
+    free_module_init_entries(c);
+    c->module_init_count = 0;
+}
+
+/* Reset the per-fragment compiler state; persistent tables stay. */
+static void repl_reset_fragment(ReplCompiler* rc) {
+    Compiler* c = &rc->compiler;
+    c->patch_count = 0;
+    c->had_error = 0;
+    c->error_message[0] = '\0';
+    c->entry_index = -1;
+    c->entry_jump_patch = -1;
+    c->loop_count = 0;
+    c->scope_depth = 0;
+    c->current_line = 0;
+    c->current_column = 0;
+    c->current_package = NULL;
+    c->current_proc_autonomous = 0;
+    c->current_struct = NULL;
+    c->module_init_count = 0;
+    c->module_init_base = rc->module_init_total;
+    c->cursor_query_count = 0;
+    c->exception_count = 0;
+    add_exception(c, "no_data_found", 100);
+    add_exception(c, "too_many_rows", -1422);
+    c->options = NULL;
+}
+
+static int repl_build_sigs(Compiler* c, ProcSignature** out) {
+    *out = NULL;
+    if (c->proc_count == 0) return 1;
+    ProcSignature* sigs = malloc(sizeof(ProcSignature) * (size_t)c->proc_count);
+    if (sigs == NULL) return 0;
+    for (int i = 0; i < c->proc_count; i++) {
+        sigs[i].name = c->procs[i].name;
+        sigs[i].return_type = c->procs[i].return_type;
+        sigs[i].param_types = c->procs[i].param_types;
+        sigs[i].param_modes = c->procs[i].param_modes;
+        sigs[i].param_count = c->procs[i].param_count;
+        sigs[i].is_public = c->procs[i].is_public;
+    }
+    *out = sigs;
+    return 1;
+}
+
+/* Apply this fragment's call patches (copied from the end of
+   compile_with_options, minus the wholesale teardown). */
+static int repl_patch_calls(Compiler* c, char* error, size_t error_size) {
+    Chunk* chunk = c->chunk;
+    for (int i = 0; i < c->patch_count; i++) {
+        int idx = find_proc(c, c->patches[i].name);
+        if (idx < 0) {
+            if (error != NULL && error_size > 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Undefined procedure '%s'", c->patches[i].name);
+                format_error(error, error_size, c->source_path, 0, 0, msg);
+            }
+            return 0;
+        }
+        patch_call(chunk, c->patches[i].offset, c->procs[idx].offset);
+        if (c->procs[idx].autonomous_transaction) {
+            int op_offset = c->patches[i].offset - 1;
+            if (op_offset >= 0 && op_offset < chunk->count) {
+                if (chunk->code[op_offset] == OP_CALL) {
+                    chunk->code[op_offset] = OP_CALL_AUTONOMOUS;
+                } else if (chunk->code[op_offset] == OP_CALL_OUT) {
+                    chunk->code[op_offset] = OP_CALL_OUT_AUTONOMOUS;
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+static int repl_compiler_error(Compiler* c, char* error, size_t error_size) {
+    if (error != NULL && error_size > 0) {
+        strncpy(error, c->error_message[0] != '\0' ? c->error_message : "unknown error",
+                error_size - 1);
+        error[error_size - 1] = '\0';
+    }
+    return 0;
+}
+
+/* Take ownership of the local-table entries added by this fragment: names and
+   types point into the freed AST, so persist deep copies and extend the
+   typecheck seed arrays to match. */
+static int repl_take_ownership(ReplCompiler* rc, char* error, size_t error_size) {
+    Compiler* c = &rc->compiler;
+    for (int i = rc->mark_local_count; i < c->local_count; i++) {
+        Local* l = &c->locals[i];
+        char* name_copy = malloc((size_t)l->length + 1);
+        if (name_copy == NULL) {
+            if (error != NULL && error_size > 0) {
+                strncpy(error, "out of memory", error_size - 1);
+                error[error_size - 1] = '\0';
+            }
+            return 0;
+        }
+        memcpy(name_copy, l->name, (size_t)l->length);
+        name_copy[l->length] = '\0';
+        Type* type_copy_v = NULL;
+        if (l->type != NULL) {
+            type_copy_v = type_copy(l->type);
+            if (type_copy_v == NULL) {
+                free(name_copy);
+                if (error != NULL && error_size > 0) {
+                    strncpy(error, "out of memory", error_size - 1);
+                    error[error_size - 1] = '\0';
+                }
+                return 0;
+            }
+        }
+        if (rc->seed_count == rc->seed_capacity) {
+            int new_cap = rc->seed_capacity == 0 ? 16 : rc->seed_capacity * 2;
+            char** new_names = realloc(rc->seed_names, sizeof(char*) * (size_t)new_cap);
+            if (new_names == NULL) {
+                free(name_copy);
+                type_free(type_copy_v);
+                if (error != NULL && error_size > 0) {
+                    strncpy(error, "out of memory", error_size - 1);
+                    error[error_size - 1] = '\0';
+                }
+                return 0;
+            }
+            rc->seed_names = new_names;
+            Type** new_types = realloc(rc->seed_types, sizeof(Type*) * (size_t)new_cap);
+            if (new_types == NULL) {
+                free(name_copy);
+                type_free(type_copy_v);
+                if (error != NULL && error_size > 0) {
+                    strncpy(error, "out of memory", error_size - 1);
+                    error[error_size - 1] = '\0';
+                }
+                return 0;
+            }
+            rc->seed_types = new_types;
+            rc->seed_capacity = new_cap;
+        }
+        rc->seed_names[rc->seed_count] = name_copy;
+        rc->seed_types[rc->seed_count] = type_copy_v;
+        rc->seed_count++;
+        l->name = name_copy;
+        l->type = type_copy_v;
+    }
+    return 1;
+}
+
+static int repl_compile_stmt_fragment(ReplCompiler* rc, Program* program,
+                                      char* error, size_t error_size) {
+    Compiler* c = &rc->compiler;
+    ProcDecl* main_proc = NULL;
+    for (int i = 0; i < program->proc_count; i++) {
+        if (strcmp(program->procs[i].name, "main") == 0) {
+            main_proc = &program->procs[i];
+            break;
+        }
+    }
+    if (main_proc == NULL || main_proc->body == NULL) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "internal: wrapper main missing", error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+
+    ProcSignature* sigs = NULL;
+    if (!repl_build_sigs(c, &sigs)) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "out of memory", error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+    int tc_ok = typecheck_program(program, sigs, c->proc_count, c->ctx,
+                                  c->source_path, error, error_size,
+                                  (const char* const*)rc->seed_names,
+                                  (Type* const*)rc->seed_types,
+                                  rc->seed_count);
+    free(sigs);
+    if (!tc_ok) return 0;
+
+    /* Codegen only the statements added since the previous input, plus the
+       synthetic trailing return. No compile_block epilogue: top-level locals
+       stay live (values persist on the VM stack across fragments), matching
+       the mid-body state of a whole-program main compile. */
+    Block* body = main_proc->body;
+    int total = body->stmt_count;
+    int start = rc->stmt_watermark;
+    if (start < 0) start = 0;
+    if (start > total - 1) start = total - 1;
+    for (int i = start; i < total; i++) {
+        compile_stmt(c, body->stmts[i]);
+        if (c->had_error) return repl_compiler_error(c, error, error_size);
+    }
+    rc->stmt_watermark = total - 1;
+    return repl_patch_calls(c, error, error_size);
+}
+
+static int repl_compile_def_fragment(ReplCompiler* rc, Program* program,
+                                     char* error, size_t error_size) {
+    Compiler* c = &rc->compiler;
+
+    for (int i = 0; i < program->import_count; i++) {
+        Stmt* import_stmt = program->imports[i];
+        const char* path = import_stmt->as.import_stmt.path;
+        c->current_line = import_stmt->loc.line;
+        c->current_column = import_stmt->loc.column;
+        if (!compiler_load_module(c, path, error, error_size)) return 0;
+    }
+
+    for (int i = 0; i < program->proc_count; i++) {
+        ProcDecl* proc = &program->procs[i];
+        Type** pts = NULL;
+        ParamMode* pms = NULL;
+        if (proc->param_count > 0) {
+            pts = malloc(sizeof(Type*) * (size_t)proc->param_count);
+            pms = malloc(sizeof(ParamMode) * (size_t)proc->param_count);
+            for (int p = 0; p < proc->param_count; p++) {
+                pts[p] = proc->params[p].type;
+                pms[p] = proc->params[p].mode;
+            }
+        }
+        int idx = add_proc_entry(c, proc->name, -1, proc->return_type,
+                                 pts, pms, proc->param_count);
+        free(pts);
+        free(pms);
+        if (idx < 0) {
+            if (error != NULL && error_size > 0) {
+                if (idx == -1) {
+                    format_error(error, error_size, c->source_path, 0, 0,
+                                 "Out of memory registering procedure");
+                } else if (idx == -2) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Duplicate procedure '%s'", proc->name);
+                    format_error(error, error_size, c->source_path, 0, 0, msg);
+                } else {
+                    format_error(error, error_size, c->source_path, 0, 0,
+                                 "Too many procedures");
+                }
+            }
+            return 0;
+        }
+    }
+
+    if (!register_package_procs(c, program, error, error_size)) return 0;
+    if (!register_trigger_procs(c, program, error, error_size)) return 0;
+    if (!register_struct_methods(c, program, error, error_size)) return 0;
+
+    ProcSignature* sigs = NULL;
+    if (!repl_build_sigs(c, &sigs)) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "out of memory", error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+    int tc_ok = typecheck_program(program, sigs, c->proc_count, c->ctx,
+                                  c->source_path, error, error_size,
+                                  NULL, NULL, 0);
+    free(sigs);
+    if (!tc_ok) return 0;
+
+    /* Definition codegen (module init, package members, proc bodies) assumes
+       a fresh locals table per body, exactly like a whole-program compile
+       where main's table does not exist yet. Swap in a scratch table so the
+       persistent main-body locals survive; the scratch is freed after. */
+    Local* saved_locals = c->locals;
+    int saved_local_count = c->local_count;
+    int saved_local_capacity = c->local_capacity;
+    c->locals = NULL;
+    c->local_count = 0;
+    c->local_capacity = 0;
+
+    int init_ok = compile_module_init_proc(c, program, error, error_size);
+    if (init_ok) {
+        compile_package_members(c, program);
+        if (!c->had_error) compile_trigger_members(c, program);
+        if (!c->had_error) compile_struct_methods(c, program);
+
+        for (int i = 0; i < program->proc_count && !c->had_error; i++) {
+            ProcDecl* proc = &program->procs[i];
+            int idx = find_proc(c, proc->name);
+            if (idx < 0) continue;
+            c->current_proc_autonomous = 0;
+            c->procs[idx].offset = c->chunk->count;
+            for (int p = 0; p < proc->param_count; p++) {
+                add_local(c, proc->params[p].name,
+                          (int)strlen(proc->params[p].name), proc->params[p].type);
+            }
+            compile_block(c, proc->body);
+            c->procs[idx].autonomous_transaction = c->current_proc_autonomous;
+            if (!c->had_error) emit_byte(c, OP_RETURN);
+            c->local_count = 0;
+            c->scope_depth = 0;
+        }
+    }
+
+    free(c->locals);
+    c->locals = saved_locals;
+    c->local_count = saved_local_count;
+    c->local_capacity = saved_local_capacity;
+    c->scope_depth = 0;
+
+    if (!init_ok) return 0;
+    if (c->had_error) return repl_compiler_error(c, error, error_size);
+
+    /* Run sequence: invoke this fragment's package-state initializers once,
+       then leave 0 on the stack (the REPL prints it, matching the old
+       validation run's main return value). */
+    int exec_start = c->chunk->count;
+    for (int i = 0; i < c->module_init_count; i++) {
+        emit_call(c, c->module_init_procs[i], 0);
+        emit_byte(c, OP_POP);
+    }
+    emit_constant(c, value_int(0));
+    emit_byte(c, OP_RETURN);
+    rc->module_init_total += c->module_init_count;
+    rc->exec_offset = exec_start;
+    return repl_patch_calls(c, error, error_size);
+}
+
+ReplCompiler* repl_compiler_create(void) {
+    ReplCompiler* rc = calloc(1, sizeof(ReplCompiler));
+    if (rc == NULL) return NULL;
+    Compiler* c = &rc->compiler;
+    c->chunk = NULL;
+    c->locals = NULL;
+    c->local_count = 0;
+    c->local_capacity = 0;
+    c->cursor_queries = NULL;
+    c->cursor_query_count = 0;
+    c->cursor_query_capacity = 0;
+    c->scope_depth = 0;
+    c->proc_count = 0;
+    c->patch_count = 0;
+    c->had_error = 0;
+    c->error_message[0] = '\0';
+    c->entry_index = -1;
+    c->entry_jump_patch = -1;
+    c->loaded_count = 0;
+    c->loading_count = 0;
+    c->current_path = NULL;
+    c->source_path = NULL;
+    c->ctx = NULL;
+    c->loop_count = 0;
+    c->current_line = 0;
+    c->current_column = 0;
+    c->global_count = 0;
+    c->current_package = NULL;
+    c->current_proc_autonomous = 0;
+    c->exception_count = 0;
+    c->trigger_count = 0;
+    c->current_struct = NULL;
+    c->module_init_count = 0;
+    c->module_init_base = 0;
+    c->options = NULL;
+    for (int i = 0; i < MAX_GLOBALS; i++) c->global_names[i] = NULL;
+    rc->exec_offset = -1;
+    rc->stmt_watermark = 0;
+    rc->module_init_total = 0;
+    rc->published_triggers = 0;
+    rc->seed_names = NULL;
+    rc->seed_types = NULL;
+    rc->seed_count = 0;
+    rc->seed_capacity = 0;
+    return rc;
+}
+
+void repl_compiler_free(ReplCompiler* rc) {
+    if (rc == NULL) return;
+    Compiler* c = &rc->compiler;
+    free_proc_entries(c);
+    free_global_names(c);
+    free_exception_entries(c);
+    free_trigger_entries(c);
+    free_module_init_entries(c);
+    for (int i = 0; i < c->patch_count; i++) free((void*)c->patches[i].name);
+    for (int i = 0; i < c->loaded_count; i++) free(c->loaded_paths[i]);
+    /* Locals [0, local_count) are ReplCompiler-owned copies; the seed arrays
+       reference the SAME copies (one per local), so only free them here. */
+    for (int i = 0; i < c->local_count; i++) {
+        free((void*)c->locals[i].name);
+        type_free(c->locals[i].type);
+    }
+    free(c->locals);
+    free(c->cursor_queries);
+    free(rc->seed_names);
+    free(rc->seed_types);
+    free(rc);
+}
+
+int repl_compiler_compile(ReplCompiler* rc, const char* source, int is_def_fragment,
+                          Chunk* chunk, char* error, size_t error_size,
+                          struct Context* ctx) {
+    if (rc == NULL || source == NULL || chunk == NULL) return 0;
+    Compiler* c = &rc->compiler;
+
+    /* Bytecode, jump targets, and constant indices are u16; guard the growing
+       session chunk instead of silently wrapping offsets. */
+    if (chunk->count > 60000 || chunk->constants_count > 60000) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, "REPL session too large (bytecode limit reached)",
+                    error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+
+    rc->mark_proc_count = c->proc_count;
+    rc->mark_global_count = c->global_count;
+    rc->mark_trigger_count = c->trigger_count;
+    rc->mark_local_count = c->local_count;
+    rc->mark_chunk_count = chunk->count;
+    rc->mark_lines_count = chunk->lines_count;
+    rc->mark_columns_count = chunk->columns_count;
+    rc->mark_constants_count = chunk->constants_count;
+
+    repl_reset_fragment(rc);
+
+    c->chunk = chunk;
+    c->ctx = ctx;
+    c->source_path = NULL;
+    rc->exec_offset = chunk->count;
+
+    char cc_error[256] = {0};
+    char* processed = cc_preprocess(source, c->source_path, c->options,
+                                    cc_error, sizeof(cc_error));
+    if (processed == NULL) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, cc_error[0] != '\0' ? cc_error
+                                               : "conditional compilation: out of memory",
+                    error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+    char parse_error[256] = {0};
+    Program* program = parse_with_path(processed, c->source_path,
+                                       parse_error, sizeof(parse_error));
+    free(processed);
+    if (program == NULL) {
+        if (error != NULL && error_size > 0) {
+            strncpy(error, parse_error, error_size - 1);
+            error[error_size - 1] = '\0';
+        }
+        return 0;
+    }
+
+    int ok = is_def_fragment
+                 ? repl_compile_def_fragment(rc, program, error, error_size)
+                 : repl_compile_stmt_fragment(rc, program, error, error_size);
+    if (!ok) {
+        free_program(program);
+        repl_compiler_rollback(rc);
+        return 0;
+    }
+
+    /* Persist copies of the new locals' names/types BEFORE the AST is freed:
+       the table entries point into it. */
+    if (!repl_take_ownership(rc, error, error_size)) {
+        free_program(program);
+        repl_compiler_rollback(rc);
+        return 0;
+    }
+    free_program(program);
+
+    /* Publish this fragment's trigger entries to the runtime registry. */
+    for (int i = rc->published_triggers; i < c->trigger_count; i++) {
+        TriggerEntry* te = &c->triggers[i];
+        int idx = find_proc(c, te->proc_name);
+        if (idx < 0 || c->procs[idx].offset < 0) continue;
+        chunk_add_trigger(chunk, te->proc_name + 10 /* skip "__trigger_" */,
+                          te->timing, te->event, te->table,
+                          c->procs[idx].offset, te->for_each_row);
+    }
+    rc->published_triggers = c->trigger_count;
+
+    /* Per-fragment cleanup: patches and module-init names are consumed. */
+    for (int i = 0; i < c->patch_count; i++) free((void*)c->patches[i].name);
+    c->patch_count = 0;
+    free_module_init_entries(c);
+    c->module_init_count = 0;
+    free_exception_entries(c);
+    c->exception_count = 0;
+
+    return 1;
+}
+
+int repl_compiler_exec_offset(const ReplCompiler* rc) {
+    return rc != NULL ? rc->exec_offset : -1;
 }
