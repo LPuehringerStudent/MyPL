@@ -46,7 +46,11 @@ static char* strip_main_procedure(const char* source);
     "    func fopen(path string, mode string) -> int;\n" \
     "    func get_line(handle int) -> string;\n" \
     "    proc put_line(handle int, text string) -> int;\n" \
+    "    func fseek(handle int, offset int) -> int;\n" \
+    "    proc fflush(handle int) -> int;\n" \
     "    proc fclose(handle int) -> int;\n" \
+    "    func mkdir(path string) -> int;\n" \
+    "    func remove(path string) -> int;\n" \
     "end utl_file;\n" \
     "\n" \
     "package body utl_file is\n" \
@@ -63,9 +67,25 @@ static char* strip_main_procedure(const char* source);
     "        return 0;\n" \
     "    }\n" \
     "\n" \
+    "    func fseek(handle int, offset int) -> int {\n" \
+    "        return utl_file_fseek(handle, offset);\n" \
+    "    }\n" \
+    "\n" \
+    "    proc fflush(handle int) -> int {\n" \
+    "        return utl_file_fflush(handle);\n" \
+    "    }\n" \
+    "\n" \
     "    proc fclose(handle int) -> int {\n" \
     "        utl_file_fclose(handle);\n" \
     "        return 0;\n" \
+    "    }\n" \
+    "\n" \
+    "    func mkdir(path string) -> int {\n" \
+    "        return utl_file_mkdir(path);\n" \
+    "    }\n" \
+    "\n" \
+    "    func remove(path string) -> int {\n" \
+    "        return utl_file_remove(path);\n" \
     "    }\n" \
     "end utl_file;"
 

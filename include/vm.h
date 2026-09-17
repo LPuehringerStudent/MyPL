@@ -44,7 +44,11 @@ Value           vm_dbms_output_get_lines(VM* vm);
 int             vm_utl_file_fopen(VM* vm, const char* path, const char* mode);
 Value           vm_utl_file_get_line(VM* vm, int handle);
 int             vm_utl_file_put_line(VM* vm, int handle, const char* text);
+int             vm_utl_file_fseek(VM* vm, int handle, int offset);
+int             vm_utl_file_fflush(VM* vm, int handle);
 int             vm_utl_file_fclose(VM* vm, int handle);
+int             vm_utl_file_mkdir(const char* path);
+int             vm_utl_file_remove(const char* path);
 
 /* dbms_sql helpers */
 int             vm_dbms_sql_execute(VM* vm, const char* sql);
