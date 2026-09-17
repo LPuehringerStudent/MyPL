@@ -1,0 +1,20 @@
+// Helper module for phase12_import_packages.mypl — a package with
+// package-level state declared in an imported module. Before Phase 12 the
+// initializer (counter = 41) never ran for imported modules, so get()
+// returned the zero value instead of 41.
+package counter is
+    counter int;
+    func get() -> int;
+    func bump() -> int;
+end counter;
+
+package body counter is
+    int counter = 41;
+    func get() -> int {
+        return counter;
+    }
+    func bump() -> int {
+        counter = counter + 1;
+        return counter;
+    }
+end counter;

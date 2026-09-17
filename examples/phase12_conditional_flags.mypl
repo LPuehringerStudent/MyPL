@@ -1,0 +1,19 @@
+// Phase 12: command-line conditional-compilation flags.
+//
+// Flags can be defined in source with $define or supplied on the command
+// line, and apply to the file and its imports:
+//   ./bin/mypl examples/phase12_conditional_flags.mypl          -> "release mode"
+//   ./bin/mypl -DDEBUG examples/phase12_conditional_flags.mypl  -> "debug logging enabled"
+//   ./bin/mypl -DDEBUG -DTRACE examples/phase12_conditional_flags.mypl
+//                                                               -> trace line too
+proc main() -> int {
+$if DEBUG $then
+    print "debug logging enabled";
+$else
+    print "release mode";
+$end
+$if TRACE $then
+    print "trace: entering main";
+$end
+    return 0;
+}

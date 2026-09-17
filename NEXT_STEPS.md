@@ -2,11 +2,11 @@
 
 This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete (see git history and the closed issues #1–#22 for details). The phases below address the known gaps that remain after Phase 11.
 
-## Known Gaps (as of Phase 11 completion)
+## Known Gaps (as of Phase 12 in progress)
 
 - The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
-- Phase 9/10 features are first cuts: statement-level triggers on static SQL only, session-only sequences, simplified `dbms_sql`/`utl_file`, single-signature FFI, line-flag-only conditional compilation.
-- Fixed ceilings everywhere (`STACK_MAX`, `MAX_LOCALS`, handle counts), full-recompile REPL, no package init for imported modules, non-overridable built-in packages, ref-count-only GC.
+- The custom engine ignores `?var` bind params for static SQL (`tests/test_phase6.c` has 4 pre-existing failures in `USE_SQLITE=0` builds); the `dbms_sql` cursor API substitutes `?N` at execute time instead.
+- `utl_file` is still a thin wrapper (16 handles, 1 KB lines, no directory objects); `external_call` supports only int signatures; built-in packages cannot be overridden; REPL recompiles everything per input; reference counting has no cycle collection.
 - No fuzzing, examples not covered by CI, no install target, README lags the feature set, POSIX-only.
 
 ## Phased Roadmap
@@ -24,7 +24,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - [ ] Persist triggers in the catalog, add `DROP TRIGGER`, and fire triggers on dynamic SQL (`execute_immediate`, `dbms_sql.execute`)
 - [ ] Row-level triggers (`FOR EACH ROW`) with `:new` / `:old` row context
 - [ ] Full `dbms_sql` cursor API: `open_cursor`, `parse`, `bind_variable`, `execute`, `fetch_rows`, `column_value`, `close_cursor`
-- [ ] Initialize packages declared in imported modules
+- [x] Initialize packages declared in imported modules
 - [ ] Allow user packages to override/replace built-in packages
 - [ ] `utl_file` expansion: append/seek/flush, larger handle table, directory objects
 - [ ] `external_call` marshalling for float and string signatures
