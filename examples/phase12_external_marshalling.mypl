@@ -1,0 +1,18 @@
+// Phase 12: external_call float/string marshalling example.
+// MyPL int, float and string arguments are passed as C int, double and
+// const char*. The native name selects the C return type:
+//   external_call        -> int
+//   external_call_float  -> float
+//   external_call_string -> string (copied; a NULL char* becomes NULL)
+// Calls into libc and libm via dlopen/dlsym (Linux).
+proc main() -> int {
+    int n = external_call("libc.so.6", "strlen", "marshalling");
+    print int_to_string(n);
+
+    float root = external_call_float("libm.so.6", "sqrt", 2.0);
+    print float_to_string(root);
+
+    string shell = external_call_string("libc.so.6", "getenv", "MYPL_UNSET_VARIABLE");
+    print nvl(shell, "(not set)");
+    return 0;
+}

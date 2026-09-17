@@ -569,6 +569,8 @@ static int is_native(const char* name) {
            strcmp(name, "currval") == 0 ||
            strcmp(name, "drop_sequence") == 0 ||
            strcmp(name, "external_call") == 0 ||
+           strcmp(name, "external_call_float") == 0 ||
+           strcmp(name, "external_call_string") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -1683,21 +1685,26 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         }
         return &type_int;
     }
-    if (strcmp(name, "external_call") == 0) {
+    if (strcmp(name, "external_call") == 0 ||
+        strcmp(name, "external_call_float") == 0 ||
+        strcmp(name, "external_call_string") == 0) {
         if (arg_count != 3) {
-            type_error(tc, loc, "external_call expects 3 arguments");
+            type_error(tc, loc, "%s expects 3 arguments", name);
             return NULL;
         }
         for (int i = 0; i < 2; i++) {
             Type* a = infer_expr(tc, args[i], NULL);
             if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
-                type_error(tc, loc, "external_call expects string library and symbol");
+                type_error(tc, loc, "%s expects string library and symbol", name);
             }
         }
         Type* third = infer_expr(tc, args[2], NULL);
-        if (third != &type_unknown && third != NULL && third->kind != TYPE_INT) {
-            type_error(tc, loc, "external_call expects an int argument");
+        if (third != &type_unknown && third != NULL && third->kind != TYPE_INT &&
+            third->kind != TYPE_FLOAT && third->kind != TYPE_STRING) {
+            type_error(tc, loc, "%s expects an int, float or string argument", name);
         }
+        if (strcmp(name, "external_call_float") == 0) return &type_float;
+        if (strcmp(name, "external_call_string") == 0) return &type_string;
         return &type_int;
     }
     return NULL;

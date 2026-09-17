@@ -6,7 +6,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 
 - The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
 - The custom engine ignores `?var` bind params for static SQL (`tests/test_phase6.c` has 4 pre-existing failures in `USE_SQLITE=0` builds); the `dbms_sql` cursor API substitutes `?N` at execute time instead.
-- `utl_file` is still a thin wrapper (16 handles, 1 KB lines, no directory objects); `external_call` supports only int signatures; built-in packages cannot be overridden; REPL recompiles everything per input; reference counting has no cycle collection.
+- `utl_file` is still a thin wrapper (16 handles, 1 KB lines, no directory objects); `external_call` takes a single int/float/string argument; built-in packages cannot be overridden; REPL recompiles everything per input; reference counting has no cycle collection.
 - No fuzzing, examples not covered by CI, no install target, README lags the feature set, POSIX-only.
 
 ## Phased Roadmap
@@ -27,7 +27,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 - [x] Initialize packages declared in imported modules
 - [ ] Allow user packages to override/replace built-in packages
 - [ ] `utl_file` expansion: append/seek/flush, larger handle table, directory objects
-- [ ] `external_call` marshalling for float and string signatures
+- [x] `external_call` marshalling for float and string signatures (`external_call_float` / `external_call_string`; int, float or string argument)
 - [x] CLI flag definitions for conditional compilation (e.g. `mypl -DDEBUG file.mypl`)
 
 ### Phase 13 — Hardening & Tooling
