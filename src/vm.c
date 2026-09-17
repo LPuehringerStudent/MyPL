@@ -58,15 +58,24 @@ typedef struct {
 struct VM {
     Chunk*        chunk;
     uint8_t*      ip;
-    Value         stack[STACK_MAX];
+    /* Value stack: heap array, grows by doubling (hard cap STACK_MAX).
+       stack_top, frame_base, frames[] and try_frames[] hold pointers into
+       this array; vm_ensure_stack_capacity re-bases them after realloc. */
+    Value*        stack;
+    int           stack_capacity;
     Value*        stack_top;
-    Value*        frames[STACK_MAX];
-    uint8_t*      return_ips[STACK_MAX];
+    /* Per-frame bookkeeping arrays, all grown together by
+       vm_ensure_frame_capacity (indexed by frame_count). */
+    Value**       frames;
+    uint8_t**     return_ips;
+    OutParamFrame* out_frames;
+    int           frames_capacity;
     int           frame_count;
     Value*        frame_base;
-    OutParamFrame out_frames[STACK_MAX];
     int           local_count;
-    Value         repl_locals[STACK_MAX];
+    /* REPL local mirror (top-level main frame), heap array grown on demand. */
+    Value*        repl_locals;
+    int           repl_local_capacity;
     int           repl_local_count;
     void*         result_handle;
     void*         row_handle;
@@ -92,9 +101,33 @@ struct VM {
     DBMS_SQL_Cursor dbms_sql_cursors[DBMS_SQL_MAX_CURSORS];
 };
 
+/* Initial capacities for the dynamically grown VM arrays. Each doubles on
+   demand up to the STACK_MAX hard cap. */
+#define VM_INITIAL_STACK_CAPACITY 256
+#define VM_INITIAL_FRAME_CAPACITY 256
+#define VM_INITIAL_REPL_CAPACITY  256
+
 VM* vm_init(void) {
     VM* vm = malloc(sizeof(VM));
     if (vm == NULL) return NULL;
+    vm->stack_capacity = VM_INITIAL_STACK_CAPACITY;
+    vm->stack = malloc(sizeof(Value) * (size_t)vm->stack_capacity);
+    vm->frames_capacity = VM_INITIAL_FRAME_CAPACITY;
+    vm->frames = malloc(sizeof(Value*) * (size_t)vm->frames_capacity);
+    vm->return_ips = malloc(sizeof(uint8_t*) * (size_t)vm->frames_capacity);
+    vm->out_frames = malloc(sizeof(OutParamFrame) * (size_t)vm->frames_capacity);
+    vm->repl_local_capacity = VM_INITIAL_REPL_CAPACITY;
+    vm->repl_locals = malloc(sizeof(Value) * (size_t)vm->repl_local_capacity);
+    if (vm->stack == NULL || vm->frames == NULL || vm->return_ips == NULL ||
+        vm->out_frames == NULL || vm->repl_locals == NULL) {
+        free(vm->stack);
+        free(vm->frames);
+        free(vm->return_ips);
+        free(vm->out_frames);
+        free(vm->repl_locals);
+        free(vm);
+        return NULL;
+    }
     vm->chunk = NULL;
     vm->ip = NULL;
     vm->stack_top = vm->stack;
@@ -1035,11 +1068,83 @@ void vm_free(VM* vm) {
         }
     }
     array_pool_free_all();
+    free(vm->stack);
+    free(vm->frames);
+    free(vm->return_ips);
+    free(vm->out_frames);
+    free(vm->repl_locals);
     free(vm);
 }
 
+static int vm_ensure_stack_capacity(VM* vm, int additional) {
+    int used = (int)(vm->stack_top - vm->stack);
+    if (used + additional <= vm->stack_capacity) return 1;
+    int new_capacity = vm->stack_capacity;
+    while (new_capacity < used + additional) {
+        if (new_capacity >= STACK_MAX) return 0;
+        new_capacity *= 2;
+        if (new_capacity > STACK_MAX) new_capacity = STACK_MAX;
+    }
+    Value* old_stack = vm->stack;
+    Value* new_stack = realloc(vm->stack, sizeof(Value) * (size_t)new_capacity);
+    if (new_stack == NULL) return 0;
+    ptrdiff_t delta = new_stack - old_stack;
+    vm->stack = new_stack;
+    vm->stack_capacity = new_capacity;
+    if (delta != 0) {
+        /* Every pointer into the old array follows the block. */
+        vm->stack_top += delta;
+        vm->frame_base += delta;
+        for (int i = 0; i < vm->frame_count; i++) {
+            vm->frames[i] += delta;
+        }
+        for (int i = 0; i < vm->try_count; i++) {
+            vm->try_frames[i].frame_base += delta;
+            vm->try_frames[i].stack_top += delta;
+        }
+    }
+    return 1;
+}
+
+/* Grow the frames/return_ips/out_frames arrays together (they are indexed
+   by the same frame_count). Hard-capped at STACK_MAX frames so runaway
+   recursion fails cleanly instead of exhausting memory. */
+static int vm_ensure_frame_capacity(VM* vm, int needed) {
+    if (needed <= vm->frames_capacity) return 1;
+    if (vm->frames_capacity >= STACK_MAX) return 0;
+    int new_capacity = vm->frames_capacity * 2;
+    if (new_capacity > STACK_MAX) new_capacity = STACK_MAX;
+    if (new_capacity < needed) return 0;
+    Value** new_frames = realloc(vm->frames, sizeof(Value*) * (size_t)new_capacity);
+    if (new_frames == NULL) return 0;
+    vm->frames = new_frames;
+    uint8_t** new_return_ips = realloc(vm->return_ips, sizeof(uint8_t*) * (size_t)new_capacity);
+    if (new_return_ips == NULL) return 0;
+    vm->return_ips = new_return_ips;
+    OutParamFrame* new_out_frames = realloc(vm->out_frames, sizeof(OutParamFrame) * (size_t)new_capacity);
+    if (new_out_frames == NULL) return 0;
+    vm->out_frames = new_out_frames;
+    vm->frames_capacity = new_capacity;
+    return 1;
+}
+
+static int vm_ensure_repl_capacity(VM* vm, int needed) {
+    if (needed <= vm->repl_local_capacity) return 1;
+    int new_capacity = vm->repl_local_capacity;
+    while (new_capacity < needed) {
+        if (new_capacity >= STACK_MAX) return 0;
+        new_capacity *= 2;
+        if (new_capacity > STACK_MAX) new_capacity = STACK_MAX;
+    }
+    Value* new_locals = realloc(vm->repl_locals, sizeof(Value) * (size_t)new_capacity);
+    if (new_locals == NULL) return 0;
+    vm->repl_locals = new_locals;
+    vm->repl_local_capacity = new_capacity;
+    return 1;
+}
+
 static int push(VM* vm, Value value) {
-    if (vm->stack_top >= vm->stack + STACK_MAX) {
+    if (!vm_ensure_stack_capacity(vm, 1)) {
         return 0;
     }
     *vm->stack_top = value;
@@ -1647,6 +1752,24 @@ dispatch:
                 }
                 break;
             }
+            case OP_GET_LOCAL16: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t slot = read_u16(vm->ip);
+                vm->ip += 2;
+                int depth = (int)(vm->stack_top - vm->frame_base);
+                if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
+                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                    vm->local_count = slot + 1;
+                }
+                Value v = vm->frame_base[slot];
+                value_retain(v);
+                if (!push(vm, v)) {
+                    value_release(v);
+                    set_runtime_error(vm, "Invalid local variable slot");
+                    THROW(vm);
+                }
+                break;
+            }
             case OP_SET_LOCAL: {
                 if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
                 uint8_t slot = *vm->ip++;
@@ -1660,6 +1783,35 @@ dispatch:
                 value_release(vm->frame_base[slot]);
                 vm->frame_base[slot] = v;
                 if (vm->frame_count == 1) {
+                    if (slot < vm->repl_local_count) {
+                        value_release(vm->repl_locals[slot]);
+                    }
+                    vm->repl_locals[slot] = v;
+                    value_retain(v);
+                    if (slot + 1 > vm->repl_local_count) {
+                        vm->repl_local_count = slot + 1;
+                    }
+                }
+                break;
+            }
+            case OP_SET_LOCAL16: {
+                if (vm->ip + 2 > end) return INTERPRET_RUNTIME_ERROR;
+                uint16_t slot = read_u16(vm->ip);
+                vm->ip += 2;
+                int depth = (int)(vm->stack_top - vm->frame_base);
+                if (slot >= depth) return INTERPRET_RUNTIME_ERROR;
+                if (vm->frame_count == 1 && slot + 1 > vm->local_count) {
+                    vm->local_count = slot + 1;
+                }
+                Value v = *(vm->stack_top - 1);
+                value_retain(v);
+                value_release(vm->frame_base[slot]);
+                vm->frame_base[slot] = v;
+                if (vm->frame_count == 1) {
+                    if (!vm_ensure_repl_capacity(vm, (int)slot + 1)) {
+                        set_runtime_error(vm, "Too many local variables");
+                        THROW(vm);
+                    }
                     if (slot < vm->repl_local_count) {
                         value_release(vm->repl_locals[slot]);
                     }
@@ -1915,7 +2067,10 @@ dispatch:
                     set_runtime_error(vm, "Invalid argument count");
                     THROW(vm);
                 }
-                if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) {
+                    set_runtime_error(vm, "Stack overflow");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 vm->out_frames[vm->frame_count].out_count = 0;
                 vm->return_ips[vm->frame_count] = vm->ip;
                 vm->frames[vm->frame_count] = vm->frame_base;
@@ -1946,7 +2101,10 @@ dispatch:
                         return INTERPRET_RUNTIME_ERROR;
                     }
                 } else if (auto_result == -1) {
-                    if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                    if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) {
+                    set_runtime_error(vm, "Stack overflow");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                     vm->out_frames[vm->frame_count].out_count = 0;
                     vm->return_ips[vm->frame_count] = vm->ip;
                     vm->frames[vm->frame_count] = vm->frame_base;
@@ -1973,13 +2131,18 @@ dispatch:
                     set_runtime_error(vm, "Too many OUT/IN OUT parameters");
                     THROW(vm);
                 }
-                if (vm->ip + out_count * 2 > end) return INTERPRET_RUNTIME_ERROR;
-                if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                if (vm->ip + out_count * 4 > end) return INTERPRET_RUNTIME_ERROR;
+                if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) {
+                    set_runtime_error(vm, "Stack overflow");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 OutParamFrame* out_frame = &vm->out_frames[vm->frame_count];
                 out_frame->out_count = (int)out_count;
                 for (int i = 0; i < out_count; i++) {
-                    out_frame->out_positions[i] = *vm->ip++;
-                    out_frame->out_slots[i] = *vm->ip++;
+                    out_frame->out_positions[i] = (int)read_u16(vm->ip);
+                    vm->ip += 2;
+                    out_frame->out_slots[i] = (int)read_u16(vm->ip);
+                    vm->ip += 2;
                 }
                 vm->return_ips[vm->frame_count] = vm->ip;
                 vm->frames[vm->frame_count] = vm->frame_base;
@@ -2003,12 +2166,14 @@ dispatch:
                     set_runtime_error(vm, "Too many OUT/IN OUT parameters");
                     THROW(vm);
                 }
-                if (vm->ip + out_count * 2 > end) return INTERPRET_RUNTIME_ERROR;
+                if (vm->ip + out_count * 4 > end) return INTERPRET_RUNTIME_ERROR;
                 int out_positions[MAX_OUT_PARAMS];
                 int out_slots[MAX_OUT_PARAMS];
                 for (int i = 0; i < out_count; i++) {
-                    out_positions[i] = *vm->ip++;
-                    out_slots[i] = *vm->ip++;
+                    out_positions[i] = (int)read_u16(vm->ip);
+                    vm->ip += 2;
+                    out_slots[i] = (int)read_u16(vm->ip);
+                    vm->ip += 2;
                 }
                 Value result;
                 int auto_result = vm_call_autonomous(vm, target, arg_count,
@@ -2025,7 +2190,10 @@ dispatch:
                         return INTERPRET_RUNTIME_ERROR;
                     }
                 } else if (auto_result == -1) {
-                    if (vm->frame_count >= STACK_MAX) return INTERPRET_RUNTIME_ERROR;
+                    if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) {
+                    set_runtime_error(vm, "Stack overflow");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                     OutParamFrame* out_frame = &vm->out_frames[vm->frame_count];
                     out_frame->out_count = (int)out_count;
                     for (int i = 0; i < out_count; i++) {
@@ -2553,10 +2721,11 @@ dispatch:
             case OP_CURSOR_FETCH: {
                 if (vm->ip + 1 > end) return INTERPRET_RUNTIME_ERROR;
                 uint8_t into_count = *vm->ip++;
-                if (vm->ip + into_count > end) return INTERPRET_RUNTIME_ERROR;
-                uint8_t into_slots[64];
+                if (vm->ip + into_count * 2 > end) return INTERPRET_RUNTIME_ERROR;
+                int into_slots[64];
                 for (int i = 0; i < into_count; i++) {
-                    into_slots[i] = *vm->ip++;
+                    into_slots[i] = (int)read_u16(vm->ip);
+                    vm->ip += 2;
                 }
                 Value cursor_value;
                 if (!pop(vm, &cursor_value)) return INTERPRET_RUNTIME_ERROR;
@@ -2936,10 +3105,11 @@ dispatch:
                 break;
             }
             case OP_TRY: {
-                if (vm->ip + 3 > end) return INTERPRET_RUNTIME_ERROR;
+                if (vm->ip + 4 > end) return INTERPRET_RUNTIME_ERROR;
                 uint16_t offset = read_u16(vm->ip);
                 vm->ip += 2;
-                uint8_t local_count = *vm->ip++;
+                uint16_t local_count = read_u16(vm->ip);
+                vm->ip += 2;
                 if (vm->try_count >= TRY_MAX) {
                     set_runtime_error(vm, "Too many nested try blocks");
                     THROW(vm);
@@ -3012,6 +3182,11 @@ static void vm_free_child(VM* vm) {
             dbms_sql_cursor_close_internal(vm, &vm->dbms_sql_cursors[i]);
         }
     }
+    free(vm->stack);
+    free(vm->frames);
+    free(vm->return_ips);
+    free(vm->out_frames);
+    free(vm->repl_locals);
     free(vm);
 }
 

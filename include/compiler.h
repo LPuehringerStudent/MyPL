@@ -96,7 +96,11 @@ typedef enum {
     OP_CURSOR_FETCH,
     OP_CURSOR_CLOSE,
     OP_CURSOR_ATTR,
-    OP_DROP_TRIGGER
+    OP_DROP_TRIGGER,
+    /* Wide local-slot variants used when a frame has more than 256 locals
+       (slot index no longer fits in a byte). */
+    OP_GET_LOCAL16,
+    OP_SET_LOCAL16
 } OpCode;
 
 typedef enum {

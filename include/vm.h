@@ -6,7 +6,11 @@
 
 struct Context;
 
-#define STACK_MAX 256
+/* Hard upper bound for the dynamically grown value stack and call-frame
+   arrays, in slots/frames. Growth doubles from a small initial capacity
+   until this cap; exceeding it fails cleanly with a stack-overflow error
+   instead of runaway memory use (catches unbounded recursion). */
+#define STACK_MAX (1 << 20)
 
 typedef struct VM VM;
 

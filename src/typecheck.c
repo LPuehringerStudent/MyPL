@@ -7,13 +7,15 @@
 #include "sql_engine.h"
 #include "typecheck.h"
 
-#define MAX_LOCALS 256
 #define MAX_SCOPES 64
 #define MAX_TRANSIENTS 256
 #define MAX_ROWS 16
 #define MAX_STRUCTS 64
 #define MAX_SUBTYPES 64
 #define MAX_EXCEPTIONS 64
+/* Initial per-scope locals capacity; doubles on demand (locals beyond the
+   old MAX_LOCALS = 256 fixed ceiling are now supported). */
+#define SCOPE_LOCALS_INITIAL_CAPACITY 8
 
 typedef struct {
     const char* name;
@@ -38,8 +40,9 @@ typedef struct {
 } CursorBinding;
 
 typedef struct {
-    Local locals[MAX_LOCALS];
+    Local* locals;
     int count;
+    int capacity;
 } Scope;
 
 typedef struct {
@@ -87,6 +90,7 @@ static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
 
 static int push_scope(TypeChecker* tc) {
     if (tc->scope_count >= MAX_SCOPES) return 0;
+    /* Retain any previously allocated locals array for reuse. */
     tc->scopes[tc->scope_count++].count = 0;
     return 1;
 }
@@ -97,7 +101,14 @@ static void pop_scope(TypeChecker* tc) {
 
 static int add_local(TypeChecker* tc, const char* name, Type* type) {
     Scope* scope = &tc->scopes[tc->scope_count - 1];
-    if (scope->count >= MAX_LOCALS) return 0;
+    if (scope->count >= scope->capacity) {
+        int new_capacity = scope->capacity == 0 ? SCOPE_LOCALS_INITIAL_CAPACITY
+                                                : scope->capacity * 2;
+        Local* new_locals = realloc(scope->locals, sizeof(Local) * (size_t)new_capacity);
+        if (new_locals == NULL) return 0;
+        scope->locals = new_locals;
+        scope->capacity = new_capacity;
+    }
     scope->locals[scope->count].name = name;
     scope->locals[scope->count].type = type;
     scope->count++;
@@ -2885,6 +2896,10 @@ int typecheck_program(Program* program,
         free(combined_procs[i].param_modes);
     }
     free(combined_procs);
+
+    for (int i = 0; i < MAX_SCOPES; i++) {
+        free(tc.scopes[i].locals);
+    }
 
     return !tc.had_error;
 }
