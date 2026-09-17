@@ -4,7 +4,7 @@ A lightweight, open-source alternative to PL/SQL with C-like syntax. MyPL
 compiles to bytecode for a small stack VM and can run against either its
 built-in custom SQL engine or SQLite, so you get stored-procedure-style
 scripting without the weight of an Oracle installation. SQLite is entirely
-optional- Build with `USE_SQLITE=0` for a standalone custom-engine-only
+optional — build with `USE_SQLITE=0` for a standalone custom-engine-only
 binary.
 
 ```mypl
@@ -23,7 +23,7 @@ proc list_todos() -> int {
 
 ## Why MyPL?
 
-- **Familiar syntax**: C-like procedures, variables, loops, and expressions —>
+- **Familiar syntax**: C-like procedures, variables, loops, and expressions —
   no PL/SQL boilerplate.
 - **Embedded SQL**: Write DDL, DML, and queries inline with `?var` parameter
   binding.
@@ -181,6 +181,97 @@ while c%found {
     print concat(int_to_string(id), concat(" ", name));
 }
 close c;
+```
+
+### Triggers
+
+Statement-level triggers fire once per statement; row-level triggers fire
+per affected row with `:new` / `:old` row context. Trigger definitions
+persist in the database and survive restarts, and they fire on dynamic SQL
+(`execute_immediate`, `dbms_sql.execute`) too.
+
+```mypl
+// Statement level: audit every insert into orders.
+trigger orders_audit before insert on orders {
+    dbms_output.put_line("insert into orders");
+}
+
+// Row level: validate each new row before it is written.
+trigger orders_check before insert on orders for each row {
+    if :new.total < 0 {
+        raise_application_error(-20001, "negative total");
+    }
+}
+
+drop trigger orders_audit;
+```
+
+### Sequences
+
+Persistent sequences work like Oracle's: `create_sequence`, `nextval`,
+`currval`, and `drop_sequence`, with the current value stored in the
+database catalog so they continue across process restarts.
+
+```mypl
+create_sequence("order_seq", 1000, 1);
+insert into orders values (nextval("order_seq"), "alice", 42);
+print int_to_string(currval("order_seq"));
+```
+
+### Views
+
+The custom engine supports `create view` / `drop view`; a view stores its
+`SELECT` and resolves recursively, so it composes with an outer `WHERE`,
+`ORDER BY`, and `LIMIT`. Views are read-only.
+
+```mypl
+create view big_orders as select id, total from orders where total > 100;
+for o in select id from big_orders order by total desc limit 5 {
+    print int_to_string(o.id);
+}
+drop view big_orders;
+```
+
+### Indexes, constraints, and NULLs
+
+The custom engine has page-based B-tree indexes (`create index idx on t (col)`,
+`drop index idx`), column constraints (`primary key`, `unique`, `not null`,
+`default`), and full three-valued NULL semantics with `IS [NOT] NULL`,
+`coalesce`, and `nvl`. `WHERE` supports `and`/`or`/`not`, parentheses, `IN`,
+and `LIKE`.
+
+### The dbms_sql and utl_file packages
+
+`dbms_sql` offers a cursor-style API for dynamic SQL with bind variables,
+and `utl_file` wraps host files (append/seek/flush, mkdir/remove):
+
+```mypl
+int c = dbms_sql.open_cursor();
+dbms_sql.parse(c, "insert into orders values (?1, ?2, ?3)");
+dbms_sql.bind_variable(c, "1", 7);
+dbms_sql.bind_variable(c, "2", "bob");
+dbms_sql.bind_variable(c, "3", 19);
+int n = dbms_sql.execute_cursor(c);
+dbms_sql.close_cursor(c);
+
+int f = utl_file.fopen("/tmp/log.txt", "a");
+utl_file.put_line(f, "appended line");
+utl_file.fclose(f);
+```
+
+### Calling native libraries (external_call)
+
+`external_call` invokes a C function from a shared library via
+`dlopen`/`dlsym`. The native name selects the C return type; the argument's
+C type follows its MyPL runtime type (`int`, `float`, or `string`):
+
+```mypl
+// double sqrt(double) from libm
+float root = external_call_float("libm.so.6", "sqrt", 2.0);
+// size_t strlen(const char*) from libc — int return
+int n = external_call("libc.so.6", "strlen", "hello");
+// const char* getenv(const char*) — string return (NULL becomes null)
+string home = external_call_string("libc.so.6", "getenv", "HOME");
 ```
 
 ### Collections
@@ -358,13 +449,24 @@ Useful commands:
   `for ... in`, `case`, `break`, `continue`, `return`.
 - Anonymous `declare ... begin ... end` blocks.
 - Embedded SQL with `?var` parameter binding.
+- Three-valued NULL semantics: `IS [NOT] NULL`, `coalesce`, `nvl`.
 - `SELECT ... INTO` for scalar, multi-value, and `array<row>` assignment.
 - `BULK COLLECT INTO` and `FORALL` for set-based operations.
 - Explicit cursor variables with `open`, `fetch`, `close`, and attributes
   `%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`.
+- DDL in the custom engine: `create`/`drop`/`alter table`, `create`/`drop
+  index`, `create`/`drop view`, plus column constraints and `alter table add
+  or drop column`.
+- Statement-level and row-level triggers (`for each row` with `:new`/`:old`)
+  that persist in the database and fire on dynamic SQL; `drop trigger`.
+- Persistent sequences (`create_sequence`, `nextval`, `currval`,
+  `drop_sequence`) stored in the catalog.
 - Exception handling with named predefined/user-defined exceptions,
   `raise`, `raise_application_error`, `sqlcode`, and `sqlerrm`.
-- Packages with spec/body, state, and sidecar/catalog persistence.
+- Packages with spec/body, state, and sidecar/catalog persistence — a user
+  package of the same name overrides a built-in one.
+- The `dbms_output`, `dbms_sql` (full cursor API), and `utl_file` packages.
+- `external_call` FFI marshalling for int, float, and string signatures.
 - User-defined subtypes (`subtype name is base;`).
 - `%TYPE` and `%ROWTYPE` type attributes.
 - Import system for splitting code across files.
@@ -379,20 +481,15 @@ Useful commands:
 
 ## Roadmap / Next Steps
 
-MyPL is intentionally small today, but the goal is to become a credible
-open-source alternative to PL/SQL for lightweight database scripting. Phases
-1–7 are complete; see [`NEXT_STEPS.md`](NEXT_STEPS.md) for a concrete, phased
-comparison with Oracle PL/SQL and the remaining goals that will close the gap.
-
-High-level direction:
-
-- Persist procedures/functions/packages in the database catalog (Phase 8).
-- Add `AUTHID CURRENT_USER` / `AUTHID DEFINER` and transaction control
-  improvements (Phase 8).
-- Grow the standard library into named packages (`dbms_output`, `utl_file`,
-  `dbms_sql`, regex, sequences) (Phase 9).
-- Add triggers, pipelined/table functions, object types with methods, and
-  conditional compilation (Phase 10).
+Phases 1–12 are complete: stored programs and packages, triggers,
+sequences, views, indexes, constraints, NULL semantics, the `dbms_sql`
+cursor API, imported-module package initialization, overridable built-in
+packages, `utl_file` expansion, FFI marshalling, and command-line
+conditional-compilation flags all landed. See
+[`NEXT_STEPS.md`](NEXT_STEPS.md) for the concrete, phased comparison with
+Oracle PL/SQL and what remains: Phase 13 hardening (install target and man
+page — done — README refresh, dynamic growth of the VM's fixed ceilings,
+incremental REPL compilation, and cycle-safe garbage collection).
 
 Contributions and ideas are welcome — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow (failing-test-first,
