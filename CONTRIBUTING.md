@@ -14,6 +14,13 @@ started, what we expect from patches, and how the workflow looks.
   file — the codebase is uniform on purpose.
 - **Warnings:** The CI `warnings-as-errors` job builds with `-Werror`. Keep
   the tree warning-free under `-Wall -Wextra`.
+- **Commit attribution:** Commit with your GitHub-linked email — ideally
+  your `ID+username@users.noreply.github.com` address (GitHub → Settings →
+  Emails → "Keep my email addresses private"). The
+  `attribution-check` workflow rejects PRs whose commits use unknown author
+  emails or AI-tool co-author trailers, because every stray email shows up
+  as a phantom contributor on the repo home page. Set it once with:
+  `git config --global user.email "ID+username@users.noreply.github.com"`.
 
 ## Getting set up
 
