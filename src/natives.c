@@ -1954,6 +1954,26 @@ static int native_utl_file_fclose(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+static int native_utl_file_mkdir(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "utl_file_mkdir expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    *out = value_int(vm_utl_file_mkdir(path));
+    return 1;
+}
+
+static int native_utl_file_remove(VM* vm, int argc, Value* argv, Value* out) {
+    if (argc != 1 || argv[0].type != VAL_STRING) {
+        vm_set_error(vm, "utl_file_remove expects a string path");
+        return 0;
+    }
+    const char* path = argv[0].as.as_string ? argv[0].as.as_string : "";
+    *out = value_int(vm_utl_file_remove(path));
+    return 1;
+}
+
 static int native_dbms_sql_execute(VM* vm, int argc, Value* argv, Value* out) {
     if (argc != 1 || argv[0].type != VAL_STRING) {
         vm_set_error(vm, "dbms_sql_execute expects a string");
@@ -2429,6 +2449,8 @@ static NativeDef natives[] = {
     {"utl_file_fseek", 2, native_utl_file_fseek},
     {"utl_file_fflush", 1, native_utl_file_fflush},
     {"utl_file_fclose", 1, native_utl_file_fclose},
+    {"utl_file_mkdir", 1, native_utl_file_mkdir},
+    {"utl_file_remove", 1, native_utl_file_remove},
     {"dbms_sql_execute", 1, native_dbms_sql_execute},
     {"dbms_sql_query", 1, native_dbms_sql_query},
     {"dbms_sql_open_cursor", 0, native_dbms_sql_open_cursor},
