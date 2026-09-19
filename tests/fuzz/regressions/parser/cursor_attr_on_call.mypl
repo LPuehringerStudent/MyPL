@@ -1,0 +1,4 @@
+proc main() -> int {
+    print f(1)%found;
+    return 0;
+}

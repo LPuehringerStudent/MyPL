@@ -739,6 +739,7 @@ static Expr* cursor_attr(Parser* parser, Expr* left) {
         free_expr(left);
     } else {
         error_at_previous(parser, "cursor attribute requires a cursor variable");
+        free_expr(left);
     }
     free(attr_name);
     if (expr != NULL) {
@@ -1608,13 +1609,19 @@ static Stmt* for_step(Parser* parser) {
             advance(parser); /* = */
             Expr* value = expression(parser);
             if (value == NULL) return NULL;
-            Stmt* stmt = create_assign_stmt(copy_token_lexeme(&ident), value);
+            /* create_assign_stmt copies the name, so the lexeme copy is ours. */
+            char* name = copy_token_lexeme(&ident);
+            Stmt* stmt = create_assign_stmt(name, value);
+            free(name);
             stmt->loc.line = ident.line;
             stmt->loc.column = ident.column;
             return stmt;
         }
         if (check(parser, TOKEN_LPAREN)) {
-            Expr* call_expr = call(parser, create_variable_expr(copy_token_lexeme(&ident)));
+            char* name = copy_token_lexeme(&ident);
+            Expr* callee = create_variable_expr(name);
+            free(name);
+            Expr* call_expr = call(parser, callee);
             Stmt* stmt = create_expr_stmt(call_expr);
             stmt->loc.line = ident.line;
             stmt->loc.column = ident.column;
