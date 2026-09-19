@@ -761,7 +761,157 @@ TEST(typecheck_rejects_clamp_string) {
     free_program(program);
 }
 
+/* Issue #51: a row loop over a table the program itself creates cannot be
+ * checked against the catalog at compile time (the table does not exist yet),
+ * so its columns resolve at runtime instead. Tables that already exist in the
+ * catalog, and tables nothing creates, keep being checked. */
+
+/* Typechecks `source` against an open, empty catalog. Returns typecheck's
+ * result and leaves the message in `error`. */
+static int typecheck_against_empty_catalog(const char* source, char* error, size_t error_size) {
+    char db_path[] = "/tmp/mypl_test_typecheck_same_prog_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    if (!catalog_open(&ctx)) return -1;
+
+    Program* program = parse(source, error, error_size);
+    int ok = -1;
+    if (program != NULL) {
+        ok = typecheck_program(program, NULL, 0, &ctx, NULL, error, error_size, NULL, NULL, 0);
+        free_program(program);
+    }
+    catalog_close(&ctx);
+    unlink(db_path);
+    return ok;
+}
+
+TEST(typecheck_accepts_row_loop_over_table_created_earlier_in_same_proc) {
+    char error[256];
+    ASSERT_INT_EQ(1, typecheck_against_empty_catalog(
+        "proc main() -> int {\n"
+        "    create table t (id int, name string);\n"
+        "    insert into t values (1, 'a');\n"
+        "    for row in select id, name from t { return row.id; }\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error)));
+}
+
+TEST(typecheck_accepts_row_loop_over_table_created_by_a_later_proc) {
+    char error[256];
+    ASSERT_INT_EQ(1, typecheck_against_empty_catalog(
+        "proc main() -> int {\n"
+        "    setup();\n"
+        "    for row in select id from t { return row.id; }\n"
+        "    return 0;\n"
+        "}\n"
+        "proc setup() -> int {\n"
+        "    create table t (id int);\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error)));
+}
+
+TEST(typecheck_accepts_row_loop_over_table_created_in_nested_block) {
+    char error[256];
+    ASSERT_INT_EQ(1, typecheck_against_empty_catalog(
+        "proc main() -> int {\n"
+        "    int n = 1;\n"
+        "    if n > 0 {\n"
+        "        try {\n"
+        "            create table if not exists t (id int);\n"
+        "        } catch (e) {\n"
+        "            n = 0;\n"
+        "        }\n"
+        "    }\n"
+        "    for row in select id from t { return row.id; }\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error)));
+}
+
+TEST(typecheck_accepts_row_loop_over_view_created_in_same_program) {
+    char error[256];
+    ASSERT_INT_EQ(1, typecheck_against_empty_catalog(
+        "proc main() -> int {\n"
+        "    create table base (id int);\n"
+        "    create view v as select id from base;\n"
+        "    for row in select id from v { return row.id; }\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error)));
+}
+
+TEST(typecheck_accepts_row_loop_when_joined_table_is_created_in_program) {
+    char error[256];
+    ASSERT_INT_EQ(1, typecheck_against_empty_catalog(
+        "proc main() -> int {\n"
+        "    create table a (id int);\n"
+        "    create table b (id int, label string);\n"
+        "    for row in select a.id, b.label from a join b on a.id = b.id { return row.id; }\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error)));
+}
+
+TEST(typecheck_still_rejects_row_loop_over_table_nothing_creates) {
+    char error[256];
+    ASSERT_INT_EQ(0, typecheck_against_empty_catalog(
+        "proc main() -> int {\n"
+        "    create table t (id int);\n"
+        "    for row in select id from ghost { return row.id; }\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error)));
+    ASSERT_PTR_NOT_NULL(strstr(error, "Unknown column 'id' for row variable 'row'"));
+}
+
+TEST(typecheck_still_checks_catalog_table_when_program_creates_other_tables) {
+    /* A table that exists in the catalog and is NOT created by the program
+       keeps strict checking, even when the program creates other tables. */
+    char db_path[] = "/tmp/mypl_test_typecheck_same_prog2_XXXXXX.db";
+    int fd = mkstemp(db_path);
+    if (fd >= 0) close(fd);
+    unlink(db_path);
+
+    Context ctx;
+    ctx.db_path = db_path;
+    ctx.pager = NULL;
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    const char* cols[] = {"id"};
+    int types[] = {VAL_INT};
+    ASSERT_PTR_NOT_NULL(catalog_create_table(&ctx, "users", cols, types, 1));
+
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int {\n"
+        "    create table other (id int);\n"
+        "    for row in select id from users { return row.nope; }\n"
+        "    return 0;\n"
+        "}\n",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, &ctx, NULL, error, sizeof(error), NULL, NULL, 0));
+    ASSERT_PTR_NOT_NULL(strstr(error, "Unknown column 'nope' for row variable 'row'"));
+    free_program(program);
+
+    catalog_close(&ctx);
+    unlink(db_path);
+}
+
 int main(void) {
+    RUN_TEST(typecheck_accepts_row_loop_over_table_created_earlier_in_same_proc);
+    RUN_TEST(typecheck_accepts_row_loop_over_table_created_by_a_later_proc);
+    RUN_TEST(typecheck_accepts_row_loop_over_table_created_in_nested_block);
+    RUN_TEST(typecheck_accepts_row_loop_over_view_created_in_same_program);
+    RUN_TEST(typecheck_accepts_row_loop_when_joined_table_is_created_in_program);
+    RUN_TEST(typecheck_still_rejects_row_loop_over_table_nothing_creates);
+    RUN_TEST(typecheck_still_checks_catalog_table_when_program_creates_other_tables);
     RUN_TEST(typecheck_rejects_string_to_int_assignment);
     RUN_TEST(typecheck_accepts_valid_program);
     RUN_TEST(typecheck_rejects_typed_array_mismatch);

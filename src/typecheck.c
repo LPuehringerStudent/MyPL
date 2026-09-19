@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +71,11 @@ typedef struct {
     Program* program;
     const char* exceptions[MAX_EXCEPTIONS];
     int exception_count;
+    /* Tables and views the program itself creates (CREATE TABLE/VIEW anywhere
+       in it). Names point into AST-owned SQL text. See note_created_table(). */
+    struct { const char* start; size_t len; } *created_tables;
+    int created_count;
+    int created_capacity;
 } TypeChecker;
 
 static void type_error(TypeChecker* tc, SourceLoc loc, const char* fmt, ...) {
@@ -392,11 +398,234 @@ static Type* resolve_percent_type(TypeChecker* tc, Type* t, SourceLoc loc) {
     return t;
 }
 
+/* ---- Tables created by the program itself (issue #51) ------------------
+ *
+ * Row-field types are resolved against the catalog as it exists at compile
+ * time. A table the program creates with its own CREATE TABLE is not in that
+ * catalog yet (and if an earlier run left one behind, its schema is not the
+ * one this program will create), so the catalog cannot vouch for its columns.
+ * The program is scanned once, up front, for every CREATE TABLE / CREATE VIEW;
+ * a row loop reading from one of those leaves its columns to be resolved at
+ * runtime. Anything else is still checked strictly. Only the program being
+ * checked is scanned: an imported module's tables are not visible here. */
+
+static int sql_is_ident_char(char c) {
+    return isalnum((unsigned char)c) || c == '_';
+}
+
+static const char* sql_skip_space(const char* p) {
+    while (*p != '\0' && isspace((unsigned char)*p)) p++;
+    return p;
+}
+
+/* Whole-word, case-insensitive match of `word` at p. Returns the position just
+   past it, or NULL. */
+static const char* sql_match_word(const char* p, const char* word) {
+    size_t n = strlen(word);
+    if (strncasecmp(p, word, n) != 0 || sql_is_ident_char(p[n])) return NULL;
+    return p + n;
+}
+
+/* Reads an identifier at (or after whitespace from) p. */
+static const char* sql_read_ident(const char* p, const char** start, size_t* len) {
+    p = sql_skip_space(p);
+    const char* s = p;
+    while (sql_is_ident_char(*p)) p++;
+    if (p == s) return NULL;
+    *start = s;
+    *len = (size_t)(p - s);
+    return p;
+}
+
+/* Records the target of `CREATE [TEMP[ORARY]] TABLE|VIEW [IF NOT EXISTS] name`. */
+static void note_created_table(TypeChecker* tc, const char* sql) {
+    if (sql == NULL) return;
+    const char* p = sql_match_word(sql_skip_space(sql), "create");
+    if (p == NULL) return;
+    p = sql_skip_space(p);
+    const char* q = sql_match_word(p, "temp");
+    if (q == NULL) q = sql_match_word(p, "temporary");
+    if (q != NULL) p = sql_skip_space(q);
+    q = sql_match_word(p, "table");
+    if (q == NULL) q = sql_match_word(p, "view");
+    if (q == NULL) return;
+    p = sql_skip_space(q);
+    q = sql_match_word(p, "if");
+    if (q != NULL) {
+        q = sql_match_word(sql_skip_space(q), "not");
+        if (q == NULL) return;
+        q = sql_match_word(sql_skip_space(q), "exists");
+        if (q == NULL) return;
+        p = q;
+    }
+    const char* name;
+    size_t len;
+    if (sql_read_ident(p, &name, &len) == NULL) return;
+
+    if (tc->created_count >= tc->created_capacity) {
+        int capacity = tc->created_capacity == 0 ? 8 : tc->created_capacity * 2;
+        void* grown = realloc(tc->created_tables, sizeof(tc->created_tables[0]) * (size_t)capacity);
+        if (grown == NULL) return; /* stay strict rather than guess */
+        tc->created_tables = grown;
+        tc->created_capacity = capacity;
+    }
+    tc->created_tables[tc->created_count].start = name;
+    tc->created_tables[tc->created_count].len = len;
+    tc->created_count++;
+}
+
+static void scan_created_tables_block(TypeChecker* tc, Block* block);
+
+static void scan_created_tables_stmt(TypeChecker* tc, Stmt* stmt) {
+    if (stmt == NULL) return;
+    switch (stmt->kind) {
+        case STMT_SQL_DDL:
+            note_created_table(tc, stmt->as.sql_stmt.sql);
+            break;
+        case STMT_IF:
+            scan_created_tables_block(tc, stmt->as.if_stmt.then_block);
+            scan_created_tables_block(tc, stmt->as.if_stmt.else_block);
+            break;
+        case STMT_FOR:
+            scan_created_tables_block(tc, stmt->as.for_stmt.body);
+            break;
+        case STMT_FOREACH:
+            scan_created_tables_block(tc, stmt->as.foreach_stmt.body);
+            break;
+        case STMT_WHILE:
+            scan_created_tables_block(tc, stmt->as.while_stmt.body);
+            break;
+        case STMT_FOR_C:
+            scan_created_tables_stmt(tc, stmt->as.cfor_stmt.init);
+            scan_created_tables_stmt(tc, stmt->as.cfor_stmt.step);
+            scan_created_tables_block(tc, stmt->as.cfor_stmt.body);
+            break;
+        case STMT_TRY_CATCH:
+            scan_created_tables_block(tc, stmt->as.try_catch.try_block);
+            scan_created_tables_block(tc, stmt->as.try_catch.catch_block);
+            break;
+        case STMT_CASE:
+            for (int i = 0; i < stmt->as.case_stmt.branch_count; i++) {
+                scan_created_tables_block(tc, stmt->as.case_stmt.blocks[i]);
+            }
+            scan_created_tables_block(tc, stmt->as.case_stmt.else_block);
+            break;
+        default:
+            break;
+    }
+}
+
+static void scan_created_tables_block(TypeChecker* tc, Block* block) {
+    if (block == NULL) return;
+    for (int i = 0; i < block->stmt_count; i++) {
+        scan_created_tables_stmt(tc, block->stmts[i]);
+    }
+}
+
+static void scan_created_tables(TypeChecker* tc, Program* program) {
+    for (int i = 0; i < program->proc_count; i++) {
+        scan_created_tables_block(tc, program->procs[i].body);
+    }
+    for (int s = 0; s < program->struct_count; s++) {
+        for (int m = 0; m < program->structs[s].method_count; m++) {
+            scan_created_tables_block(tc, program->structs[s].methods[m].body);
+        }
+    }
+    for (int b = 0; b < program->body_count; b++) {
+        PackageBodyDecl* body = &program->bodies[b];
+        for (int i = 0; i < body->proc_count; i++) {
+            scan_created_tables_block(tc, body->procs[i].body);
+        }
+        for (int i = 0; i < body->func_count; i++) {
+            scan_created_tables_block(tc, body->funcs[i].body);
+        }
+    }
+    for (int i = 0; i < program->trigger_count; i++) {
+        scan_created_tables_block(tc, program->triggers[i].body);
+    }
+}
+
+static int program_creates_table(const TypeChecker* tc, const char* name, size_t len) {
+    for (int i = 0; i < tc->created_count; i++) {
+        if (tc->created_tables[i].len == len &&
+            strncasecmp(tc->created_tables[i].start, name, len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Clause keywords that can follow a table name and so are not an alias. */
+static int sql_is_clause_word(const char* p) {
+    static const char* const words[] = {
+        "where", "join", "inner", "left", "right", "full", "cross", "natural",
+        "on", "using", "group", "order", "limit", "offset", "having", "union"
+    };
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+        if (sql_match_word(p, words[i]) != NULL) return 1;
+    }
+    return 0;
+}
+
+/* True when the query's FROM/JOIN list names a table the program creates.
+   String literals are skipped so a quoted 'from' is not mistaken for the
+   keyword. */
+static int query_reads_created_table(const TypeChecker* tc, const char* query) {
+    if (tc->created_count == 0 || query == NULL) return 0;
+    const char* p = query;
+    int in_string = 0;
+    while (*p != '\0') {
+        if (*p == '\'') {
+            in_string = !in_string;
+            p++;
+            continue;
+        }
+        if (in_string) {
+            p++;
+            continue;
+        }
+        const char* after = NULL;
+        if (p == query || !sql_is_ident_char(p[-1])) {
+            after = sql_match_word(p, "from");
+            if (after == NULL) after = sql_match_word(p, "join");
+        }
+        if (after == NULL) {
+            p++;
+            continue;
+        }
+        /* A table list: `t [[AS] alias] {, t2 [[AS] alias]}`. A "(" starts a
+           subquery instead; the outer scan finds its own FROM. */
+        const char* cur = after;
+        for (;;) {
+            const char* name;
+            size_t len;
+            const char* end = sql_read_ident(cur, &name, &len);
+            if (end == NULL) break;
+            if (program_creates_table(tc, name, len)) return 1;
+            cur = sql_skip_space(end);
+            const char* as = sql_match_word(cur, "as");
+            if (as != NULL) {
+                const char* alias_end = sql_read_ident(as, &name, &len);
+                if (alias_end != NULL) cur = sql_skip_space(alias_end);
+            } else if (sql_is_ident_char(*cur) && !sql_is_clause_word(cur)) {
+                cur = sql_skip_space(sql_read_ident(cur, &name, &len));
+            }
+            if (*cur != ',') break;
+            cur++;
+        }
+        p = after;
+    }
+    return 0;
+}
+
 /* Type of `var.field` where var is an untyped local such as a SQL loop row.
  * With a database context the column type comes from the bound query. */
 static Type* sql_row_field_type(TypeChecker* tc, const char* var_name,
                                 const char* field_name, SourceLoc loc) {
     RowBinding* row = find_row(tc, var_name);
+    if (row != NULL && tc->ctx != NULL && query_reads_created_table(tc, row->query)) {
+        return &type_unknown;
+    }
     if (row != NULL && tc->ctx != NULL) {
         int sql_type;
         if (sql_query_column_type(tc->ctx, row->query, field_name, &sql_type)) {
@@ -2760,6 +2989,8 @@ int typecheck_program(Program* program,
     tc.procs = combined_procs;
     tc.proc_count = combined_count;
 
+    scan_created_tables(&tc, program);
+
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
         if (!push_scope(&tc)) {
@@ -2915,6 +3146,7 @@ int typecheck_program(Program* program,
     for (int i = 0; i < MAX_SCOPES; i++) {
         free(tc.scopes[i].locals);
     }
+    free(tc.created_tables);
 
     return !tc.had_error;
 }
