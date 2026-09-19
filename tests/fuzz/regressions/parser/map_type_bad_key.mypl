@@ -1,0 +1,4 @@
+proc main() -> int {
+    map<array<int>, int> bad_key;
+    return 0;
+}

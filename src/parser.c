@@ -938,7 +938,16 @@ static Type* parse_type(Parser* parser) {
                 error_at_current(parser, "expected '>' after map value type");
             }
         }
-        return type_new_map(type_copy(key_type), type_copy(value_type));
+        /* The map takes over key_type and value_type; copying them here would
+           leave the parsed originals unowned. */
+        Type* map = type_new_map(key_type, value_type);
+        if (map == NULL) {
+            error_at_current(parser, "out of memory");
+            type_free(key_type);
+            type_free(value_type);
+            return &type_int;
+        }
+        return map;
     }
     error_at_current(parser, "expected type");
     return &type_int;
