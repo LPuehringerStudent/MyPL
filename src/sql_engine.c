@@ -610,8 +610,40 @@ int catalog_table_column_type(Context* ctx, int index, int col) {
 /* Row serialization                                                          */
 /* -------------------------------------------------------------------------- */
 
+/* Row page header (8 bytes):
+ *   bytes 0-3  int32 next_page  (0 = last page of the table's chain)
+ *   bytes 4-7  int32 free_ptr   (offset one past the last record)
+ * Records are packed from ROW_PAGE_HEADER_SIZE up to free_ptr, so the free
+ * pointer alone says how much of a page is data.
+ *
+ * Older builds also stored an int16 record count at offset 2, which is the
+ * high half of next_page. Linking a full page to its successor zeroed that
+ * count, so every full page that had a successor scanned as empty (issue
+ * #50); and on the last page the count made next_page read as count<<16,
+ * a link far past the end of the file. Nothing writes the count any more
+ * and nothing may read it. Databases written by those builds stay readable:
+ * scans stop at free_ptr, and row_page_next() discards a link that points
+ * outside the file, which is what a legacy last page carries. */
 #define ROW_PAGE_HEADER_SIZE 8
 #define ROW_PAGE_DATA_SIZE   (PAGE_SIZE - ROW_PAGE_HEADER_SIZE)
+
+/* Offset one past the last record on the page, clamped to the data area. */
+static int row_page_data_end(const uint8_t* page) {
+    int32_t free_ptr;
+    memcpy(&free_ptr, page + 4, sizeof(free_ptr));
+    if (free_ptr < ROW_PAGE_HEADER_SIZE) return ROW_PAGE_HEADER_SIZE;
+    if (free_ptr > PAGE_SIZE) return PAGE_SIZE;
+    return (int)free_ptr;
+}
+
+/* The page that follows `page` in its table's chain, or 0 when it is the
+   last one. A link outside the file is not a link (see the layout note). */
+static int row_page_next(Pager* pager, const uint8_t* page) {
+    int32_t next;
+    memcpy(&next, page, sizeof(next));
+    if (next <= 0 || next >= pager_page_count(pager)) return 0;
+    return (int)next;
+}
 
 static int row_record_size(Table* table, Cell* cells) {
     int size = 2; /* record length prefix */
@@ -743,9 +775,7 @@ static Row* deserialize_row(Table* table, const uint8_t* record) {
 
 static void row_page_init(uint8_t* page) {
     memset(page, 0, PAGE_SIZE);
-    int16_t count = 0;
     int32_t free_ptr = ROW_PAGE_HEADER_SIZE;
-    memcpy(page + 2, &count, sizeof(count));
     memcpy(page + 4, &free_ptr, sizeof(free_ptr));
 }
 
@@ -773,13 +803,22 @@ static int row_page_append(Context* ctx, Table* table, Cell* cells,
         table->first_row_page = page_num;
         table->last_row_page = page_num;
     } else {
-        pager_read_page(pager, page_num, page);
+        /* last_row_page is not persisted (a reopened catalog only knows the
+           first page), so find the real tail: appending to a page that already
+           has a successor would overwrite its link and orphan the rest. */
+        for (;;) {
+            pager_read_page(pager, page_num, page);
+            int next = row_page_next(pager, page);
+            if (next == 0) break;
+            page_num = next;
+        }
+        table->last_row_page = page_num;
     }
 
-    int32_t free_ptr;
-    memcpy(&free_ptr, page + 4, sizeof(free_ptr));
-    int16_t count;
-    memcpy(&count, page + 2, sizeof(count));
+    int32_t free_ptr = row_page_data_end(page);
+    /* The tail has no successor: drop anything a legacy build left in the
+       link bytes (its old record count). */
+    memset(page, 0, sizeof(int32_t));
 
     if (free_ptr + record_size > PAGE_SIZE) {
         /* Page full: allocate next page. */
@@ -794,7 +833,6 @@ static int row_page_append(Context* ctx, Table* table, Cell* cells,
         page_num = next_page_num;
         row_page_init(page);
         free_ptr = ROW_PAGE_HEADER_SIZE;
-        count = 0;
         table->last_row_page = page_num;
     }
 
@@ -803,9 +841,7 @@ static int row_page_append(Context* ctx, Table* table, Cell* cells,
     if (out_page != NULL) *out_page = page_num;
     if (out_offset != NULL) *out_offset = (int)free_ptr;
     free_ptr += record_size;
-    count++;
 
-    memcpy(page + 2, &count, sizeof(count));
     memcpy(page + 4, &free_ptr, sizeof(free_ptr));
     pager_write_page(pager, page_num, page);
 
@@ -860,15 +896,17 @@ static int read_all_rows(Context* ctx, Table* table, Row** out_rows, int* out_co
         uint8_t page[PAGE_SIZE];
         pager_read_page(pager, page_num, page);
 
-        int16_t record_count;
-        memcpy(&record_count, page + 2, sizeof(record_count));
-
+        int data_end = row_page_data_end(page);
         int offset = ROW_PAGE_HEADER_SIZE;
-        for (int r = 0; r < (int)record_count; r++) {
+        while (offset < data_end) {
             int16_t record_size;
             memcpy(&record_size, page + offset, sizeof(record_size));
 
-            Row* row = deserialize_row(table, page + offset);
+            /* A bad length would otherwise loop forever or read past the
+               page; report it like any other undecodable record. */
+            Row* row = (record_size > 0 && offset + (int)record_size <= data_end)
+                ? deserialize_row(table, page + offset)
+                : NULL;
             if (row == NULL) {
                 for (int i = 0; i < count; i++) {
                     for (int j = 0; j < rows[i].field_count; j++) {
@@ -916,9 +954,7 @@ static int read_all_rows(Context* ctx, Table* table, Row** out_rows, int* out_co
             offset += (int)record_size;
         }
 
-        int32_t next_page;
-        memcpy(&next_page, page, sizeof(next_page));
-        page_num = (int)next_page;
+        page_num = row_page_next(pager, page);
     }
 
     *out_rows = rows;
@@ -3450,8 +3486,7 @@ static void free_row_pages(Context* ctx, Table* table) {
     while (page_num != 0) {
         uint8_t page[PAGE_SIZE];
         pager_read_page(pager, page_num, page);
-        int32_t next_page_num;
-        memcpy(&next_page_num, page, sizeof(next_page_num));
+        int next_page_num = row_page_next(pager, page);
         pager_free_page(pager, page_num);
         page_num = next_page_num;
     }
@@ -4253,14 +4288,12 @@ static int index_build_from_rows(Context* ctx, Table* table, int column, BTree* 
         uint8_t page[PAGE_SIZE];
         pager_read_page(pager, page_num, page);
 
-        int16_t record_count;
-        memcpy(&record_count, page + 2, sizeof(record_count));
-
+        int data_end = row_page_data_end(page);
         int offset = ROW_PAGE_HEADER_SIZE;
-        for (int r = 0; r < (int)record_count; r++) {
+        while (offset < data_end) {
             int16_t record_size;
             memcpy(&record_size, page + offset, sizeof(record_size));
-            if (record_size <= 0 || offset + (int)record_size > PAGE_SIZE) return 0;
+            if (record_size <= 0 || offset + (int)record_size > data_end) return 0;
 
             Row* row = deserialize_row(table, page + offset);
             if (row == NULL) return 0;
@@ -4274,9 +4307,7 @@ static int index_build_from_rows(Context* ctx, Table* table, int column, BTree* 
             offset += (int)record_size;
         }
 
-        int32_t next_page;
-        memcpy(&next_page, page, sizeof(next_page));
-        page_num = (int)next_page;
+        page_num = row_page_next(pager, page);
     }
     return 1;
 }
