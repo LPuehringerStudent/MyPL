@@ -1,0 +1,44 @@
+// Parser coverage seed: every way to write a type.
+
+
+struct Point {
+    x int,
+    y float
+}
+
+proc types_demo(a int, b float, c out string, d in out bool, e array<int>, f map<string, int>) -> int {
+    subtype score is int;
+    int i = 1;
+    float f1 = 2.5;
+    string s = "text";
+    bool flag = true;
+    date d0;
+    timestamp t0;
+    any anything;
+    row r;
+    cursor cur;
+    score sc = 7;
+    Point p = Point { x = 1, y = 2.5 };
+    array<int> nums = [1, 2, 3];
+    array<string> names;
+    array<row> rows;
+    array<Point> points;
+    array<array<int>> grid;
+    map<string, int> counts = {"a": 1, "b": 2};
+    map<int, string> labels;
+    map<string, Point> by_name;
+    users.id%type uid;
+    i%type same_as_i;
+    users%rowtype user_row;
+    return i;
+}
+
+func typed_func(p Point, xs array<Point>, m map<string, array<int>>) -> array<int> {
+    array<int> result = [1];
+    return result;
+}
+
+func rowtype_func() -> users%rowtype {
+    users%rowtype r;
+    return r;
+}

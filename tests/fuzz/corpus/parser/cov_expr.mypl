@@ -1,0 +1,53 @@
+// Parser coverage seed: expressions.
+package util is
+    proc noop() -> int;
+    func twice(n int) -> int;
+end util;
+
+package body util is
+    proc noop() -> int { return 0; }
+    func twice(n int) -> int { return n * 2; }
+end util;
+
+struct Box {
+    w int,
+    h int
+}
+
+proc expr_demo() -> int {
+    int a = 1 + 2 * 3 - 4 / 2;
+    int b = -a + 1;
+    bool c = !true;
+    bool d = a < b;
+    bool e = a <= b;
+    bool f = a > b;
+    bool g = a >= b;
+    bool h = a == b;
+    bool i = a != b;
+    int grouped = (a + b) * (a - b);
+    float fl = 3.14159;
+    string s = "esc\n\t\"quoted\"\\";
+    string joined = concat("a", "b");
+    int len = length(s);
+    int q = util.twice(a);
+    util.noop();
+    array<int> arr = [1, 2, 3];
+    int first = arr[0];
+    arr[1] = 5;
+    array<array<int>> grid = [[1, 2], [3, 4]];
+    int nested = grid[1][0];
+    map<string, int> m = {"k": 1, "j": 2};
+    int mv = m["k"];
+    m["z"] = 3;
+    Box bx = Box { w = 1, h = 2 };
+    bx.w = 9;
+    int hh = bx.h;
+    int fst = arr.first();
+    arr.extend(2);
+    arr.trim(1);
+    m.delete("k");
+    int sq = sqlcode;
+    string em = sqlerrm;
+    string nul = null;
+    return a + b;
+}
