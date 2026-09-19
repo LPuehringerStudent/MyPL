@@ -307,7 +307,68 @@ TEST(lexer_scans_import_keyword) {
     ASSERT_INT_EQ(TOKEN_EOF, lexer_next_token(&lexer).type);
 }
 
+/* Issue #52: a token that spans lines (a SQL query, or a string with an
+ * embedded newline) is located where it STARTS, not where it ends. */
+
+TEST(lexer_reports_start_line_of_multiline_select) {
+    Lexer lexer;
+    lexer_init(&lexer, "x;\n  select id\n    from t\n    where id = 1;\ny;");
+    ASSERT_INT_EQ(1, lexer_next_token(&lexer).line);           /* x */
+    ASSERT_INT_EQ(1, lexer_next_token(&lexer).line);           /* ; */
+    Token select = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_SQL_QUERY, select.type);
+    ASSERT_INT_EQ(2, select.line);
+    ASSERT_INT_EQ(3, select.column);
+}
+
+TEST(lexer_reports_start_line_of_multiline_string) {
+    Lexer lexer;
+    lexer_init(&lexer, "print \"one\ntwo\nthree\";");
+    ASSERT_INT_EQ(1, lexer_next_token(&lexer).line);           /* print */
+    Token str = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_STRING, str.type);
+    ASSERT_INT_EQ(1, str.line);
+    ASSERT_INT_EQ(7, str.column);
+}
+
+TEST(lexer_tokens_after_multiline_token_have_correct_line_and_column) {
+    Lexer lexer;
+    lexer_init(&lexer, "print \"a\nb\"; z");
+    lexer_next_token(&lexer);                                  /* print */
+    lexer_next_token(&lexer);                                  /* "a\nb" */
+    Token semi = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_SEMICOLON, semi.type);
+    ASSERT_INT_EQ(2, semi.line);
+    ASSERT_INT_EQ(3, semi.column);                             /* after `b"` */
+    Token z = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(2, z.line);
+    ASSERT_INT_EQ(5, z.column);
+}
+
+TEST(lexer_unterminated_string_is_reported_where_it_starts) {
+    Lexer lexer;
+    lexer_init(&lexer, "a\nprint \"never\nclosed");
+    lexer_next_token(&lexer);                                  /* a */
+    lexer_next_token(&lexer);                                  /* print */
+    Token bad = lexer_next_token(&lexer);
+    ASSERT_INT_EQ(TOKEN_ERROR, bad.type);
+    ASSERT_INT_EQ(2, bad.line);
+}
+
+TEST(lexer_init_at_line_numbers_tokens_from_the_given_line) {
+    Lexer lexer;
+    lexer_init_at_line(&lexer, "a\nb\nc", -2);
+    ASSERT_INT_EQ(-2, lexer_next_token(&lexer).line);
+    ASSERT_INT_EQ(-1, lexer_next_token(&lexer).line);
+    ASSERT_INT_EQ(0, lexer_next_token(&lexer).line);
+}
+
 int main(void) {
+    RUN_TEST(lexer_reports_start_line_of_multiline_select);
+    RUN_TEST(lexer_reports_start_line_of_multiline_string);
+    RUN_TEST(lexer_tokens_after_multiline_token_have_correct_line_and_column);
+    RUN_TEST(lexer_unterminated_string_is_reported_where_it_starts);
+    RUN_TEST(lexer_init_at_line_numbers_tokens_from_the_given_line);
     RUN_TEST(lexer_returns_eof_for_empty_source);
     RUN_TEST(lexer_scans_single_char_tokens);
     RUN_TEST(lexer_scans_two_char_operators);

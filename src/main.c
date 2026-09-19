@@ -79,8 +79,9 @@ static int run_file(const char* path, DBDriver* driver, const CompileOptions* op
     size_t src_len = strlen(source);
 
     char* combined = NULL;
+    int preamble_lines = 0;
     if (builtin_len > 0 || pkg_len > 0 || prg_len > 0) {
-        combined = malloc(builtin_len + pkg_len + prg_len + src_len + 4);
+        combined = malloc(builtin_len + pkg_len + prg_len + src_len + 5);
         if (combined != NULL) {
             size_t off = 0;
             if (builtin_len > 0) {
@@ -98,6 +99,12 @@ static int run_file(const char* path, DBDriver* driver, const CompileOptions* op
                 off += prg_len;
                 combined[off++] = '\n';
             }
+            /* A blank line closes the preamble, so no declaration in it can
+               land on the line just before the user's first one. */
+            combined[off++] = '\n';
+            for (size_t i = 0; i < off; i++) {
+                if (combined[i] == '\n') preamble_lines++;
+            }
             memcpy(combined + off, source, src_len + 1);
         }
     }
@@ -107,11 +114,18 @@ static int run_file(const char* path, DBDriver* driver, const CompileOptions* op
     free(program_source);
     const char* compile_source = combined != NULL ? combined : source;
 
+    /* Everything ahead of the user's source is built-in or stored
+       declarations; tell the compiler so it numbers the user's own lines
+       from 1 instead of reporting them shifted by the preamble. */
+    CompileOptions compile_options = {0};
+    if (options != NULL) compile_options = *options;
+    compile_options.line_offset = preamble_lines;
+
     Chunk chunk;
     init_chunk(&chunk);
     char error[256];
     if (!compile_with_options(compile_source, &chunk, path, error, sizeof(error),
-                              ctx, options)) {
+                              ctx, &compile_options)) {
         fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
         free(source);
         free(combined);
@@ -232,7 +246,8 @@ int main(int argc, char** argv) {
 
     CompileOptions compile_options = {
         conditional_flags,
-        conditional_flag_count
+        conditional_flag_count,
+        0 /* line_offset: set per source by run_file */
     };
 
     DBDriver driver;

@@ -204,10 +204,36 @@ static int current_column(VM* vm) {
     return vm->chunk->columns[offset];
 }
 
+/* Location to report a runtime error at. Code that came from the built-in or
+ * stored declarations prepended to the user's source has a negative line (see
+ * format_error); an error raised inside a built-in wrapper such as
+ * dbms_output.put_line is the caller's, so report the nearest calling frame
+ * that is in the user's own source instead. When there is none (the whole
+ * stack is prepended code) the negative line stays and the message says so. */
+static void error_location(VM* vm, int* line, int* column) {
+    *line = current_line(vm);
+    *column = current_column(vm);
+    if (*line >= 0 || vm->chunk == NULL) return;
+    for (int f = vm->frame_count - 1; f >= 0; f--) {
+        const uint8_t* ip = vm->return_ips[f];
+        if (ip == NULL) continue;
+        int offset = (int)(ip - vm->chunk->code) - 1;
+        if (offset < 0 || offset >= vm->chunk->lines_count || vm->chunk->lines == NULL) continue;
+        if (vm->chunk->lines[offset] > 0) {
+            *line = vm->chunk->lines[offset];
+            *column = (vm->chunk->columns != NULL && offset < vm->chunk->columns_count)
+                          ? vm->chunk->columns[offset] : 0;
+            return;
+        }
+    }
+}
+
 static void set_runtime_error_ex(VM* vm, const char* message, int code) {
+    int line, column;
+    error_location(vm, &line, &column);
     format_error(vm->error_message, sizeof(vm->error_message),
                  vm->chunk != NULL ? vm->chunk->source_path : NULL,
-                 current_line(vm), current_column(vm), message);
+                 line, column, message);
     vm->sql_code = code;
     strncpy(vm->sql_errm, vm->error_message, sizeof(vm->sql_errm) - 1);
     vm->sql_errm[sizeof(vm->sql_errm) - 1] = '\0';
