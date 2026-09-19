@@ -3048,8 +3048,13 @@ static void parse_trigger(Parser* parser, Program* program) {
 }
 
 Program* parse_with_path(const char* source, const char* path, char* error, size_t error_size) {
+    return parse_with_path_from_line(source, path, 1, error, error_size);
+}
+
+Program* parse_with_path_from_line(const char* source, const char* path, int first_line,
+                                   char* error, size_t error_size) {
     Parser parser;
-    lexer_init(&parser.lexer, source);
+    lexer_init_at_line(&parser.lexer, source, first_line);
     parser.had_error = 0;
     parser.path = path;
     parser.error_message[0] = '\0';

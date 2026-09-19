@@ -771,7 +771,7 @@ TEST(compiler_compiles_imported_procedure) {
 
 TEST(compiler_options_define_conditional_flag) {
     const char* flags[] = {"DEBUG"};
-    CompileOptions options = {flags, 1};
+    CompileOptions options = {flags, 1, 0};
     Chunk chunk;
     init_chunk(&chunk);
     ASSERT_INT_EQ(1, compile_with_options(
@@ -793,7 +793,7 @@ TEST(compiler_options_define_conditional_flag) {
 
 TEST(compiler_source_can_undefine_option_flag) {
     const char* flags[] = {"DEBUG"};
-    CompileOptions options = {flags, 1};
+    CompileOptions options = {flags, 1, 0};
     Chunk chunk;
     init_chunk(&chunk);
     ASSERT_INT_EQ(1, compile_with_options(
@@ -841,7 +841,7 @@ TEST(compiler_options_apply_to_imported_modules) {
              "import \"%s\"; proc main() -> int { return selected(); }",
              s_module_path);
     const char* flags[] = {"DEBUG"};
-    CompileOptions options = {flags, 1};
+    CompileOptions options = {flags, 1, 0};
     Chunk chunk;
     init_chunk(&chunk);
     ASSERT_INT_EQ(1, compile_with_options(source, &chunk, NULL, NULL, 0, NULL, &options));
@@ -857,7 +857,7 @@ TEST(compiler_options_apply_to_imported_modules) {
 
 TEST(compiler_options_reject_invalid_flag_name) {
     const char* flags[] = {"DEBUG=1"};
-    CompileOptions options = {flags, 1};
+    CompileOptions options = {flags, 1, 0};
     Chunk chunk;
     char error[256] = {0};
     init_chunk(&chunk);

@@ -261,6 +261,107 @@ TEST(cli_rejects_conditional_flag_without_file) {
     ASSERT_INT_EQ(1, WEXITSTATUS(rc));
 }
 
+/* Issue #52: the CLI prepends built-in (and stored) declarations to the
+ * user's file before compiling it. The lines it reports must still be the
+ * user's own, and a statement spanning several lines is located where it
+ * starts. */
+
+static int write_text_file(const char* path, const char* text) {
+    FILE* f = fopen(path, "w");
+    if (f == NULL) return 0;
+    fputs(text, f);
+    fclose(f);
+    return 1;
+}
+
+static int run_cli_capture(const char* path, char* out, size_t out_size) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "./bin/mypl %s > /tmp/mypl_out.txt 2>&1", path);
+    int rc = system(cmd);
+    out[0] = '\0';
+    FILE* f = fopen("/tmp/mypl_out.txt", "r");
+    if (f != NULL) {
+        size_t n = fread(out, 1, out_size - 1, f);
+        out[n] = '\0';
+        fclose(f);
+    }
+    return WEXITSTATUS(rc);
+}
+
+TEST(cli_compile_error_reports_the_line_in_the_users_file) {
+    char out[512];
+    ASSERT_INT_EQ(1, write_text_file("/tmp/mypl_cli_line_a.mypl",
+        "proc main() -> int {\n"
+        "    int x = 1;\n"
+        "    string s = x;\n"
+        "    return 0;\n"
+        "}\n"));
+    ASSERT_INT_EQ(1, run_cli_capture("/tmp/mypl_cli_line_a.mypl", out, sizeof(out)));
+    ASSERT_PTR_NOT_NULL(strstr(out, "/tmp/mypl_cli_line_a.mypl:3:"));
+    remove("/tmp/mypl_cli_line_a.mypl");
+}
+
+TEST(cli_runtime_sql_error_reports_the_line_in_the_users_file) {
+    char out[512];
+    remove("mypl.db");
+    ASSERT_INT_EQ(1, write_text_file("/tmp/mypl_cli_line_b.mypl",
+        "proc main() -> int {\n"
+        "    print \"start\";\n"
+        "    insert into cli_line_missing values (1);\n"
+        "    return 0;\n"
+        "}\n"));
+    ASSERT_INT_EQ(1, run_cli_capture("/tmp/mypl_cli_line_b.mypl", out, sizeof(out)));
+    ASSERT_PTR_NOT_NULL(strstr(out, "/tmp/mypl_cli_line_b.mypl:3:"));
+    remove("/tmp/mypl_cli_line_b.mypl");
+    remove("mypl.db");
+}
+
+TEST(cli_multiline_select_error_reports_the_statement_start) {
+    char out[512];
+    remove("mypl.db");
+    ASSERT_INT_EQ(1, write_text_file("/tmp/mypl_cli_line_c.mypl",
+        "proc main() -> int {\n"
+        "    create table cli_line_t (id int);\n"
+        "    int n = 0;\n"
+        "    select id into n\n"
+        "        from cli_line_t\n"
+        "        where id = 99;\n"
+        "    return n;\n"
+        "}\n"));
+    ASSERT_INT_EQ(1, run_cli_capture("/tmp/mypl_cli_line_c.mypl", out, sizeof(out)));
+    ASSERT_PTR_NOT_NULL(strstr(out, "/tmp/mypl_cli_line_c.mypl:4:"));
+    remove("/tmp/mypl_cli_line_c.mypl");
+    remove("mypl.db");
+}
+
+TEST(cli_error_in_stored_proc_is_reported_at_the_call_site) {
+    char out[512];
+    remove("mypl.db");
+    remove("mypl.db.programs");
+    /* The first run stores boom(); the second calls it, so its source is part
+       of what the CLI prepends. */
+    ASSERT_INT_EQ(1, write_text_file("/tmp/mypl_cli_line_d1.mypl",
+        "proc boom() -> int {\n"
+        "    int x = parse_int(\"zzz\");\n"
+        "    return x;\n"
+        "}\n"
+        "proc main() -> int { return 0; }\n"));
+    ASSERT_INT_EQ(0, run_cli_capture("/tmp/mypl_cli_line_d1.mypl", out, sizeof(out)));
+
+    ASSERT_INT_EQ(1, write_text_file("/tmp/mypl_cli_line_d2.mypl",
+        "proc main() -> int {\n"
+        "    print \"calling\";\n"
+        "    return boom();\n"
+        "}\n"));
+    ASSERT_INT_EQ(1, run_cli_capture("/tmp/mypl_cli_line_d2.mypl", out, sizeof(out)));
+    ASSERT_PTR_NOT_NULL(strstr(out, "/tmp/mypl_cli_line_d2.mypl:3:"));
+    ASSERT_PTR_NOT_NULL(strstr(out, "parse_int: invalid integer"));
+    remove("/tmp/mypl_cli_line_d1.mypl");
+    remove("/tmp/mypl_cli_line_d2.mypl");
+    remove("mypl.db");
+    remove("mypl.db.programs");
+}
+
 #ifdef USE_SQLITE
 TEST(cli_accepts_db_flag) {
     remove("/tmp/cli_test.db");
@@ -293,6 +394,10 @@ int main(void) {
     RUN_TEST(cli_conditional_flags_apply_to_imports);
     RUN_TEST(cli_rejects_invalid_conditional_flag);
     RUN_TEST(cli_rejects_conditional_flag_without_file);
+    RUN_TEST(cli_compile_error_reports_the_line_in_the_users_file);
+    RUN_TEST(cli_runtime_sql_error_reports_the_line_in_the_users_file);
+    RUN_TEST(cli_multiline_select_error_reports_the_statement_start);
+    RUN_TEST(cli_error_in_stored_proc_is_reported_at_the_call_site);
 #ifdef USE_SQLITE
     RUN_TEST(cli_accepts_db_flag);
 #endif

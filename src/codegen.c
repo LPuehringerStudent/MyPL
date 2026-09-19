@@ -564,7 +564,9 @@ static void compile_block(Compiler* compiler, Block* block) {
 }
 
 static void compile_expr(Compiler* compiler, Expr* expr) {
-    if (expr != NULL && expr->loc.line > 0) {
+    /* Line 0 is a synthesized node with no source position; a negative line
+       is prepended built-in/stored source and is kept (see format_error). */
+    if (expr != NULL && expr->loc.line != 0) {
         compiler->current_line = expr->loc.line;
         compiler->current_column = expr->loc.column;
     }
@@ -950,7 +952,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
 }
 
 static void compile_stmt(Compiler* compiler, Stmt* stmt) {
-    if (stmt != NULL && stmt->loc.line > 0) {
+    if (stmt != NULL && stmt->loc.line != 0) {
         compiler->current_line = stmt->loc.line;
         compiler->current_column = stmt->loc.column;
     }
@@ -2398,7 +2400,9 @@ char* cc_preprocess(const char* source, const char* source_path,
     int active = 1;
 
     const char* p = source;
-    int line_no = 1;
+    /* Number lines so the user's own source starts at 1 (see
+       CompileOptions.line_offset). */
+    int line_no = 1 - (options != NULL ? options->line_offset : 0);
     while (*p != '\0') {
         const char* line_start = p;
         const char* nl = strchr(p, '\n');
@@ -2525,8 +2529,19 @@ char* cc_preprocess(const char* source, const char* source_path,
 }
 
 static int do_compile_source(Compiler* compiler, const char* source, int is_main, char* error, size_t error_size) {
+    /* Only the main source is preceded by prepended declarations; an imported
+       module is a file of its own and is numbered from its first line. */
+    int line_offset = (is_main && compiler->options != NULL) ? compiler->options->line_offset : 0;
+    CompileOptions file_options;
+    const CompileOptions* options = compiler->options;
+    if (options != NULL && options->line_offset != line_offset) {
+        file_options = *options;
+        file_options.line_offset = line_offset;
+        options = &file_options;
+    }
+
     char cc_error[256] = {0};
-    char* processed = cc_preprocess(source, compiler->source_path, compiler->options,
+    char* processed = cc_preprocess(source, compiler->source_path, options,
                                     cc_error, sizeof(cc_error));
     if (processed == NULL) {
         if (error != NULL && error_size > 0) {
@@ -2541,7 +2556,8 @@ static int do_compile_source(Compiler* compiler, const char* source, int is_main
         return 0;
     }
     char parse_error[256] = {0};
-    Program* program = parse_with_path(processed, compiler->source_path, parse_error, sizeof(parse_error));
+    Program* program = parse_with_path_from_line(processed, compiler->source_path, 1 - line_offset,
+                                                 parse_error, sizeof(parse_error));
     free(processed);
     if (program == NULL) {
         if (error != NULL && error_size > 0) {
