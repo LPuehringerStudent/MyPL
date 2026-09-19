@@ -28,14 +28,11 @@ jobs:
       run: make fuzz
 
     # Short runs on PRs and pushes; longer on the weekly schedule or manually.
-    # Leak detection stays off until the parser frees partial ASTs on its
-    # error paths (it leaks on many invalid inputs); crashes, UB and invariant
-    # failures still fail the job.
+    # Crashes, UB, invariant failures and (LeakSanitizer) leaks fail the job.
     - name: Fuzz lexer, parser and preprocessor
       run: |
         make fuzz-run \
-          FUZZ_TIME=${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '600') || '60' }} \
-          FUZZ_LEAKS=0
+          FUZZ_TIME=${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '600') || '60' }}
 
     - name: Upload crash inputs
       if: failure()

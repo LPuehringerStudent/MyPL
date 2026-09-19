@@ -1,0 +1,4 @@
+proc main() -> int {
+    int x = 9%;
+    return 0;
+}

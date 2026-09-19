@@ -1,0 +1,103 @@
+// Parser coverage seed: statements.
+proc stmt_demo(n int) -> int {
+    my_error exception;
+    int total = 0;
+    array<int> ids = [1, 2, 3];
+    array<row> rows;
+    string name = "";
+    int id = 0;
+
+    if n > 0 {
+        total = total + 1;
+    } else {
+        total = total - 1;
+    }
+    if n > 10 { print "big"; } else if n > 5 { print "mid"; } else { print "small"; }
+
+    while total < 10 {
+        total = total + 1;
+        if total == 5 { continue; }
+        if total == 8 { break; }
+    }
+    do {
+        total = total + 1;
+    } while total < 20;
+
+    for (int i = 0; i < 10; i = i + 1) {
+        total = total + i;
+    }
+    for x in ids {
+        print x;
+    }
+    for row in select id, name from t1 where id > ?n order by id {
+        print row.name;
+    }
+    for r in select * from t1 {
+        total = total + r.id;
+    }
+
+    case total {
+        when 1: { print "one"; }
+        when 2: { print "two"; }
+        else: { print "other"; }
+    }
+
+    try {
+        raise my_error;
+    } catch (err) {
+        print err;
+        print sqlcode;
+    }
+    try {
+        select id into id from t1 where id = ?n;
+    } catch (e) {
+        raise no_data_found;
+    }
+
+    pragma autonomous_transaction;
+    subtype small is int;
+
+    create table t1 (id int, name string);
+    create table if not exists t2 (id int primary key, name string not null, qty int default 0, tag string unique);
+    create index idx_t1 on t1 (id);
+    create view v1 as select id from t1;
+    insert into t1 values (1, 'alice');
+    insert into t1 (id, name) values (?n, 'bob');
+    update t1 set name = 'carol' where id = 1;
+    delete from t1 where id = 2;
+    alter table t1 add column extra int;
+    drop view v1;
+    drop index idx_t1;
+    drop table t2;
+    select name into name from t1 where id = 1;
+    select id, name into id, name from t1 where id = ?n;
+    select id bulk collect into ids from t1;
+    select * bulk collect into rows from t1;
+    forall i in ids insert into t1 (id) values (?i);
+    forall i in ids update t1 set id = id + 1 where id = ?i;
+    forall i in ids delete from t1 where id = ?i;
+
+    cursor c is select id, name from t1;
+    open c;
+    fetch c into id, name;
+    print c%found;
+    print c%notfound;
+    print c%isopen;
+    print int_to_string(c%rowcount);
+    close c;
+    cursor c2;
+    open c2 for select id from t1 where id > ?n;
+    fetch c2 into id;
+    close c2;
+
+    begin;
+    savepoint sp1;
+    rollback to savepoint sp1;
+    release savepoint sp1;
+    commit;
+    rollback;
+
+    execute_immediate("create table dyn (id int)");
+    drop trigger audit_t1;
+    return total;
+}

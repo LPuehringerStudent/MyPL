@@ -136,7 +136,7 @@ FUZZ_CFLAGS  = -g -O1 -std=c99 -D_GNU_SOURCE -Iinclude -Itests/fuzz \
 FUZZ_SOURCES = $(filter-out $(SRCDIR)/main.c $(SRCDIR)/sqlite_driver.c,$(wildcard $(SRCDIR)/*.c))
 
 FUZZ_SEEDS_lexer        = examples tests/fixtures tests/fuzz/regressions/lexer
-FUZZ_SEEDS_parser       = examples tests/fixtures tests/fuzz/regressions/parser
+FUZZ_SEEDS_parser       = examples tests/fixtures tests/fuzz/corpus/parser tests/fuzz/regressions/parser
 FUZZ_SEEDS_preprocessor = tests/fuzz/corpus/preprocessor tests/fuzz/regressions/preprocessor
 
 fuzz: $(addprefix $(BINDIR)/fuzz_,$(FUZZ_TARGETS))

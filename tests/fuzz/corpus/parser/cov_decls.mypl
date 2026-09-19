@@ -1,0 +1,77 @@
+// Parser coverage seed: top-level declarations.
+import "other.mypl";
+import "lib/helper.mypl";
+
+struct Account {
+    id int,
+    balance float,
+    proc deposit(amount float) {
+        balance = balance + amount;
+    },
+    func total() -> float {
+        return balance;
+    }
+}
+
+package bank is
+    counter int;
+    proc open_account(id int) -> int;
+    func balance_of(id int) -> float;
+end bank;
+
+package body bank is
+    int counter = 0;
+    array<int> open_ids = [1, 2];
+    proc open_account(id int) -> int {
+        counter = counter + 1;
+        return counter;
+    }
+    func balance_of(id int) -> float {
+        return 1.5;
+    }
+    proc hidden() -> int { return 0; }
+end bank;
+
+proc with_modes(a int, b out int, c in out int, d string) -> int {
+    b = a;
+    c = c + 1;
+    return a;
+}
+
+func secret() -> int authid definer {
+    return 42;
+}
+
+func who() -> string authid current_user {
+    return "me";
+}
+
+trigger t_before_ins before insert on accounts {
+    print "before insert";
+}
+trigger t_after_upd after update on accounts {
+    print "after update";
+}
+trigger t_after_del after delete on accounts {
+    print "after delete";
+}
+trigger t_ddl_create after create on accounts {
+    print "created";
+}
+trigger t_ddl_drop before drop on accounts {
+    print "dropping";
+}
+trigger t_row after insert on accounts for each row {
+    print :new.id;
+    print :old.id;
+}
+
+
+proc not_main() -> int {
+    return 0;
+}
+
+block {
+    int inner = 1;
+    print inner;
+}
