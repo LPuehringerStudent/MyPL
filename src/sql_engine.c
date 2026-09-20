@@ -4871,7 +4871,6 @@ static void custom_close(DBDriver* driver) {
 }
 
 static int custom_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
-    (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
     /* Install the VM's row-level trigger hook (NULL when none is active).
        Save/restore so a nested statement executed from inside a trigger body
@@ -4880,7 +4879,7 @@ static int custom_exec(DBDriver* driver, const char* sql, Value* params, int par
     void* saved_user = g_row_trigger_user;
     g_row_trigger_fn = driver->row_trigger_fn;
     g_row_trigger_user = driver->row_trigger_user;
-    int row_count = sql_exec_ddl(sql, &impl->ctx);
+    int row_count = sql_exec_ddl_params(sql, &impl->ctx, params, param_count);
     g_row_trigger_fn = saved_fn;
     g_row_trigger_user = saved_user;
     if (!row_count) {
@@ -4898,12 +4897,16 @@ static int custom_exec(DBDriver* driver, const char* sql, Value* params, int par
 }
 
 static int custom_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {
-    (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
-    Result* res = sql_exec(sql, &impl->ctx);
+    Result* res = sql_exec_params(sql, &impl->ctx, params, param_count);
     if (res == NULL) {
-        snprintf(driver->error_message, sizeof(driver->error_message),
-                 "custom engine: could not execute '%s'", sql);
+        if (g_sql_ddl_error[0] != '\0') {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "%s", g_sql_ddl_error);
+        } else {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "custom engine: could not execute '%s'", sql);
+        }
         return 0;
     }
     driver->error_message[0] = '\0';

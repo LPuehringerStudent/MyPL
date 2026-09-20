@@ -1039,6 +1039,52 @@ TEST(sql_bound_view_definition_rejects_placeholders) {
     cleanup(path);
 }
 
+TEST(custom_driver_binds_params_for_exec_and_query) {
+    char* path = make_temp_path();
+    DBDriver driver;
+    custom_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, path));
+    ASSERT_INT_EQ(1, driver.exec(&driver, "CREATE TABLE users (id INT, name STRING)", NULL, 0));
+
+    Value ins[2] = {value_int(7), value_string(strdup("o'brien"))};
+    ASSERT_INT_EQ(1, driver.exec(&driver, "INSERT INTO users VALUES (?, ?)", ins, 2));
+    value_release(ins[1]);
+
+    Value find[1] = {value_int(7)};
+    void* result = NULL;
+    ASSERT_INT_EQ(1, driver.query(&driver, "SELECT name FROM users WHERE id = ?", find, 1, &result));
+    void* row = NULL;
+    ASSERT_INT_EQ(1, driver.result_next(&driver, result, &row));
+    Value name;
+    ASSERT_INT_EQ(1, driver.row_get_field(&driver, row, "name", &name));
+    ASSERT_STRING_EQ("o'brien", name.as.as_string);
+    value_release(name);
+    driver.result_free(&driver, result);
+
+    driver.close(&driver);
+    cleanup(path);
+}
+
+TEST(custom_driver_reports_placeholder_count_mismatch) {
+    char* path = make_temp_path();
+    DBDriver driver;
+    custom_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, path));
+    ASSERT_INT_EQ(1, driver.exec(&driver, "CREATE TABLE users (id INT)", NULL, 0));
+
+    Value two[2] = {value_int(1), value_int(2)};
+    ASSERT_INT_EQ(-1, driver.exec(&driver, "INSERT INTO users VALUES (?)", two, 2));
+    ASSERT_INT_EQ(1, strstr(driver.error_message, "1 bind placeholder(s) but 2 value(s)") != NULL);
+
+    void* result = NULL;
+    Value one[1] = {value_int(1)};
+    ASSERT_INT_EQ(0, driver.query(&driver, "SELECT id FROM users WHERE id = ? AND id = ?", one, 1, &result));
+    ASSERT_INT_EQ(1, strstr(driver.error_message, "2 bind placeholder(s) but 1 value(s)") != NULL);
+
+    driver.close(&driver);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -1083,5 +1129,7 @@ int main(void) {
     RUN_TEST(sql_bound_placeholder_count_must_match);
     RUN_TEST(sql_bound_insert_select_keeps_placeholder_positions);
     RUN_TEST(sql_bound_view_definition_rejects_placeholders);
+    RUN_TEST(custom_driver_binds_params_for_exec_and_query);
+    RUN_TEST(custom_driver_reports_placeholder_count_mismatch);
     TEST_SUMMARY();
 }
