@@ -833,6 +833,212 @@ TEST(sql_insert_into_select_with_where) {
     cleanup(path);
 }
 
+/* ---- Bind parameters (?) ---------------------------------------------- */
+
+static int bound_row_count(Context* ctx, const char* query, const Value* params, int count) {
+    Result* res = sql_exec_params(query, ctx, params, count);
+    if (res == NULL) return -1;
+    int rows = res->row_count;
+    result_free(res);
+    return rows;
+}
+
+TEST(sql_bound_insert_values_of_each_type) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT, price FLOAT, name STRING)", &ctx));
+
+    /* -5 has no literal spelling in the engine's SQL lexer, so a value that
+       round-trips proves it is bound as a value and not pasted into the text. */
+    Value first[3] = {value_int(-5), value_float(2.5), value_string(strdup("bob"))};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params("INSERT INTO t VALUES (?, ?, ?)", &ctx, first, 3));
+    value_release(first[2]);
+
+    Value second[3] = {value_int(2), value_null(), value_bool(1)};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params("INSERT INTO t VALUES (?, ?, ?)", &ctx, second, 3));
+
+    Value find_first[1] = {value_int(-5)};
+    Result* res = sql_exec_params("SELECT price, name FROM t WHERE id = ?", &ctx, find_first, 1);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_FLOAT_EQ(2.5, row_get_field(row, "price").as.as_float);
+    ASSERT_STRING_EQ("bob", row_get_field(row, "name").as.as_string);
+    result_free(res);
+
+    res = sql_exec("SELECT price FROM t WHERE id = 2", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    ASSERT_INT_EQ(VAL_NULL, row_get_field(result_next(res), "price").type);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_where_update_delete) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT, name STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (1, 'a')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (2, 'b')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (3, 'c')", &ctx));
+
+    Value two[1] = {value_int(2)};
+    ASSERT_INT_EQ(1, bound_row_count(&ctx, "SELECT id FROM t WHERE id = ?", two, 1));
+    Value one[1] = {value_int(1)};
+    ASSERT_INT_EQ(2, bound_row_count(&ctx, "SELECT id FROM t WHERE id > ?", one, 1));
+
+    Value upd[2] = {value_string(strdup("B")), value_int(2)};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params("UPDATE t SET name = ? WHERE id = ?", &ctx, upd, 2));
+    value_release(upd[0]);
+    Result* res = sql_exec("SELECT name FROM t WHERE id = 2", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_STRING_EQ("B", row_get_field(result_next(res), "name").as.as_string);
+    result_free(res);
+
+    Value del[1] = {value_int(3)};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params("DELETE FROM t WHERE id = ?", &ctx, del, 1));
+    ASSERT_INT_EQ(2, bound_row_count(&ctx, "SELECT id FROM t", NULL, 0));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_in_list_like_and_limit) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT, name STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (1, 'apple')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (2, 'apricot')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (3, 'banana')", &ctx));
+
+    Value in[2] = {value_int(1), value_int(3)};
+    ASSERT_INT_EQ(2, bound_row_count(&ctx, "SELECT id FROM t WHERE id IN (?, ?)", in, 2));
+
+    Value like[1] = {value_string(strdup("ap%"))};
+    ASSERT_INT_EQ(2, bound_row_count(&ctx, "SELECT id FROM t WHERE name LIKE ?", like, 1));
+    value_release(like[0]);
+
+    /* A LIKE pattern has to be text; a number is rejected, not coerced. */
+    Value not_text[1] = {value_int(7)};
+    ASSERT_INT_EQ(0, bound_row_count(&ctx, "SELECT id FROM t WHERE name LIKE ?", not_text, 1));
+
+    Value limit[1] = {value_int(2)};
+    ASSERT_INT_EQ(2, bound_row_count(&ctx, "SELECT id FROM t LIMIT ?", limit, 1));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_string_is_data_not_sql) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT, name STRING)", &ctx));
+
+    /* Both quote characters, a placeholder look-alike and a statement
+       terminator; none of it may be interpreted. */
+    const char* nasty = "x' OR '1'='1\" ?2; DROP TABLE t";
+    Value params[2] = {value_int(1), value_string(strdup(nasty))};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params("INSERT INTO t VALUES (?, ?)", &ctx, params, 2));
+    value_release(params[1]);
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (2, 'other')", &ctx));
+
+    Value find[1] = {value_string(strdup(nasty))};
+    Result* res = sql_exec_params("SELECT id, name FROM t WHERE name = ?", &ctx, find, 1);
+    value_release(find[0]);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(1, row_get_field(row, "id").as.as_int);
+    ASSERT_STRING_EQ(nasty, row_get_field(row, "name").as.as_string);
+    result_free(res);
+
+    ASSERT_INT_EQ(2, bound_row_count(&ctx, "SELECT id FROM t", NULL, 0));
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_question_mark_in_literal_is_not_a_placeholder) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT, note STRING)", &ctx));
+
+    Value params[1] = {value_int(4)};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params("INSERT INTO t VALUES (?, 'why?')", &ctx, params, 1));
+    Result* res = sql_exec("SELECT note FROM t WHERE id = 4", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_STRING_EQ("why?", row_get_field(result_next(res), "note").as.as_string);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_placeholder_count_must_match) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT)", &ctx));
+
+    Value one[1] = {value_int(1)};
+    Value two[2] = {value_int(1), value_int(2)};
+    ASSERT_INT_EQ(0, sql_exec_ddl_params("INSERT INTO t VALUES (?)", &ctx, two, 2));
+    ASSERT_INT_EQ(0, sql_exec_ddl_params("INSERT INTO t VALUES (?, ?)", &ctx, one, 1));
+    ASSERT_PTR_NULL(sql_exec_params("SELECT id FROM t WHERE id = ? AND id = ?", &ctx, one, 1));
+    ASSERT_INT_EQ(0, bound_row_count(&ctx, "SELECT id FROM t", NULL, 0));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_insert_select_keeps_placeholder_positions) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE src (id INT, name STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE dst (id INT, name STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO src VALUES (1, 'a')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO src VALUES (2, 'b')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO src VALUES (3, 'c')", &ctx));
+
+    /* The SELECT is executed on its own, so its placeholders must still refer
+       to the second and third values of the whole statement. */
+    Value params[3] = {value_int(0), value_int(1), value_string(strdup("c"))};
+    ASSERT_INT_EQ(1, sql_exec_ddl_params(
+        "INSERT INTO dst SELECT id, name FROM src WHERE id > ? AND name <> ?", &ctx, params + 1, 2));
+    value_release(params[2]);
+    ASSERT_INT_EQ(1, bound_row_count(&ctx, "SELECT id FROM dst", NULL, 0));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bound_view_definition_rejects_placeholders) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE t (id INT)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (1)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO t VALUES (2)", &ctx));
+
+    Value one[1] = {value_int(1)};
+    ASSERT_INT_EQ(0, sql_exec_ddl_params("CREATE VIEW v AS SELECT id FROM t WHERE id = ?", &ctx, one, 1));
+
+    /* A view is unaffected by the values bound to the query that reads it. */
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE VIEW v2 AS SELECT id FROM t WHERE id > 1", &ctx));
+    Value nine[1] = {value_int(9)};
+    ASSERT_INT_EQ(1, bound_row_count(&ctx, "SELECT id FROM v2 WHERE id < ?", nine, 1));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -869,5 +1075,13 @@ int main(void) {
     RUN_TEST(sql_insert_into_select_star);
     RUN_TEST(sql_insert_into_select_specific_columns);
     RUN_TEST(sql_insert_into_select_with_where);
+    RUN_TEST(sql_bound_insert_values_of_each_type);
+    RUN_TEST(sql_bound_where_update_delete);
+    RUN_TEST(sql_bound_in_list_like_and_limit);
+    RUN_TEST(sql_bound_string_is_data_not_sql);
+    RUN_TEST(sql_bound_question_mark_in_literal_is_not_a_placeholder);
+    RUN_TEST(sql_bound_placeholder_count_must_match);
+    RUN_TEST(sql_bound_insert_select_keeps_placeholder_positions);
+    RUN_TEST(sql_bound_view_definition_rejects_placeholders);
     TEST_SUMMARY();
 }
