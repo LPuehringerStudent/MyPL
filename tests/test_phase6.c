@@ -182,6 +182,64 @@ TEST(phase6_forall_delete_with_scalar_array) {
     ASSERT_INT_EQ(1, strstr(out, "6") != NULL);
 }
 
+/* Static SQL with ?var placeholders on the custom engine (no --db). */
+TEST(phase6_custom_engine_binds_static_sql) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table people (id int, name string);\n"
+        "    int x = 7;\n"
+        "    string s = \"o'brien\";\n"
+        "    insert into people values (?x, ?s);\n"
+        "    insert into people values (8, 'al');\n"
+        "    int n = 0;\n"
+        "    select count(*) into n from people where id = ?x;\n"
+        "    print concat(\"matching=\", int_to_string(n));\n"
+        "    update people set name = ?s where id = 8;\n"
+        "    string got = \"\";\n"
+        "    select name into got from people where id = 8;\n"
+        "    print concat(\"name=\", got);\n"
+        "    delete from people where id = ?x;\n"
+        "    select count(*) into n from people;\n"
+        "    print concat(\"left=\", int_to_string(n));\n"
+        "    return 0;\n"
+        "}\n",
+        NULL, out, sizeof(out));
+    remove("mypl.db");
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, strstr(out, "matching=1") != NULL);
+    ASSERT_INT_EQ(1, strstr(out, "name=o'brien") != NULL);
+    ASSERT_INT_EQ(1, strstr(out, "left=1") != NULL);
+}
+
+TEST(phase6_custom_engine_forall_binds_scalar_array) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table targets (id int, tag string);\n"
+        "    array<int> ids;\n"
+        "    ids.extend(3);\n"
+        "    ids[0] = 10;\n"
+        "    ids[1] = 20;\n"
+        "    ids[2] = 30;\n"
+        "    forall i in ids insert into targets values (?i, 'x');\n"
+        "    int n = 0;\n"
+        "    select count(*) into n from targets;\n"
+        "    print concat(\"rows=\", int_to_string(n));\n"
+        "    forall i in ids delete from targets where id = ?i;\n"
+        "    select count(*) into n from targets;\n"
+        "    print concat(\"after=\", int_to_string(n));\n"
+        "    return 0;\n"
+        "}\n",
+        NULL, out, sizeof(out));
+    remove("mypl.db");
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, strstr(out, "rows=3") != NULL);
+    ASSERT_INT_EQ(1, strstr(out, "after=0") != NULL);
+}
+
 int main(void) {
     RUN_TEST(phase6_map_string_key_methods);
     RUN_TEST(phase6_map_int_key_methods);
@@ -190,5 +248,7 @@ int main(void) {
     RUN_TEST(phase6_forall_insert_with_scalar_array);
     RUN_TEST(phase6_forall_update_with_scalar_array);
     RUN_TEST(phase6_forall_delete_with_scalar_array);
+    RUN_TEST(phase6_custom_engine_binds_static_sql);
+    RUN_TEST(phase6_custom_engine_forall_binds_scalar_array);
     TEST_SUMMARY();
 }
