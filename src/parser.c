@@ -1605,6 +1605,7 @@ static Stmt* for_step(Parser* parser) {
             return stmt;
         }
         if (check(parser, TOKEN_LPAREN)) {
+            advance(parser); /* ( : call() parses from the first argument */
             Expr* call_expr = call(parser, create_variable_expr(copy_token_lexeme(&ident)));
             Stmt* stmt = create_expr_stmt(call_expr);
             stmt->loc.line = ident.line;
