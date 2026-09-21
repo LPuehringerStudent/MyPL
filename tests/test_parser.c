@@ -489,6 +489,44 @@ TEST(parser_failed_operand_before_call_is_error) {
     ASSERT_PTR_NOT_NULL(strstr(error, "expected expression"));
 }
 
+TEST(parser_parses_call_as_cfor_step) {
+    Program* program = parse("proc main() -> int { for (int i = 0; i < 3; tick()) { return 0; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* stmt = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_FOR_C, stmt->kind);
+    Stmt* step = stmt->as.cfor_stmt.step;
+    ASSERT_PTR_NOT_NULL(step);
+    ASSERT_INT_EQ(STMT_EXPR, step->kind);
+    Expr* call = step->as.expr_stmt.value;
+    ASSERT_PTR_NOT_NULL(call);
+    ASSERT_INT_EQ(EXPR_CALL, call->kind);
+    ASSERT_STRING_EQ("tick", call->as.call.name);
+    ASSERT_INT_EQ(0, call->as.call.arg_count);
+    free_program(program);
+}
+
+TEST(parser_parses_call_with_arguments_as_cfor_step) {
+    Program* program = parse("proc main() -> int { for (int i = 0; i < 3; bump(i, 2)) { return 0; } }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* step = program->procs[0].body->stmts[0]->as.cfor_stmt.step;
+    ASSERT_PTR_NOT_NULL(step);
+    ASSERT_INT_EQ(STMT_EXPR, step->kind);
+    Expr* call = step->as.expr_stmt.value;
+    ASSERT_INT_EQ(EXPR_CALL, call->kind);
+    ASSERT_STRING_EQ("bump", call->as.call.name);
+    ASSERT_INT_EQ(2, call->as.call.arg_count);
+    ASSERT_INT_EQ(EXPR_VARIABLE, call->as.call.args[0]->kind);
+    ASSERT_INT_EQ(EXPR_LITERAL, call->as.call.args[1]->kind);
+    free_program(program);
+}
+
+TEST(parser_rejects_cfor_call_step_missing_close_paren) {
+    char error[256];
+    Program* program = parse("proc main() -> int { for (int i = 0; i < 3; bump(i) { return 0; } }", error, sizeof(error));
+    ASSERT_PTR_NULL(program);
+    ASSERT_INT_EQ(1, error[0] != '\0');
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -509,6 +547,9 @@ int main(void) {
     RUN_TEST(parser_parses_continue_statement);
     RUN_TEST(parser_parses_do_while_statement);
     RUN_TEST(parser_parses_cfor_statement);
+    RUN_TEST(parser_parses_call_as_cfor_step);
+    RUN_TEST(parser_parses_call_with_arguments_as_cfor_step);
+    RUN_TEST(parser_rejects_cfor_call_step_missing_close_paren);
     RUN_TEST(parser_parses_else_branch);
     RUN_TEST(parser_parses_else_if_chain);
     RUN_TEST(parser_parses_return_statement);
