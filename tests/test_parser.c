@@ -489,6 +489,57 @@ TEST(parser_failed_operand_before_call_is_error) {
     ASSERT_PTR_NOT_NULL(strstr(error, "expected expression"));
 }
 
+TEST(parser_open_for_query_carries_placeholders_as_params) {
+    Program* program = parse(
+        "proc main() -> int { cursor c; open c for select id from t where id > ?lo and id < ?hi; return 0; }",
+        NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* open = program->procs[0].body->stmts[1];
+    ASSERT_INT_EQ(STMT_CURSOR_OPEN, open->kind);
+    ASSERT_STRING_EQ("select id from t where id > ? and id < ?", open->as.cursor_open.sql_query);
+    ASSERT_INT_EQ(2, open->as.cursor_open.param_count);
+    ASSERT_INT_EQ(EXPR_SQL_PARAM, open->as.cursor_open.params[0]->kind);
+    ASSERT_STRING_EQ("lo", open->as.cursor_open.params[0]->as.sql_param.name);
+    ASSERT_STRING_EQ("hi", open->as.cursor_open.params[1]->as.sql_param.name);
+    free_program(program);
+}
+
+TEST(parser_declared_cursor_query_carries_placeholders_as_params) {
+    Program* program = parse(
+        "proc main() -> int { cursor c is select id from t where name = ?who and id > ?n; open c; return 0; }",
+        NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* decl = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(STMT_CURSOR_DECL, decl->kind);
+    ASSERT_STRING_EQ("select id from t where name = ? and id > ?", decl->as.cursor_decl.sql_query);
+    ASSERT_INT_EQ(2, decl->as.cursor_decl.param_count);
+    ASSERT_STRING_EQ("who", decl->as.cursor_decl.params[0]->as.sql_param.name);
+    ASSERT_STRING_EQ("n", decl->as.cursor_decl.params[1]->as.sql_param.name);
+    free_program(program);
+}
+
+TEST(parser_cursor_query_placeholder_inside_string_literal_is_text) {
+    Program* program = parse(
+        "proc main() -> int { cursor c is select id from t where note = 'why?not' and id = ?n; return 0; }",
+        NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* decl = program->procs[0].body->stmts[0];
+    ASSERT_STRING_EQ("select id from t where note = 'why?not' and id = ?", decl->as.cursor_decl.sql_query);
+    ASSERT_INT_EQ(1, decl->as.cursor_decl.param_count);
+    ASSERT_STRING_EQ("n", decl->as.cursor_decl.params[0]->as.sql_param.name);
+    free_program(program);
+}
+
+TEST(parser_cursor_without_placeholders_has_no_params) {
+    Program* program = parse(
+        "proc main() -> int { cursor c is select id from t; return 0; }", NULL, 0);
+    ASSERT_PTR_NOT_NULL(program);
+    Stmt* decl = program->procs[0].body->stmts[0];
+    ASSERT_INT_EQ(0, decl->as.cursor_decl.param_count);
+    ASSERT_PTR_NULL(decl->as.cursor_decl.params);
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(parser_returns_empty_program_for_empty_source);
     RUN_TEST(parser_parses_integer_literal);
@@ -509,6 +560,10 @@ int main(void) {
     RUN_TEST(parser_parses_continue_statement);
     RUN_TEST(parser_parses_do_while_statement);
     RUN_TEST(parser_parses_cfor_statement);
+    RUN_TEST(parser_open_for_query_carries_placeholders_as_params);
+    RUN_TEST(parser_declared_cursor_query_carries_placeholders_as_params);
+    RUN_TEST(parser_cursor_query_placeholder_inside_string_literal_is_text);
+    RUN_TEST(parser_cursor_without_placeholders_has_no_params);
     RUN_TEST(parser_parses_else_branch);
     RUN_TEST(parser_parses_else_if_chain);
     RUN_TEST(parser_parses_return_statement);

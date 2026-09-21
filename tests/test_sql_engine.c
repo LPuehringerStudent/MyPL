@@ -1085,6 +1085,55 @@ TEST(custom_driver_reports_placeholder_count_mismatch) {
     cleanup(path);
 }
 
+TEST(custom_engine_cursors_bind_placeholders) {
+    char* path = make_temp_path();
+    DBDriver driver;
+    custom_driver_init(&driver);
+    ASSERT_INT_EQ(1, driver.open(&driver, path));
+
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    /* A declared cursor and an OPEN ... FOR cursor, both with ?var values.
+       Re-opening the declared cursor after changing `lim` must pick up the
+       new value: it is read at OPEN, not at declaration. */
+    int ok = compile_with_context_and_path(
+        "proc main() -> int {\n"
+        "    create table t (id int, name string);\n"
+        "    insert into t values (1, 'a');\n"
+        "    insert into t values (5, 'b');\n"
+        "    insert into t values (9, 'c');\n"
+        "    int lim = 4;\n"
+        "    string want = \"c\";\n"
+        "    cursor c is select id from t where id > ?lim;\n"
+        "    cursor d;\n"
+        "    open d for select id from t where name = ?want;\n"
+        "    open c;\n"
+        "    int first = 0;\n"
+        "    fetch c into first;\n"
+        "    int named = 0;\n"
+        "    fetch d into named;\n"
+        "    close c;\n"
+        "    lim = 8;\n"
+        "    open c;\n"
+        "    int second = 0;\n"
+        "    fetch c into second;\n"
+        "    return first * 100 + named * 10 + second;\n"
+        "}\n",
+        &chunk, NULL, error, sizeof(error), NULL);
+    ASSERT_INT_EQ(1, ok);
+
+    VM* vm = vm_init();
+    vm_set_driver(vm, &driver);
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(599, vm_pop(vm).as.as_int); /* 5, 9 and 9 */
+
+    vm_free(vm);
+    free_chunk(&chunk);
+    driver.close(&driver);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -1131,5 +1180,6 @@ int main(void) {
     RUN_TEST(sql_bound_view_definition_rejects_placeholders);
     RUN_TEST(custom_driver_binds_params_for_exec_and_query);
     RUN_TEST(custom_driver_reports_placeholder_count_mismatch);
+    RUN_TEST(custom_engine_cursors_bind_placeholders);
     TEST_SUMMARY();
 }
