@@ -1,0 +1,5 @@
+proc main() -> int {
+    cursor c is select id from t where id > ?lim and name = 'x?y
+    open c;
+    return 0;
+}
