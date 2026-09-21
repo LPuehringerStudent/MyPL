@@ -1740,6 +1740,57 @@ static char* copy_sql_token_text(const Token* token) {
     return sql;
 }
 
+/* Rewrites each `?name` placeholder in `sql` (outside string literals) to a
+   bare `?` in place and appends an SQL-parameter expression for `name` to
+   *params, so the query text carries only positional markers and the values
+   travel as binds, in order of appearance. Returns 0 when out of memory,
+   with *params already released. */
+static int extract_sql_params(char* sql, Expr*** params, int* param_count) {
+    char* out = sql;
+    const char* p = sql;
+    char quote = '\0';
+    while (*p != '\0') {
+        if (quote != '\0') {
+            if (*p == quote) quote = '\0';
+        } else if (*p == '\'' || *p == '"') {
+            quote = *p;
+        } else if (*p == '?') {
+            const char* ident = p + 1;
+            const char* q = ident;
+            while (is_ident_char(*q)) q++;
+            if (q > ident) {
+                char* pname = malloc((size_t)(q - ident) + 1);
+                Expr* param = NULL;
+                if (pname != NULL) {
+                    memcpy(pname, ident, (size_t)(q - ident));
+                    pname[q - ident] = '\0';
+                    param = create_sql_param_expr(pname);
+                    free(pname);
+                }
+                Expr** grown = param != NULL
+                    ? realloc(*params, sizeof(Expr*) * (size_t)(*param_count + 1))
+                    : NULL;
+                if (grown == NULL) {
+                    free_expr(param);
+                    for (int i = 0; i < *param_count; i++) free_expr((*params)[i]);
+                    free(*params);
+                    *params = NULL;
+                    *param_count = 0;
+                    return 0;
+                }
+                *params = grown;
+                grown[(*param_count)++] = param;
+                *out++ = '?';
+                p = q;
+                continue;
+            }
+        }
+        *out++ = *p++;
+    }
+    *out = '\0';
+    return 1;
+}
+
 static Stmt* cursor_decl_statement(Parser* parser) {
     Token kw = parser->previous;  /* 'cursor' was just consumed */
     if (!check(parser, TOKEN_IDENT)) {
@@ -1805,42 +1856,11 @@ static Stmt* cursor_open_statement(Parser* parser) {
             error_at_current(parser, "out of memory");
             return NULL;
         }
-        /* Collect ?var parameters from the dynamic query. */
-        const char* p = sql_query;
-        while (*p != '\0') {
-            if (*p == '?') {
-                const char* ident = p + 1;
-                const char* q = ident;
-                while (is_ident_char(*q)) q++;
-                if (q > ident) {
-                    int name_len = (int)(q - ident);
-                    char* pname = malloc((size_t)name_len + 1);
-                    if (pname == NULL) {
-                        free(name);
-                        free(sql_query);
-                        for (int i = 0; i < param_count; i++) free_expr(params[i]);
-                        free(params);
-                        error_at_current(parser, "out of memory");
-                        return NULL;
-                    }
-                    memcpy(pname, ident, (size_t)name_len);
-                    pname[name_len] = '\0';
-                    Expr** new_params = realloc(params, sizeof(Expr*) * (size_t)(param_count + 1));
-                    if (new_params == NULL) {
-                        free(pname);
-                        free(name);
-                        free(sql_query);
-                        for (int i = 0; i < param_count; i++) free_expr(params[i]);
-                        free(params);
-                        error_at_current(parser, "out of memory");
-                        return NULL;
-                    }
-                    params = new_params;
-                    params[param_count++] = create_sql_param_expr(pname);
-                    free(pname);
-                }
-            }
-            p++;
+        if (!extract_sql_params(sql_query, &params, &param_count)) {
+            free(name);
+            free(sql_query);
+            error_at_current(parser, "out of memory");
+            return NULL;
         }
     }
     if (!check(parser, TOKEN_SEMICOLON)) {
