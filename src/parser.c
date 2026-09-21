@@ -1800,6 +1800,8 @@ static Stmt* cursor_decl_statement(Parser* parser) {
     advance(parser); /* cursor name */
     char* name = copy_token_lexeme(&parser->previous);
     char* sql_query = NULL;
+    Expr** params = NULL;
+    int param_count = 0;
     if (match(parser, TOKEN_IS)) {
         if (!check(parser, TOKEN_SQL_QUERY)) {
             error_at_current(parser, "expected SELECT query after 'is'");
@@ -1809,8 +1811,9 @@ static Stmt* cursor_decl_statement(Parser* parser) {
         Token sql_token = parser->current;
         advance(parser); /* SQL query */
         sql_query = copy_sql_token_text(&sql_token);
-        if (sql_query == NULL) {
+        if (sql_query == NULL || !extract_sql_params(sql_query, &params, &param_count)) {
             free(name);
+            free(sql_query);
             error_at_current(parser, "out of memory");
             return NULL;
         }
@@ -1819,10 +1822,12 @@ static Stmt* cursor_decl_statement(Parser* parser) {
         error_at_current(parser, "expected ';' after cursor declaration");
         free(name);
         free(sql_query);
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
         return NULL;
     }
     advance(parser); /* ; */
-    Stmt* stmt = create_cursor_decl_stmt(name, sql_query);
+    Stmt* stmt = create_cursor_decl_stmt(name, sql_query, params, param_count);
     free(name);
     if (stmt != NULL) {
         stmt->loc.line = kw.line;
