@@ -2452,57 +2452,94 @@ static int view_source_exists(Context* ctx, SelectStmt* stmt) {
     return 1;
 }
 
+/* One side of a join, already materialized into rows. The column count is kept
+   alongside them because resolve_field splits a combined row at that boundary
+   to decide which side a prefixed name refers to. */
+typedef struct {
+    Row* rows;
+    int  count;
+    int  column_count;
+} JoinSource;
+
+static void join_source_free(JoinSource* src) {
+    free_rows(src->rows, src->count);
+    src->rows = NULL;
+    src->count = 0;
+    src->column_count = 0;
+}
+
+/* Reads a named join side into rows. Returns 1 on success. */
+static int materialize_source(Context* ctx, const char* name, JoinSource* out) {
+    out->rows = NULL;
+    out->count = 0;
+    out->column_count = 0;
+
+    Table* table = catalog_find_table(ctx, name);
+    if (table == NULL) return 0;
+    if (!read_all_rows(ctx, table, &out->rows, &out->count)) return 0;
+    out->column_count = table->column_count;
+    return 1;
+}
+
+/* Filler for a left row that found no match. Zero and empty values rather than
+   SQL NULLs, which is what this path has always produced. */
+static int join_source_zero_row(Context* ctx, const char* name,
+                                JoinSource* src, Row* out) {
+    (void)src;
+    out->fields = NULL;
+    out->field_count = 0;
+
+    Table* table = catalog_find_table(ctx, name);
+    if (table == NULL) return 0;
+    *out = row_zero(table);
+    return out->fields != NULL;
+}
+
 static Result* execute_select(Context* ctx, SelectStmt* stmt) {
     Row* source_rows = NULL;
     int source_count = 0;
 
     if (stmt->has_join) {
-        Table* left_table = catalog_find_table(ctx, stmt->table_name);
-        Table* right_table = catalog_find_table(ctx, stmt->join_table_name);
-        if (left_table == NULL || right_table == NULL) {
+        JoinSource left_src;
+        JoinSource right_src;
+        if (!materialize_source(ctx, stmt->table_name, &left_src)) {
             return result_create(0);
         }
-        stmt->join_left_column_count = left_table->column_count;
-        stmt->join_right_column_count = right_table->column_count;
-
-        Row* left_rows = NULL;
-        int left_count = 0;
-        Row* right_rows = NULL;
-        int right_count = 0;
-        if (!read_all_rows(ctx, left_table, &left_rows, &left_count) ||
-            !read_all_rows(ctx, right_table, &right_rows, &right_count)) {
-            free_rows(left_rows, left_count);
-            free_rows(right_rows, right_count);
+        if (!materialize_source(ctx, stmt->join_table_name, &right_src)) {
+            join_source_free(&left_src);
             return result_create(0);
         }
+        stmt->join_left_column_count = left_src.column_count;
+        stmt->join_right_column_count = right_src.column_count;
 
-        int max_combined = left_count * (right_count + 1);
+        int max_combined = left_src.count * (right_src.count + 1);
         source_rows = calloc((size_t)max_combined, sizeof(Row));
         if (source_rows == NULL) {
-            free_rows(left_rows, left_count);
-            free_rows(right_rows, right_count);
+            join_source_free(&left_src);
+            join_source_free(&right_src);
             return NULL;
         }
 
-        Row zero_right = row_zero(right_table);
-        if (zero_right.fields == NULL) {
+        Row zero_right;
+        if (!join_source_zero_row(ctx, stmt->join_table_name, &right_src, &zero_right)) {
             free(source_rows);
-            free_rows(left_rows, left_count);
-            free_rows(right_rows, right_count);
+            join_source_free(&left_src);
+            join_source_free(&right_src);
             return NULL;
         }
 
         source_count = 0;
-        for (int i = 0; i < left_count; i++) {
+        for (int i = 0; i < left_src.count; i++) {
             int matched = 0;
-            for (int j = 0; j < right_count; j++) {
-                if (evaluate_join(&left_rows[i], &right_rows[j], stmt)) {
-                    source_rows[source_count] = row_combine(&left_rows[i], &right_rows[j]);
+            for (int j = 0; j < right_src.count; j++) {
+                if (evaluate_join(&left_src.rows[i], &right_src.rows[j], stmt)) {
+                    source_rows[source_count] =
+                        row_combine(&left_src.rows[i], &right_src.rows[j]);
                     if (source_rows[source_count].fields == NULL) {
                         free_row(&zero_right);
                         free_rows(source_rows, source_count);
-                        free_rows(left_rows, left_count);
-                        free_rows(right_rows, right_count);
+                        join_source_free(&left_src);
+                        join_source_free(&right_src);
                         return NULL;
                     }
                     source_count++;
@@ -2510,12 +2547,12 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
                 }
             }
             if (!matched && stmt->join_type == 1) {
-                source_rows[source_count] = row_combine(&left_rows[i], &zero_right);
+                source_rows[source_count] = row_combine(&left_src.rows[i], &zero_right);
                 if (source_rows[source_count].fields == NULL) {
                     free_row(&zero_right);
                     free_rows(source_rows, source_count);
-                    free_rows(left_rows, left_count);
-                    free_rows(right_rows, right_count);
+                    join_source_free(&left_src);
+                    join_source_free(&right_src);
                     return NULL;
                 }
                 source_count++;
@@ -2523,8 +2560,8 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
         }
 
         free_row(&zero_right);
-        free_rows(left_rows, left_count);
-        free_rows(right_rows, right_count);
+        join_source_free(&left_src);
+        join_source_free(&right_src);
     } else {
         Table* table = catalog_find_table(ctx, stmt->table_name);
         if (table != NULL) {
