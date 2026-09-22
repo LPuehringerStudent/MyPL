@@ -339,6 +339,34 @@ TEST(btree_numeric_ordering_int_and_float_spaces) {
     cleanup(path);
 }
 
+TEST(btree_stats_reports_shape) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    BTreeStats stats;
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(1, stats.height);
+    ASSERT_INT_EQ(1, stats.node_count);
+    ASSERT_INT_EQ(1, stats.leaf_count);
+    ASSERT_INT_EQ(0, stats.entry_count);
+
+    for (int i = 0; i < 300; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(300, stats.entry_count);
+    ASSERT(stats.height >= 2);
+    ASSERT(stats.leaf_count >= 4);
+    ASSERT(stats.node_count > stats.leaf_count); /* at least one internal node */
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
 TEST(btree_free_pages_releases_pages) {
     char* path = make_temp_path();
     Pager* pager = pager_open(path);
@@ -372,6 +400,7 @@ int main(void) {
     RUN_TEST(btree_delete_removes_only_target_locator);
     RUN_TEST(btree_delete_across_many_keys_keeps_search_correct);
     RUN_TEST(btree_numeric_ordering_int_and_float_spaces);
+    RUN_TEST(btree_stats_reports_shape);
     RUN_TEST(btree_free_pages_releases_pages);
     TEST_SUMMARY();
 }

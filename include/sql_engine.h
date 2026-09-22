@@ -211,6 +211,17 @@ int    btree_scan_eq(BTree* tree, const Cell* key, BTreeScanFn fn, void* user);
 int    btree_scan_range(BTree* tree, const Cell* lo, int lo_inclusive,
                         const Cell* hi, int hi_inclusive, BTreeScanFn fn, void* user);
 
+/* Shape of a tree, for tests and diagnostics. */
+typedef struct {
+    int height;      /* 1 when the root is a leaf */
+    int node_count;  /* pages the tree occupies */
+    int leaf_count;
+    int entry_count; /* leaf entries, duplicates included */
+} BTreeStats;
+
+/* Walks the whole tree. Returns 1 and fills out, or 0 on a corrupt page. */
+int    btree_stats(BTree* tree, BTreeStats* out);
+
 int    os_open(const char* path);
 int    os_close(int fd);
 int    os_read(int fd, void* buf, size_t count, off_t offset);

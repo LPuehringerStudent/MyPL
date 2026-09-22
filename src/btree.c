@@ -236,6 +236,29 @@ void btree_free_pages(BTree* tree) {
     free_pages_rec(tree->pager, tree->root_page);
 }
 
+static int stats_rec(Pager* pager, int page_num, BTreeStats* out, int depth) {
+    BtNode node;
+    if (!node_load(pager, page_num, &node)) return 0;
+    out->node_count++;
+    if (depth > out->height) out->height = depth;
+    if (node.is_leaf) {
+        out->leaf_count++;
+        out->entry_count += node.nkeys;
+        return 1;
+    }
+    for (int i = 0; i <= node.nkeys; i++) {
+        if (node.children[i] <= 0) return 0;
+        if (!stats_rec(pager, node.children[i], out, depth + 1)) return 0;
+    }
+    return 1;
+}
+
+int btree_stats(BTree* tree, BTreeStats* out) {
+    if (tree == NULL || out == NULL || tree->root_page <= 0) return 0;
+    memset(out, 0, sizeof(*out));
+    return stats_rec(tree->pager, tree->root_page, out, 1);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Insert                                                                     */
 /* -------------------------------------------------------------------------- */
