@@ -200,8 +200,9 @@ int    btree_root_page(BTree* tree);
    their own key space, strings bytewise (only the first 36 bytes are
    significant). The locator (row_page, row_offset) identifies one row record. */
 int    btree_insert(BTree* tree, const Cell* key, int row_page, int row_offset);
-/* Removes a single (key, locator) pair. No rebalancing: nodes may underflow,
-   searches stay correct. Returns 1 when an entry was removed. */
+/* Removes a single (key, locator) pair, keeping every node but the root at
+   least half full by redistributing with a sibling or merging and freeing a
+   page. Returns 1 when an entry was removed. */
 int    btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset);
 
 typedef void (*BTreeScanFn)(int row_page, int row_offset, void* user);
