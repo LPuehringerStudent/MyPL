@@ -1866,6 +1866,46 @@ TEST(phase11_left_join_with_view_keeps_unmatched_rows) {
     ASSERT_INT_EQ(1, output_contains(out, "inner=0"));
 }
 
+/* A view whose own definition is a join is itself a join source: materializing
+   it runs the inner join first, and its result rows then feed the outer one.
+   Two levels of join in one statement, neither of which the join loop knows
+   about. */
+TEST(phase11_join_with_view_built_from_a_join) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj7_o (id int, cust int);\n"
+        "    create table vj7_c (id int, name string);\n"
+        "    insert into vj7_c values (1, \"alice\");\n"
+        "    insert into vj7_c values (2, \"bob\");\n"
+        "    insert into vj7_o values (10, 1);\n"
+        "    insert into vj7_o values (11, 1);\n"
+        "    insert into vj7_o values (12, 2);\n"
+        "    create view vj7_v as select vj7_o.id, vj7_c.name from vj7_o\n"
+        "        join vj7_c on vj7_o.cust = vj7_c.id;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from vj7_v;\n"
+        "    print concat(\"view=\", int_to_string(n));\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from vj7_c join vj7_v on vj7_c.name = vj7_v.name;\n"
+        "    print concat(\"outer=\", int_to_string(m));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "view=3"));
+    /* alice matches her two orders, bob his one. */
+    ASSERT_INT_EQ(1, output_contains(out, "outer=3"));
+}
+
 /* Resolving views in joins must not turn a missing source into a silently
    empty one: a dropped view fails a join exactly as a name that was never a
    table does. */
@@ -2048,6 +2088,7 @@ int main(void) {
     RUN_TEST(phase11_join_with_filtered_view_composes_clauses);
     RUN_TEST(phase11_join_with_view_over_view);
     RUN_TEST(phase11_left_join_with_view_keeps_unmatched_rows);
+    RUN_TEST(phase11_join_with_view_built_from_a_join);
     RUN_TEST(phase11_join_with_dropped_view_matches_missing_table);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     TEST_SUMMARY();
