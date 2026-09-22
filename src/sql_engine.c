@@ -1277,29 +1277,12 @@ static WhereNode* where_node_new(WhereType type) {
 }
 
 /* Parses the literal under *tok into out and advances *tok past it. */
+/* Defined with the DDL parsers below; declared here because the WHERE parser
+   is the first thing that needs it. */
+static int sql_parse_literal_cell(SqlToken* tok, Cell* out);
+
 static int where_parse_literal(SqlLexer* lex, SqlToken* tok, Cell* out) {
-    if (tok->type == TOK_NUMBER) {
-        char buf[64];
-        sql_token_text(tok, buf, sizeof(buf));
-        if (strchr(buf, '.') != NULL) {
-            out->type = VAL_FLOAT;
-            out->as.as_float = strtod(buf, NULL);
-        } else {
-            out->type = VAL_INT;
-            out->as.as_int = atoi(buf);
-        }
-    } else if (tok->type == TOK_STRING) {
-        out->type = VAL_STRING;
-        out->as.as_string = malloc((size_t)tok->length + 1);
-        if (out->as.as_string == NULL) return 0;
-        memcpy(out->as.as_string, tok->text, (size_t)tok->length);
-        out->as.as_string[tok->length] = '\0';
-    } else if (tok->type == TOK_NULL) {
-        out->type = VAL_NULL;
-        out->as.as_int = 0;
-    } else {
-        return 0;
-    }
+    if (!sql_parse_literal_cell(tok, out)) return 0;
     *tok = sql_next_token(lex);
     return 1;
 }
@@ -2827,26 +2810,7 @@ static int sql_parse_insert(const char* query, DdlStmt* stmt) {
     tok = sql_next_token(&lex);
     while (tok.type != TOK_RPAREN && tok.type != TOK_EOF) {
         if (stmt->value_count >= MAX_COLUMNS) return 0;
-        if (tok.type == TOK_NUMBER) {
-            char buf[64];
-            sql_token_text(&tok, buf, sizeof(buf));
-            if (strchr(buf, '.') != NULL) {
-                stmt->values[stmt->value_count].type = VAL_FLOAT;
-                stmt->values[stmt->value_count].as.as_float = strtod(buf, NULL);
-            } else {
-                stmt->values[stmt->value_count].type = VAL_INT;
-                stmt->values[stmt->value_count].as.as_int = atoi(buf);
-            }
-        } else if (tok.type == TOK_NULL) {
-            stmt->values[stmt->value_count].type = VAL_NULL;
-            stmt->values[stmt->value_count].as.as_int = 0;
-        } else if (tok.type == TOK_STRING) {
-            stmt->values[stmt->value_count].type = VAL_STRING;
-            stmt->values[stmt->value_count].as.as_string = malloc((size_t)tok.length + 1);
-            if (stmt->values[stmt->value_count].as.as_string == NULL) return 0;
-            memcpy(stmt->values[stmt->value_count].as.as_string, tok.text, (size_t)tok.length);
-            stmt->values[stmt->value_count].as.as_string[tok.length] = '\0';
-        } else {
+        if (!sql_parse_literal_cell(&tok, &stmt->values[stmt->value_count])) {
             return 0;
         }
         stmt->value_count++;
@@ -3397,28 +3361,7 @@ static int sql_parse_update(const char* query, UpdateStmt* stmt) {
     if (tok.type != TOK_EQ) return 0;
 
     tok = sql_next_token(&lex);
-    if (tok.type == TOK_NUMBER) {
-        char buf[64];
-        sql_token_text(&tok, buf, sizeof(buf));
-        if (strchr(buf, '.') != NULL) {
-            stmt->set_value.type = VAL_FLOAT;
-            stmt->set_value.as.as_float = strtod(buf, NULL);
-        } else {
-            stmt->set_value.type = VAL_INT;
-            stmt->set_value.as.as_int = atoi(buf);
-        }
-    } else if (tok.type == TOK_NULL) {
-        stmt->set_value.type = VAL_NULL;
-        stmt->set_value.as.as_int = 0;
-    } else if (tok.type == TOK_STRING) {
-        stmt->set_value.type = VAL_STRING;
-        stmt->set_value.as.as_string = malloc((size_t)tok.length + 1);
-        if (stmt->set_value.as.as_string == NULL) return 0;
-        memcpy(stmt->set_value.as.as_string, tok.text, (size_t)tok.length);
-        stmt->set_value.as.as_string[tok.length] = '\0';
-    } else {
-        return 0;
-    }
+    if (!sql_parse_literal_cell(&tok, &stmt->set_value)) return 0;
 
     return parse_where_clause(&lex, &stmt->where);
 }
@@ -4742,18 +4685,35 @@ static int custom_result_next(DBDriver* driver, void* result_handle, void** row_
     return 1;
 }
 
+int sql_cell_to_value(const Cell* cell, Value* out) {
+    if (cell == NULL || out == NULL) return 0;
+    switch (cell->type) {
+        case VAL_INT:    *out = value_int(cell->as.as_int);     return 1;
+        case VAL_FLOAT:  *out = value_float(cell->as.as_float); return 1;
+        case VAL_STRING:
+            *out = value_string(strdup(cell->as.as_string != NULL
+                                       ? cell->as.as_string : ""));
+            return 1;
+        default:         return 0;
+    }
+}
+
 static int custom_row_get_field(DBDriver* driver, void* row_handle, const char* name, Value* out) {
     Cell cell = row_get_field((Row*)row_handle, name);
-    switch (cell.type) {
-        case VAL_INT:    *out = value_int(cell.as.as_int);       break;
-        case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
-        case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
-        case VAL_NULL:   *out = value_null();                    break;
-        default:
-            snprintf(driver->error_message, sizeof(driver->error_message),
-                     "column '%s' not found", name);
-            *out = value_int(0);
-            return 0;
+    if (!sql_cell_to_value(&cell, out)) {
+        if (cell.type == VAL_NULL) {
+            *out = value_null();
+            driver->error_message[0] = '\0';
+            return 1;
+        }
+        /* Only reachable for a cell type with no runtime scalar. A genuinely
+           missing column is not detectable here: row_get_field returns an
+           int 0 cell for one, which is indistinguishable from a real int 0.
+           The message predates that and is left alone. */
+        snprintf(driver->error_message, sizeof(driver->error_message),
+                 "column '%s' not found", name);
+        *out = value_int(0);
+        return 0;
     }
     driver->error_message[0] = '\0';
     return 1;
@@ -4767,16 +4727,13 @@ static int custom_row_get_column(DBDriver* driver, void* row_handle, int index, 
         return 0;
     }
     Cell cell = row->fields[index].value;
-    switch (cell.type) {
-        case VAL_INT:    *out = value_int(cell.as.as_int);       break;
-        case VAL_FLOAT:  *out = value_float(cell.as.as_float);   break;
-        case VAL_STRING: *out = value_string(strdup(cell.as.as_string)); break;
-        case VAL_NULL:   *out = value_null();                    break;
-        default:
-            *out = value_int(0);
-            return 0;
+    if (sql_cell_to_value(&cell, out)) return 1;
+    if (cell.type == VAL_NULL) {
+        *out = value_null();
+        return 1;
     }
-    return 1;
+    *out = value_int(0);
+    return 0;
 }
 
 static int custom_result_column_count(DBDriver* driver, void* result_handle) {
