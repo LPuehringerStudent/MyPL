@@ -204,19 +204,12 @@ static int current_column(VM* vm) {
     return vm->chunk->columns[offset];
 }
 
-/* Converts a row cell from the custom engine into a runtime value. Cell types
-   the runtime has no scalar for become `fallback`, which differs by call site:
-   most paths substitute int 0, dbms_sql.column_value reports NULL. Keeping the
-   mapping in one place is what makes adding a column type a local change. */
+/* Converts a row cell from the custom engine into a runtime value. Cells with
+   no runtime scalar - NULL today - become `fallback`, which differs by call
+   site: most paths substitute int 0, dbms_sql.column_value reports NULL. */
 static Value value_from_cell(Cell cell, Value fallback) {
-    switch (cell.type) {
-        case VAL_INT:    return value_int(cell.as.as_int);
-        case VAL_FLOAT:  return value_float(cell.as.as_float);
-        case VAL_STRING:
-            return value_string(strdup(cell.as.as_string != NULL
-                                       ? cell.as.as_string : ""));
-        default:         return fallback;
-    }
+    Value out;
+    return sql_cell_to_value(&cell, &out) ? out : fallback;
 }
 
 static void set_runtime_error_ex(VM* vm, const char* message, int code) {
