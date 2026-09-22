@@ -1716,6 +1716,136 @@ TEST(phase11_view_over_view) {
     ASSERT_INT_EQ(1, output_contains(out, "3"));
 }
 
+/* -------------------------------------------------------------------------- */
+/* SQL loops over empty results                                               */
+/* -------------------------------------------------------------------------- */
+
+/* The loop iterator occupies a stack slot that the exit path pops. It used to
+   be pushed inside the loop, so a query returning no rows jumped straight to
+   the pop and underflowed the stack - reported only as "unknown error",
+   because that path returns without setting a message. */
+TEST(phase11_sql_loop_over_empty_result_is_a_no_op) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table el_t (id int, name string);\n"
+        "    create table el_empty (id int);\n"
+        "    insert into el_t values (1, \"alice\");\n"
+        "    insert into el_t values (2, \"bob\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    print \"before\";\n"
+        "    for row in select id from el_empty {\n"
+        "        print \"unreachable\";\n"
+        "    }\n"
+        "    print \"after-empty-table\";\n"
+        "    for row in select id from el_t where id = 999 {\n"
+        "        print \"unreachable\";\n"
+        "    }\n"
+        "    print \"after-empty-where\";\n"
+        "    for row in select id from el_t {\n"
+        "        print row.id;\n"
+        "    }\n"
+        "    print \"after-rows\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+    ASSERT_INT_EQ(1, output_contains(out, "before"));
+    ASSERT_INT_EQ(1, output_contains(out, "after-empty-table"));
+    ASSERT_INT_EQ(1, output_contains(out, "after-empty-where"));
+    /* A loop that does run still works after one that did not. */
+    ASSERT_INT_EQ(1, output_contains(out, "after-rows"));
+}
+
+/* Locals declared before the loop must survive it, whether or not the body
+   ran: an unbalanced iterator slot would shift every slot below it. */
+TEST(phase11_sql_loop_leaves_surrounding_locals_intact) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ls_t (id int);\n"
+        "    create table ls_empty (id int);\n"
+        "    insert into ls_t values (5);\n"
+        "    insert into ls_t values (7);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int total = 100;\n"
+        "    string label = \"kept\";\n"
+        "    for row in select id from ls_empty {\n"
+        "        total = total + 1000;\n"
+        "    }\n"
+        "    for row in select id from ls_t {\n"
+        "        total = total + row.id;\n"
+        "    }\n"
+        "    print concat(\"total=\", int_to_string(total));\n"
+        "    print concat(\"label=\", label);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "total=112"));
+    ASSERT_INT_EQ(1, output_contains(out, "label=kept"));
+}
+
+/* break and continue emit their own pops for the iterator slot, so moving
+   where it is pushed has to keep both balanced. */
+TEST(phase11_sql_loop_break_and_continue_stay_balanced) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bc_loop (id int);\n"
+        "    insert into bc_loop values (1);\n"
+        "    insert into bc_loop values (2);\n"
+        "    insert into bc_loop values (3);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int marker = 9;\n"
+        "    int seen = 0;\n"
+        "    for row in select id from bc_loop {\n"
+        "        if row.id == 2 {\n"
+        "            break;\n"
+        "        }\n"
+        "        seen = seen + row.id;\n"
+        "    }\n"
+        "    print concat(\"broke=\", int_to_string(seen));\n"
+        "    int skipped = 0;\n"
+        "    for row in select id from bc_loop {\n"
+        "        if row.id == 2 {\n"
+        "            continue;\n"
+        "        }\n"
+        "        skipped = skipped + row.id;\n"
+        "    }\n"
+        "    print concat(\"skipped=\", int_to_string(skipped));\n"
+        "    print concat(\"marker=\", int_to_string(marker));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "broke=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "skipped=4"));
+    ASSERT_INT_EQ(1, output_contains(out, "marker=9"));
+}
+
 /* A SQL loop variable reads the current row whatever it is named; only `row`
  * used to work (examples/inventory.mypl, migration.mypl and todo.mypl). */
 TEST(phase11_named_sql_loop_variable_reads_fields) {
@@ -1838,6 +1968,9 @@ int main(void) {
     RUN_TEST(phase11_create_view_duplicate_name_errors);
     RUN_TEST(phase11_create_view_on_table_name_errors);
     RUN_TEST(phase11_view_over_view);
+    RUN_TEST(phase11_sql_loop_over_empty_result_is_a_no_op);
+    RUN_TEST(phase11_sql_loop_leaves_surrounding_locals_intact);
+    RUN_TEST(phase11_sql_loop_break_and_continue_stay_balanced);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     TEST_SUMMARY();
 }
