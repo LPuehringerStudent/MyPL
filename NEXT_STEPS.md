@@ -4,7 +4,7 @@ This document tracks the remaining roadmap for MyPL. Phases 1–11 are complete 
 
 ## Known Gaps (as of Phase 13 completion)
 
-- The custom SQL engine still has only three column types; views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
+- The custom SQL engine has `int`, `float`, `string` and `bool` columns; the language's `date` and `timestamp` scalars still have no column type of their own (catalog format V6 reserves room for them). Views cannot be JOIN targets; B-tree deletion does not rebalance (indexes are rebuilt wholesale on row-chain rewrites); index keys use only the first 36 bytes of strings.
 - The custom engine ignores `?var` bind params for static SQL (`tests/test_phase6.c` has 4 pre-existing failures in `USE_SQLITE=0` builds); the `dbms_sql` cursor API substitutes `?N` at execute time instead.
 - `utl_file` lines are still limited to 1 KB; `external_call` takes a single int/float/string argument; REPL recompiles everything per input; reference counting has no cycle collection.
 - The parser leaks partially built AST nodes on many syntax-error paths (found by fuzzing; the `Fuzz` workflow runs with `FUZZ_LEAKS=0` until fixed); custom-engine programs cannot loop over a table they create in the same run (columns are checked against the catalog at compile time), so several examples need `--db`; reported error line numbers include the prepended built-in package source; no install target, README lags the feature set, POSIX-only.
