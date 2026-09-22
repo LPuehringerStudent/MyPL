@@ -41,9 +41,19 @@ typedef struct {
 static SequenceDef g_sequences[MAX_CATALOG_SEQUENCES];
 static int         g_sequence_count = 0;
 
+/* VAL_DATE and VAL_TIMESTAMP are text-backed exactly as VAL_STRING is: the
+   cell owns a heap char*. Everything that frees, copies or zero-fills a cell
+   asks this rather than testing for VAL_STRING, so a text-backed column added
+   later cannot leak its buffer in one of the thirty-odd places that would
+   otherwise need updating. Places that genuinely mean "is a string" - ordering
+   and index eligibility - still test the type directly. */
+static int cell_owns_text(int type) {
+    return type == VAL_STRING || type == VAL_DATE || type == VAL_TIMESTAMP;
+}
+
 static void free_column(Column* col) {
     free(col->name);
-    if ((col->flags & COL_FLAG_HAS_DEFAULT) && col->default_value.type == VAL_STRING) {
+    if ((col->flags & COL_FLAG_HAS_DEFAULT) && cell_owns_text(col->default_value.type)) {
         free(col->default_value.as.as_string);
     }
 }
@@ -765,7 +775,7 @@ static Row* deserialize_row(Table* table, const uint8_t* record) {
         if (!deserialize_cell(record, &offset, &row->fields[i].value)) {
             for (int j = 0; j <= i; j++) {
                 free(row->fields[j].name);
-                if (row->fields[j].value.type == VAL_STRING) {
+                if (cell_owns_text(row->fields[j].value.type)) {
                     free(row->fields[j].value.as.as_string);
                 }
             }
@@ -913,7 +923,7 @@ static int read_all_rows(Context* ctx, Table* table, Row** out_rows, int* out_co
                 for (int i = 0; i < count; i++) {
                     for (int j = 0; j < rows[i].field_count; j++) {
                         free(rows[i].fields[j].name);
-                        if (rows[i].fields[j].value.type == VAL_STRING) {
+                        if (cell_owns_text(rows[i].fields[j].value.type)) {
                             free(rows[i].fields[j].value.as.as_string);
                         }
                     }
@@ -930,7 +940,7 @@ static int read_all_rows(Context* ctx, Table* table, Row** out_rows, int* out_co
                     /* cleanup */
                     for (int j = 0; j < row->field_count; j++) {
                         free(row->fields[j].name);
-                        if (row->fields[j].value.type == VAL_STRING) {
+                        if (cell_owns_text(row->fields[j].value.type)) {
                             free(row->fields[j].value.as.as_string);
                         }
                     }
@@ -939,7 +949,7 @@ static int read_all_rows(Context* ctx, Table* table, Row** out_rows, int* out_co
                     for (int i = 0; i < count; i++) {
                         for (int j = 0; j < rows[i].field_count; j++) {
                             free(rows[i].fields[j].name);
-                            if (rows[i].fields[j].value.type == VAL_STRING) {
+                            if (cell_owns_text(rows[i].fields[j].value.type)) {
                                 free(rows[i].fields[j].value.as.as_string);
                             }
                         }
@@ -1306,11 +1316,11 @@ static void where_free(WhereNode* node) {
     if (node == NULL) return;
     where_free(node->left);
     where_free(node->right);
-    if (node->literal.type == VAL_STRING) {
+    if (cell_owns_text(node->literal.type)) {
         free(node->literal.as.as_string);
     }
     for (int i = 0; i < node->list_count; i++) {
-        if (node->list[i].type == VAL_STRING) {
+        if (cell_owns_text(node->list[i].type)) {
             free(node->list[i].as.as_string);
         }
     }
@@ -1897,7 +1907,7 @@ static void free_rows(Row* rows, int count) {
     for (int i = 0; i < count; i++) {
         for (int j = 0; j < rows[i].field_count; j++) {
             free(rows[i].fields[j].name);
-            if (rows[i].fields[j].value.type == VAL_STRING) {
+            if (cell_owns_text(rows[i].fields[j].value.type)) {
                 free(rows[i].fields[j].value.as.as_string);
             }
         }
@@ -1909,7 +1919,7 @@ static void free_rows(Row* rows, int count) {
 static Cell cell_dup(Cell* src) {
     Cell dst;
     dst.type = src->type;
-    if (src->type == VAL_STRING) {
+    if (cell_owns_text(src->type)) {
         dst.as.as_string = strdup(src->as.as_string != NULL ? src->as.as_string : "");
     } else if (src->type == VAL_FLOAT) {
         dst.as.as_float = src->as.as_float;
@@ -1954,7 +1964,7 @@ static Row row_zero(Table* table) {
     for (int i = 0; i < row.field_count; i++) {
         row.fields[i].name = strdup(table->columns[i].name);
         row.fields[i].value.type = table->columns[i].type;
-        if (table->columns[i].type == VAL_STRING) {
+        if (cell_owns_text(table->columns[i].type)) {
             row.fields[i].value.as.as_string = strdup("");
         } else if (table->columns[i].type == VAL_FLOAT) {
             row.fields[i].value.as.as_float = 0.0;
@@ -1969,7 +1979,7 @@ static void free_row(Row* row) {
     if (row == NULL) return;
     for (int i = 0; i < row->field_count; i++) {
         free(row->fields[i].name);
-        if (row->fields[i].value.type == VAL_STRING) {
+        if (cell_owns_text(row->fields[i].value.type)) {
             free(row->fields[i].value.as.as_string);
         }
     }
@@ -2047,7 +2057,7 @@ static void result_append(Result* res, Row* src, SelectStmt* stmt) {
 
         dst->fields[i].name = strdup(name);
         dst->fields[i].value.type = value->type;
-        if (value->type == VAL_STRING) {
+        if (cell_owns_text(value->type)) {
             dst->fields[i].value.as.as_string = strdup(value->as.as_string);
         } else if (value->type == VAL_FLOAT) {
             dst->fields[i].value.as.as_float = value->as.as_float;
@@ -2142,7 +2152,7 @@ static void result_limit(Result* res, int limit) {
             Row* row = &res->rows[i];
             for (int j = 0; j < row->field_count; j++) {
                 free(row->fields[j].name);
-                if (row->fields[j].value.type == VAL_STRING) {
+                if (cell_owns_text(row->fields[j].value.type)) {
                     free(row->fields[j].value.as.as_string);
                 }
             }
@@ -2901,13 +2911,13 @@ static void sql_free_ddl_stmt(DdlStmt* stmt) {
         free(stmt->column_names[i]);
         stmt->column_names[i] = NULL;
         if ((stmt->column_flags[i] & COL_FLAG_HAS_DEFAULT) &&
-            stmt->column_defaults[i].type == VAL_STRING) {
+            cell_owns_text(stmt->column_defaults[i].type)) {
             free(stmt->column_defaults[i].as.as_string);
             stmt->column_defaults[i].type = VAL_NULL;
         }
     }
     for (int i = 0; i < stmt->value_count; i++) {
-        if (stmt->values[i].type == VAL_STRING) {
+        if (cell_owns_text(stmt->values[i].type)) {
             free(stmt->values[i].as.as_string);
         }
     }
@@ -3150,7 +3160,7 @@ static void trigger_row_free(Row* row) {
     if (row->fields == NULL) return;
     for (int i = 0; i < row->field_count; i++) {
         free(row->fields[i].name);
-        if (row->fields[i].value.type == VAL_STRING) {
+        if (cell_owns_text(row->fields[i].value.type)) {
             free(row->fields[i].value.as.as_string);
         }
     }
@@ -3171,7 +3181,7 @@ static int execute_insert_select(Context* ctx, Table* table, const char* select_
                 cells[c] = cell_dup(value);
             } else {
                 cells[c].type = table->columns[c].type;
-                if (cells[c].type == VAL_STRING) {
+                if (cell_owns_text(cells[c].type)) {
                     cells[c].as.as_string = strdup("");
                 } else if (cells[c].type == VAL_FLOAT) {
                     cells[c].as.as_float = 0.0;
@@ -3198,7 +3208,7 @@ static int execute_insert_select(Context* ctx, Table* table, const char* select_
             value_release(new_row);
         }
         for (int c = 0; c < table->column_count && c < MAX_COLUMNS; c++) {
-            if (cells[c].type == VAL_STRING) {
+            if (cell_owns_text(cells[c].type)) {
                 free(cells[c].as.as_string);
             }
         }
@@ -3263,7 +3273,7 @@ int sql_exec_ddl(const char* query, Context* ctx) {
             } else {
                 ok = execute_alter_drop_column(ctx, table_name, column_name);
             }
-            if (column_default.type == VAL_STRING) {
+            if (cell_owns_text(column_default.type)) {
                 free(column_default.as.as_string);
             }
             return ok;
@@ -3395,7 +3405,7 @@ static int parse_where_clause(SqlLexer* lex, WhereNode** out) {
 }
 
 static void sql_free_update_stmt(UpdateStmt* stmt) {
-    if (stmt->set_value.type == VAL_STRING && stmt->set_value.as.as_string != NULL) {
+    if (cell_owns_text(stmt->set_value.type) && stmt->set_value.as.as_string != NULL) {
         free(stmt->set_value.as.as_string);
         stmt->set_value.as.as_string = NULL;
     }
@@ -3497,7 +3507,7 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
         for (int i = 0; i < row_count; i++) {
             for (int j = 0; j < rows[i].field_count; j++) {
                 free(rows[i].fields[j].name);
-                if (rows[i].fields[j].value.type == VAL_STRING) {
+                if (cell_owns_text(rows[i].fields[j].value.type)) {
                     free(rows[i].fields[j].value.as.as_string);
                 }
             }
@@ -3532,11 +3542,11 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
             old_rows[i] = trigger_row_dup(&rows[i]);
         }
         Cell* cell = &rows[i].fields[set_col_index].value;
-        if (cell->type == VAL_STRING && cell->as.as_string != NULL) {
+        if (cell_owns_text(cell->type) && cell->as.as_string != NULL) {
             free(cell->as.as_string);
         }
         cell->type = stmt->set_value.type;
-        if (cell->type == VAL_STRING) {
+        if (cell_owns_text(cell->type)) {
             cell->as.as_string = stmt->set_value.as.as_string != NULL
                 ? strdup(stmt->set_value.as.as_string)
                 : strdup("");
@@ -3593,7 +3603,7 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
             for (int k = i; k < row_count; k++) {
                 for (int j = 0; j < rows[k].field_count; j++) {
                     free(rows[k].fields[j].name);
-                    if (rows[k].fields[j].value.type == VAL_STRING) {
+                    if (cell_owns_text(rows[k].fields[j].value.type)) {
                         free(rows[k].fields[j].value.as.as_string);
                     }
                 }
@@ -3634,7 +3644,7 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
     for (int i = 0; i < row_count; i++) {
         for (int j = 0; j < rows[i].field_count; j++) {
             free(rows[i].fields[j].name);
-            if (rows[i].fields[j].value.type == VAL_STRING) {
+            if (cell_owns_text(rows[i].fields[j].value.type)) {
                 free(rows[i].fields[j].value.as.as_string);
             }
         }
@@ -3697,7 +3707,7 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
                 for (int k = i; k < row_count; k++) {
                     for (int j = 0; j < rows[k].field_count; j++) {
                         free(rows[k].fields[j].name);
-                        if (rows[k].fields[j].value.type == VAL_STRING) {
+                        if (cell_owns_text(rows[k].fields[j].value.type)) {
                             free(rows[k].fields[j].value.as.as_string);
                         }
                     }
@@ -3733,7 +3743,7 @@ static int execute_delete(Context* ctx, DeleteStmt* stmt) {
     for (int i = 0; i < row_count; i++) {
         for (int j = 0; j < rows[i].field_count; j++) {
             free(rows[i].fields[j].name);
-            if (rows[i].fields[j].value.type == VAL_STRING) {
+            if (cell_owns_text(rows[i].fields[j].value.type)) {
                 free(rows[i].fields[j].value.as.as_string);
             }
         }
@@ -4079,7 +4089,7 @@ static int execute_alter_add_column(Context* ctx, const char* table_name,
             cells[last].as.as_int = 0;
         }
         catalog_insert(ctx, table, cells);
-        if (cells[last].type == VAL_STRING) {
+        if (cell_owns_text(cells[last].type)) {
             free(cells[last].as.as_string);
         }
     }
@@ -4549,7 +4559,7 @@ void result_free(Result* res) {
         Row* row = &res->rows[i];
         for (int j = 0; j < row->field_count; j++) {
             free(row->fields[j].name);
-            if (row->fields[j].value.type == VAL_STRING) {
+            if (cell_owns_text(row->fields[j].value.type)) {
                 free(row->fields[j].value.as.as_string);
             }
         }
