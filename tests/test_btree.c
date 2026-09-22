@@ -211,6 +211,122 @@ TEST(btree_string_keys_ordered_and_searchable) {
     cleanup(path);
 }
 
+/* Exactly BTREE_STRING_KEY_BYTES significant characters, so anything appended
+   falls outside the key. */
+#define SHARED_PREFIX "abcdefghijklmnopqrstuvwxyz0123456789"
+
+/* Strings that differ only past the significant prefix are one key as far as
+   the tree is concerned. The documented contract is that this errs towards
+   more candidates, never fewer, so callers can re-check the predicate. */
+TEST(btree_string_keys_sharing_the_prefix_over_approximate) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    ASSERT_INT_EQ(BTREE_STRING_KEY_BYTES, (int)strlen(SHARED_PREFIX));
+
+    Cell alpha = string_key(SHARED_PREFIX "-alpha");
+    Cell beta = string_key(SHARED_PREFIX "-beta");
+    ASSERT_INT_EQ(1, btree_insert(tree, &alpha, 1, 1));
+    ASSERT_INT_EQ(1, btree_insert(tree, &beta, 2, 2));
+
+    /* Either literal finds both rows: the surplus is the caller's to filter. */
+    ScanLog log = {0};
+    ASSERT_INT_EQ(2, btree_scan_eq(tree, &alpha, scan_log_fn, &log));
+    ASSERT_INT_EQ(1, log_has(&log, 1, 1));
+    ASSERT_INT_EQ(1, log_has(&log, 2, 2));
+
+    ScanLog log2 = {0};
+    ASSERT_INT_EQ(2, btree_scan_eq(tree, &beta, scan_log_fn, &log2));
+    ASSERT_INT_EQ(1, log_has(&log2, 1, 1));
+    ASSERT_INT_EQ(1, log_has(&log2, 2, 2));
+
+    /* A difference inside the prefix is a distinct key, however long the
+       string is. */
+    Cell other = string_key("Xbcdefghijklmnopqrstuvwxyz0123456789-alpha");
+    ASSERT_INT_EQ(1, btree_insert(tree, &other, 3, 3));
+    ScanLog log3 = {0};
+    ASSERT_INT_EQ(1, btree_scan_eq(tree, &other, scan_log_fn, &log3));
+    ASSERT_INT_EQ(1, log_has(&log3, 3, 3));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* Why a range bound taken from a truncated literal has to be inclusive: the
+   bound is only a prefix of what the caller asked for, so excluding it drops
+   every row that shares the prefix. */
+TEST(btree_string_range_bounds_from_truncated_literals_need_widening) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    Cell alpha = string_key(SHARED_PREFIX "-alpha");
+    Cell beta = string_key(SHARED_PREFIX "-beta");
+    Cell below = string_key("aardvark");
+    Cell above = string_key("zzz");
+    ASSERT_INT_EQ(1, btree_insert(tree, &alpha, 1, 1));
+    ASSERT_INT_EQ(1, btree_insert(tree, &beta, 2, 2));
+    ASSERT_INT_EQ(1, btree_insert(tree, &below, 3, 3));
+    ASSERT_INT_EQ(1, btree_insert(tree, &above, 4, 4));
+
+    /* "name > SHARED_PREFIX-alpha" really matches -beta and zzz. An inclusive
+       lower bound reaches all three candidates, -alpha included. */
+    ScanLog inclusive = {0};
+    ASSERT_INT_EQ(3, btree_scan_range(tree, &alpha, 1, NULL, 0,
+                                      scan_log_fn, &inclusive));
+    ASSERT_INT_EQ(1, log_has(&inclusive, 1, 1));
+    ASSERT_INT_EQ(1, log_has(&inclusive, 2, 2));
+    ASSERT_INT_EQ(1, log_has(&inclusive, 4, 4));
+
+    /* Excluding it loses -beta, which does satisfy the predicate. */
+    ScanLog exclusive = {0};
+    ASSERT_INT_EQ(1, btree_scan_range(tree, &alpha, 0, NULL, 0,
+                                      scan_log_fn, &exclusive));
+    ASSERT_INT_EQ(0, log_has(&exclusive, 2, 2));
+
+    /* Same story at the upper end. */
+    ScanLog upper = {0};
+    ASSERT_INT_EQ(3, btree_scan_range(tree, &below, 1, &beta, 1,
+                                      scan_log_fn, &upper));
+    ASSERT_INT_EQ(1, log_has(&upper, 1, 1));
+    ASSERT_INT_EQ(1, log_has(&upper, 2, 2));
+    ASSERT_INT_EQ(1, log_has(&upper, 3, 3));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* The empty string is the floor of the string key space, so it fences a scan
+   off the int, float and NULL keys that sort below it. */
+TEST(btree_empty_string_bound_fences_off_other_key_types) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    Cell i = int_key(7);
+    Cell f = float_key(2.5);
+    Cell null_key;
+    null_key.type = VAL_NULL;
+    Cell s = string_key("apple");
+    ASSERT_INT_EQ(1, btree_insert(tree, &i, 1, 1));
+    ASSERT_INT_EQ(1, btree_insert(tree, &f, 2, 2));
+    ASSERT_INT_EQ(1, btree_insert(tree, &null_key, 3, 3));
+    ASSERT_INT_EQ(1, btree_insert(tree, &s, 4, 4));
+
+    Cell floor_bound = string_key("");
+    ScanLog log = {0};
+    ASSERT_INT_EQ(1, btree_scan_range(tree, &floor_bound, 1, NULL, 0,
+                                      scan_log_fn, &log));
+    ASSERT_INT_EQ(1, log_has(&log, 4, 4));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
 TEST(btree_duplicate_keys_all_found) {
     char* path = make_temp_path();
     Pager* pager = pager_open(path);
@@ -368,6 +484,9 @@ int main(void) {
     RUN_TEST(btree_sequential_inserts_split_and_search);
     RUN_TEST(btree_reverse_and_random_inserts);
     RUN_TEST(btree_string_keys_ordered_and_searchable);
+    RUN_TEST(btree_string_keys_sharing_the_prefix_over_approximate);
+    RUN_TEST(btree_string_range_bounds_from_truncated_literals_need_widening);
+    RUN_TEST(btree_empty_string_bound_fences_off_other_key_types);
     RUN_TEST(btree_duplicate_keys_all_found);
     RUN_TEST(btree_delete_removes_only_target_locator);
     RUN_TEST(btree_delete_across_many_keys_keeps_search_correct);

@@ -12,12 +12,14 @@
 /* separator keys (copies of the first key of their right child). Duplicate    */
 /* keys are allowed.                                                           */
 /*                                                                            */
-/* Keys are encoded to a fixed 37-byte order-preserving byte string:           */
+/* Keys are encoded to a fixed-width order-preserving byte string:             */
 /*   byte 0: tag (0 NULL, 1 int, 2 float, 3 string)                            */
 /*   int:    4-byte big-endian of value ^ 0x80000000                           */
 /*   float:  8-byte big-endian IEEE-754 with the standard sign transform       */
-/*   string: first 36 bytes, zero-padded (longer strings share a truncated     */
-/*           key, so scans may yield extra candidates, never fewer)            */
+/*   string: first BTREE_STRING_KEY_BYTES bytes, zero-padded (longer strings   */
+/*           share a truncated key, so scans may yield extra candidates,       */
+/*           never fewer - truncation is monotone, which is what lets the SQL   */
+/*           layer widen a truncated range bound instead of losing rows)       */
 /* Ordering: NULL < int < float < string, numeric inside the int/float key     */
 /* spaces, bytewise inside the string space.                                   */
 /*                                                                            */
@@ -27,8 +29,7 @@
 /* is rewritten (UPDATE/DELETE/ALTER), so underflow never accumulates there.   */
 /* -------------------------------------------------------------------------- */
 
-#define BTREE_KEY_SIZE        37
-#define BTREE_STRING_BYTES    36
+#define BTREE_KEY_SIZE        (1 + BTREE_STRING_KEY_BYTES)
 #define BTREE_LEAF_MAX        90
 #define BTREE_INTERNAL_MAX    99
 
@@ -38,6 +39,17 @@
 /* Internal page layout: byte 0 type, u16 nkeys at 2, (nkeys+1) int32 child
    page numbers at offset 8, separator keys at a fixed offset. */
 #define BTREE_INTERNAL_KEYS_OFF (8 + 4 * (BTREE_INTERNAL_MAX + 1))
+
+/* Leaf page layout: byte 0 type, u16 nkeys at 2, int32 next at 4, then
+   (key, row_page, row_offset) triples from offset 8. */
+#define BTREE_LEAF_ENTRY_SIZE (BTREE_KEY_SIZE + 2 * (int)sizeof(int32_t))
+
+/* The fanouts above are hand-tuned to BTREE_KEY_SIZE. Fail the build rather
+   than silently overrun a page if the key width ever changes. */
+typedef char btree_leaf_fits_a_page[
+    (8 + BTREE_LEAF_MAX * BTREE_LEAF_ENTRY_SIZE <= PAGE_SIZE) ? 1 : -1];
+typedef char btree_internal_fits_a_page[
+    (BTREE_INTERNAL_KEYS_OFF + BTREE_INTERNAL_MAX * BTREE_KEY_SIZE <= PAGE_SIZE) ? 1 : -1];
 
 struct BTree {
     Pager* pager;
@@ -93,7 +105,7 @@ static void encode_key(const Cell* cell, uint8_t* out) {
     const char* s = (cell->type == VAL_STRING && cell->as.as_string != NULL)
         ? cell->as.as_string : "";
     size_t n = strlen(s);
-    if (n > BTREE_STRING_BYTES) n = BTREE_STRING_BYTES;
+    if (n > BTREE_STRING_KEY_BYTES) n = BTREE_STRING_KEY_BYTES;
     memcpy(out + 1, s, n);
 }
 

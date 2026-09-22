@@ -195,10 +195,18 @@ void   btree_destroy(BTree* tree);
 void   btree_free_pages(BTree* tree);
 int    btree_root_page(BTree* tree);
 
+/* Only this many leading bytes of a string are significant in an index key.
+   Two longer strings that share that prefix encode to the same key, so scans
+   over them report extra candidates - never fewer - and callers must re-check
+   the predicate against the rows a scan hands back. A bound built from a
+   longer literal is likewise only a prefix of the intended bound, so it has to
+   be treated as inclusive. */
+#define BTREE_STRING_KEY_BYTES 36
+
 /* Keys are Cells (VAL_INT / VAL_FLOAT / VAL_STRING / VAL_NULL). Ordering:
    NULL < int < float < string; ints and floats compare numerically within
-   their own key space, strings bytewise (only the first 36 bytes are
-   significant). The locator (row_page, row_offset) identifies one row record. */
+   their own key space, strings bytewise up to BTREE_STRING_KEY_BYTES.
+   The locator (row_page, row_offset) identifies one row record. */
 int    btree_insert(BTree* tree, const Cell* key, int row_page, int row_offset);
 /* Removes a single (key, locator) pair. No rebalancing: nodes may underflow,
    searches stay correct. Returns 1 when an entry was removed. */
