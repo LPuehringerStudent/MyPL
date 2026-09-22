@@ -2315,9 +2315,9 @@ static int conjunct_matches_index(WhereNode* node, Table* table, TableIndex* idx
     if (column < 0) return 0;
     int col_type = table->columns[column].type;
     if (node->literal.type == VAL_STRING) {
-        /* String keys are truncated at 36 bytes: equality only gains extra
-           candidates, but a truncated range bound could lose rows. */
-        return col_type == VAL_STRING && node->cmp_op == 0;
+        /* Equality and ranges are both servable: index_scan_string widens a
+           truncated bound so the candidate set stays a superset. */
+        return col_type == VAL_STRING;
     }
     return col_type == VAL_INT || col_type == VAL_FLOAT;
 }
@@ -2388,6 +2388,55 @@ static int index_scan_numeric(BTree* tree, WhereNode* node, IndexScanCtx* scan) 
     return 1;
 }
 
+/* Serves =, <, <=, > and >= on an indexed string column.
+
+   Only the first BTREE_STRING_KEY_BYTES bytes of a string reach the key, and
+   truncation is monotone: if value < literal then key(value) <= key(literal).
+   A bound taken from a literal the key cannot hold in full is therefore only a
+   prefix of the bound the caller asked for, and excluding it would drop rows
+   that share that prefix - so such a bound is widened to inclusive. The extra
+   candidates that admits are dropped by the WHERE pass this function's caller
+   runs over the rows. A literal shorter than the key width has its key to
+   itself and keeps the operator's own strictness.
+
+   The open end of a range is fenced with the empty string rather than left
+   unbounded, because the int, float and NULL key spaces sort below the string
+   space and must stay out of the scan. Nothing sorts above strings, so the
+   upper end can be left open. */
+static int index_scan_string(BTree* tree, WhereNode* node, IndexScanCtx* scan) {
+    Cell* lit = &node->literal;
+    if (node->cmp_op == 0) {
+        return btree_scan_eq(tree, lit, index_scan_collect, scan) >= 0;
+    }
+
+    const char* text = lit->as.as_string != NULL ? lit->as.as_string : "";
+    /* The test is >=, not >: a literal of exactly the key width still shares
+       its key with every longer value that starts with it, and those values
+       are on the far side of a > or < bound. Only a literal strictly shorter
+       than the key width is guaranteed to have the key to itself, because a
+       shorter key is zero-padded and strings hold no NUL bytes. */
+    int exact = strlen(text) < BTREE_STRING_KEY_BYTES;
+
+    char empty[1] = "";
+    Cell floor_bound;
+    floor_bound.type = VAL_STRING;
+    floor_bound.as.as_string = empty;
+
+    Cell* lo = &floor_bound;
+    Cell* hi = NULL;
+    int lo_inclusive = 1;
+    int hi_inclusive = 1;
+    switch (node->cmp_op) {
+        case 1: hi = lit; hi_inclusive = !exact; break; /* <  */
+        case 2: lo = lit; lo_inclusive = !exact; break; /* >  */
+        case 3: hi = lit; break;                        /* <= */
+        case 4: lo = lit; break;                        /* >= */
+        default: return 0;
+    }
+    return btree_scan_range(tree, lo, lo_inclusive, hi, hi_inclusive,
+                            index_scan_collect, scan) >= 0;
+}
+
 /* Returns 1 when an index produced the candidate rows, 0 to fall back to a
    full scan. */
 static int try_index_lookup(Context* ctx, Table* table, WhereNode* where,
@@ -2415,7 +2464,7 @@ static int try_index_lookup(Context* ctx, Table* table, WhereNode* where,
 
             int ok;
             if (node->literal.type == VAL_STRING) {
-                ok = btree_scan_eq(tree, &node->literal, index_scan_collect, &scan) >= 0;
+                ok = index_scan_string(tree, node, &scan);
             } else {
                 ok = index_scan_numeric(tree, node, &scan);
             }
