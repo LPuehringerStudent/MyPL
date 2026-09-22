@@ -1716,6 +1716,112 @@ TEST(phase11_view_over_view) {
     ASSERT_INT_EQ(1, output_contains(out, "3"));
 }
 
+/* -------------------------------------------------------------------------- */
+/* BOOL columns                                                               */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_bool_column_end_to_end) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bc_t (id int, active bool, label string);\n"
+        "    insert into bc_t values (1, true, \"alice\");\n"
+        "    insert into bc_t values (2, false, \"bob\");\n"
+        "    insert into bc_t values (3, true, \"carol\");\n"
+        "    int t = -1;\n"
+        "    select count(*) into t from bc_t where active = true;\n"
+        "    print concat(\"true=\", int_to_string(t));\n"
+        "    int f = -1;\n"
+        "    select count(*) into f from bc_t where active = false;\n"
+        "    print concat(\"false=\", int_to_string(f));\n"
+        "    string who = \"?\";\n"
+        "    select label into who from bc_t where active = false;\n"
+        "    print concat(\"who=\", who);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "true=2"));
+    ASSERT_INT_EQ(1, output_contains(out, "false=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "who=bob"));
+}
+
+/* The runtime reaches the custom engine through its driver, so a bool has to
+   survive both a typed SELECT INTO and a row field read. */
+TEST(phase11_bool_column_reads_into_bool_variables) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bv_t (id int, active bool, seen bool default false);\n"
+        "    insert into bv_t values (1, true, true);\n"
+        "    insert into bv_t values (2, false, false);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* Second process: the table is in the catalog, so a row loop compiles. */
+    rc = run_mypl(
+        "proc bstr(b bool) -> string {\n"
+        "    if b {\n"
+        "        return \"t\";\n"
+        "    }\n"
+        "    return \"f\";\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    bool flag = true;\n"
+        "    select active into flag from bv_t where id = 2;\n"
+        "    print concat(\"into=\", bstr(flag));\n"
+        "    for row in select id, active, seen from bv_t order by id {\n"
+        "        print concat(concat(int_to_string(row.id), \":\"),\n"
+        "                     concat(bstr(row.active), bstr(row.seen)));\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* A bool variable assigned from a bool column, and bool row fields. */
+    ASSERT_INT_EQ(1, output_contains(out, "into=f"));
+    ASSERT_INT_EQ(1, output_contains(out, "1:tt"));
+    ASSERT_INT_EQ(1, output_contains(out, "2:ff"));
+}
+
+/* A bool column rides the int key space in the index, so false and true stay
+   distinct keys and an indexed lookup agrees with the scan it replaces. */
+TEST(phase11_bool_column_index_and_persistence) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bi_t (id int, active bool not null);\n"
+        "    insert into bi_t values (1, true);\n"
+        "    insert into bi_t values (2, false);\n"
+        "    insert into bi_t values (3, true);\n"
+        "    create index bi_active on bi_t (active);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* A new process reloads the catalog, so this also covers the V6 page. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int t = -1;\n"
+        "    select count(*) into t from bi_t where active = true;\n"
+        "    print concat(\"true=\", int_to_string(t));\n"
+        "    int f = -1;\n"
+        "    select count(*) into f from bi_t where active = false;\n"
+        "    print concat(\"false=\", int_to_string(f));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "true=2"));
+    ASSERT_INT_EQ(1, output_contains(out, "false=1"));
+}
+
 /* A SQL loop variable reads the current row whatever it is named; only `row`
  * used to work (examples/inventory.mypl, migration.mypl and todo.mypl). */
 TEST(phase11_named_sql_loop_variable_reads_fields) {
@@ -1838,6 +1944,9 @@ int main(void) {
     RUN_TEST(phase11_create_view_duplicate_name_errors);
     RUN_TEST(phase11_create_view_on_table_name_errors);
     RUN_TEST(phase11_view_over_view);
+    RUN_TEST(phase11_bool_column_end_to_end);
+    RUN_TEST(phase11_bool_column_reads_into_bool_variables);
+    RUN_TEST(phase11_bool_column_index_and_persistence);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     TEST_SUMMARY();
 }

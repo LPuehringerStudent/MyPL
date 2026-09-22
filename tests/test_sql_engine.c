@@ -833,6 +833,141 @@ TEST(sql_insert_into_select_with_where) {
     cleanup(path);
 }
 
+/* -------------------------------------------------------------------------- */
+/* BOOL columns                                                               */
+/* -------------------------------------------------------------------------- */
+
+TEST(sql_bool_column_roundtrips_through_the_catalog) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE flags (id INT, active BOOL, label STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO flags VALUES (1, TRUE, 'alice')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO flags VALUES (2, FALSE, 'bob')", &ctx));
+    catalog_close(&ctx);
+
+    /* New process: the column type and both values survive the page. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, active FROM flags", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(2, res->row_count);
+
+    Row* row = result_next(res);
+    ASSERT_PTR_NOT_NULL(row);
+    ASSERT_INT_EQ(VAL_BOOL, row->fields[1].value.type);
+    ASSERT_INT_EQ(1, row->fields[1].value.as.as_int);
+
+    row = result_next(res);
+    ASSERT_PTR_NOT_NULL(row);
+    ASSERT_INT_EQ(VAL_BOOL, row->fields[1].value.type);
+    ASSERT_INT_EQ(0, row->fields[1].value.as.as_int);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bool_column_filters_and_orders) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE b (id INT, on_ BOOL)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO b VALUES (1, TRUE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO b VALUES (2, FALSE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO b VALUES (3, TRUE)", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM b WHERE on_ = TRUE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(2, res->row_count);
+    result_free(res);
+
+    res = sql_exec("SELECT id FROM b WHERE on_ = FALSE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    /* false sorts before true. */
+    res = sql_exec("SELECT id, on_ FROM b ORDER BY on_", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(3, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(0, row->fields[1].value.as.as_int);
+    row = result_next(res);
+    ASSERT_INT_EQ(1, row->fields[1].value.as.as_int);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* A bool DEFAULT is stored as a catalog cell, which is the path that failed
+   first: an unknown tag there takes the whole catalog page down, not just the
+   column. */
+TEST(sql_bool_default_and_not_null_survive_reopen) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE d (id INT, active BOOL NOT NULL, seen BOOL DEFAULT FALSE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (1, TRUE, TRUE)", &ctx));
+    catalog_close(&ctx);
+
+    /* The reopen is the assertion: a catalog it cannot parse fails here. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, active, seen FROM d", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(VAL_BOOL, row->fields[2].value.type);
+    result_free(res);
+
+    /* NOT NULL still applies to a bool column. */
+    ASSERT_INT_EQ(0, sql_exec_ddl("INSERT INTO d VALUES (2, NULL, TRUE)", &ctx));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bool_column_updates_and_indexes) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE u (id INT, active BOOL)", &ctx));
+    for (int i = 0; i < 20; i++) {
+        char query[128];
+        snprintf(query, sizeof(query), "INSERT INTO u VALUES (%d, %s)",
+                 i, i % 2 == 0 ? "TRUE" : "FALSE");
+        ASSERT_INT_EQ(1, sql_exec_ddl(query, &ctx));
+    }
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE INDEX u_active ON u (active)", &ctx));
+
+    /* The index must agree with the full scan it replaces. */
+    Result* res = sql_exec("SELECT id FROM u WHERE active = TRUE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(10, res->row_count);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE u SET active = FALSE WHERE id = 0", &ctx));
+    res = sql_exec("SELECT id FROM u WHERE active = TRUE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(9, res->row_count);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("DELETE FROM u WHERE active = FALSE", &ctx));
+    res = sql_exec("SELECT id FROM u", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(9, res->row_count);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -869,5 +1004,9 @@ int main(void) {
     RUN_TEST(sql_insert_into_select_star);
     RUN_TEST(sql_insert_into_select_specific_columns);
     RUN_TEST(sql_insert_into_select_with_where);
+    RUN_TEST(sql_bool_column_roundtrips_through_the_catalog);
+    RUN_TEST(sql_bool_column_filters_and_orders);
+    RUN_TEST(sql_bool_default_and_not_null_survive_reopen);
+    RUN_TEST(sql_bool_column_updates_and_indexes);
     TEST_SUMMARY();
 }
