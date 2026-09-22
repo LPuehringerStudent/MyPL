@@ -93,8 +93,14 @@ static void encode_key(const Cell* cell, uint8_t* out) {
         }
         return;
     }
+    /* Dates and timestamps are canonical fixed-width text, well inside the
+       significant prefix, so they share the string key space and order
+       chronologically there. A string literal written for a date column
+       therefore encodes to the same key as the stored date. */
     out[0] = 3;
-    const char* s = (cell->type == VAL_STRING && cell->as.as_string != NULL)
+    int is_text = cell->type == VAL_STRING || cell->type == VAL_DATE ||
+                  cell->type == VAL_TIMESTAMP;
+    const char* s = (is_text && cell->as.as_string != NULL)
         ? cell->as.as_string : "";
     size_t n = strlen(s);
     if (n > BTREE_STRING_BYTES) n = BTREE_STRING_BYTES;

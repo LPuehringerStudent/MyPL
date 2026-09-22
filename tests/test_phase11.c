@@ -1822,6 +1822,86 @@ TEST(phase11_bool_column_index_and_persistence) {
     ASSERT_INT_EQ(1, output_contains(out, "false=1"));
 }
 
+/* -------------------------------------------------------------------------- */
+/* DATE and TIMESTAMP columns                                                 */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_date_and_timestamp_columns_end_to_end) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dt_t (id int, day date, at timestamp);\n"
+        "    insert into dt_t values (1, \"2024-03-01\", \"2024-03-01 09:30:00\");\n"
+        "    insert into dt_t values (2, \"2023-12-25\", \"2023-12-25 23:59:59\");\n"
+        "    int eq = -1;\n"
+        "    select count(*) into eq from dt_t where day = \"2023-12-25\";\n"
+        "    print concat(\"eq=\", int_to_string(eq));\n"
+        "    int later = -1;\n"
+        "    select count(*) into later from dt_t where day > \"2024-01-01\";\n"
+        "    print concat(\"later=\", int_to_string(later));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "eq=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "later=1"));
+}
+
+/* A date column has to read back as a date, not as text that looks like one:
+   to_char only accepts a date or timestamp, so it is the assertion. */
+TEST(phase11_date_columns_read_into_date_variables) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dv_t (id int, day date, at timestamp);\n"
+        "    insert into dv_t values (1, \"2024-03-01\", \"2024-03-01 09:30:00\");\n"
+        "    insert into dv_t values (2, \"2023-12-25\", \"2023-12-25 23:59:59\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    date d = current_date();\n"
+        "    select day into d from dv_t where id = 2;\n"
+        "    print concat(\"year=\", to_char(d, \"YYYY\"));\n"
+        "    timestamp t = current_timestamp();\n"
+        "    select at into t from dv_t where id = 1;\n"
+        "    print concat(\"stamp=\", to_char(t, \"YYYY-MM-DD\"));\n"
+        "    for row in select id, day from dv_t order by day {\n"
+        "        print concat(concat(int_to_string(row.id), \":\"),\n"
+        "                     to_char(row.day, \"YYYY-MM-DD\"));\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "year=2023"));
+    ASSERT_INT_EQ(1, output_contains(out, "stamp=2024-03-01"));
+    /* ORDER BY on a date is chronological, so the 2023 row comes first. */
+    ASSERT_INT_EQ(1, output_contains(out, "2:2023-12-25"));
+    ASSERT_INT_EQ(1, output_contains(out, "1:2024-03-01"));
+}
+
+TEST(phase11_date_column_rejects_text_that_is_not_a_date) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dr_t (id int, day date);\n"
+        "    insert into dr_t values (1, \"tomorrow\");\n"
+        "    print \"unreachable\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+    ASSERT_INT_EQ(1, output_contains(out, "YYYY-MM-DD"));
+}
+
 /* A SQL loop variable reads the current row whatever it is named; only `row`
  * used to work (examples/inventory.mypl, migration.mypl and todo.mypl). */
 TEST(phase11_named_sql_loop_variable_reads_fields) {
@@ -1947,6 +2027,9 @@ int main(void) {
     RUN_TEST(phase11_bool_column_end_to_end);
     RUN_TEST(phase11_bool_column_reads_into_bool_variables);
     RUN_TEST(phase11_bool_column_index_and_persistence);
+    RUN_TEST(phase11_date_and_timestamp_columns_end_to_end);
+    RUN_TEST(phase11_date_columns_read_into_date_variables);
+    RUN_TEST(phase11_date_column_rejects_text_that_is_not_a_date);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     TEST_SUMMARY();
 }

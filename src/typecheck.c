@@ -222,6 +222,8 @@ static Type* sql_type_to_type(int sql_type) {
         case VAL_FLOAT:  return &type_float;
         case VAL_STRING: return &type_string;
         case VAL_BOOL:   return &type_bool;
+        case VAL_DATE:   return &type_date;
+        case VAL_TIMESTAMP: return &type_timestamp;
     }
     return &type_unknown;
 }
@@ -2497,7 +2499,9 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                     return;
                 }
                 if (into_array) continue;
-                if (t->kind != TYPE_INT && t->kind != TYPE_FLOAT && t->kind != TYPE_STRING && t->kind != TYPE_BOOL) {
+                if (t->kind != TYPE_INT && t->kind != TYPE_FLOAT &&
+                    t->kind != TYPE_STRING && t->kind != TYPE_BOOL &&
+                    t->kind != TYPE_DATE && t->kind != TYPE_TIMESTAMP) {
                     type_error(tc, stmt->loc, "SELECT INTO target must be a scalar variable");
                     return;
                 }
@@ -2630,7 +2634,8 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 }
                 if (vt != &type_unknown &&
                     vt->kind != TYPE_INT && vt->kind != TYPE_FLOAT &&
-                    vt->kind != TYPE_STRING && vt->kind != TYPE_BOOL) {
+                    vt->kind != TYPE_STRING && vt->kind != TYPE_BOOL &&
+                    vt->kind != TYPE_DATE && vt->kind != TYPE_TIMESTAMP) {
                     type_error(tc, stmt->loc, "FETCH target must be a scalar variable");
                     return;
                 }

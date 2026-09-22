@@ -262,6 +262,16 @@ static int column_is_declared_bool(sqlite3_stmt* stmt, int index) {
     return strcasecmp(decl, "BOOL") == 0 || strcasecmp(decl, "BOOLEAN") == 0;
 }
 
+/* SQLite stores a date or timestamp as text, so as with BOOL the declared type
+   is the only thing that distinguishes one from an ordinary string. */
+static int column_declared_datetime(sqlite3_stmt* stmt, int index) {
+    const char* decl = sqlite3_column_decltype(stmt, index);
+    if (decl == NULL) return 0;
+    if (strcasecmp(decl, "DATE") == 0) return VAL_DATE;
+    if (strcasecmp(decl, "TIMESTAMP") == 0) return VAL_TIMESTAMP;
+    return 0;
+}
+
 static int sqlite_row_get_column(DBDriver* driver, void* row_handle, int index, Value* out) {
     sqlite3_stmt* stmt = (sqlite3_stmt*)row_handle;
     int count = sqlite3_column_count(stmt);
@@ -290,9 +300,19 @@ static int sqlite_row_get_column(DBDriver* driver, void* row_handle, int index, 
         case SQLITE_FLOAT:
             *out = value_float(sqlite3_column_double(stmt, index));
             return 1;
-        case SQLITE_TEXT:
-            *out = value_string(strdup((const char*)sqlite3_column_text(stmt, index)));
+        case SQLITE_TEXT: {
+            const char* text = (const char*)sqlite3_column_text(stmt, index);
+            if (text == NULL) text = "";
+            int declared = column_declared_datetime(stmt, index);
+            if (declared == VAL_DATE) {
+                *out = value_date(strdup(text));
+            } else if (declared == VAL_TIMESTAMP) {
+                *out = value_timestamp(strdup(text));
+            } else {
+                *out = value_string(strdup(text));
+            }
             return 1;
+        }
         case SQLITE_NULL:
             *out = value_null();
             return 1;

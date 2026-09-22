@@ -51,6 +51,45 @@ static int cell_owns_text(int type) {
     return type == VAL_STRING || type == VAL_DATE || type == VAL_TIMESTAMP;
 }
 
+/* The canonical text a date or timestamp is stored as, which is what to_date,
+   current_date and current_timestamp produce: YYYY-MM-DD, optionally followed
+   by ' HH:MM:SS'. Both are fixed width and order chronologically under a plain
+   byte comparison, which is what lets them share the string key space in an
+   index and compare with strcmp. */
+static int text_is_datetime(const char* s, int want_time) {
+    if (s == NULL) return 0;
+    size_t len = strlen(s);
+    if (len != (want_time ? 19u : 10u)) return 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (i == 4 || i == 7) {
+            if (c != '-') return 0;
+        } else if (i == 10) {
+            if (c != ' ') return 0;
+        } else if (i == 13 || i == 16) {
+            if (c != ':') return 0;
+        } else if (c < '0' || c > '9') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* A date or timestamp is written as a string literal - the column type is what
+   gives it its type, the way an int literal becomes a float in a float column.
+   Retags the cell in place. Returns 0 when the text is not in the canonical
+   format, so a bad literal is rejected at write time rather than stored and
+   read back as something that is not a date. */
+static int cell_coerce_to_column(Cell* cell, int column_type) {
+    if (cell == NULL) return 0;
+    if (column_type != VAL_DATE && column_type != VAL_TIMESTAMP) return 1;
+    if (cell->type == VAL_NULL || cell->type == column_type) return 1;
+    if (cell->type != VAL_STRING) return 0;
+    if (!text_is_datetime(cell->as.as_string, column_type == VAL_TIMESTAMP)) return 0;
+    cell->type = column_type;
+    return 1;
+}
+
 static void free_column(Column* col) {
     free(col->name);
     if ((col->flags & COL_FLAG_HAS_DEFAULT) && cell_owns_text(col->default_value.type)) {
@@ -150,7 +189,9 @@ static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
             cell->as.as_int = v != 0 ? 1 : 0;
             return 1;
         }
-        case VAL_STRING: {
+        case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP: {
             int32_t len = 0;
             if (*offset + 4 > PAGE_SIZE) return 0;
             memcpy(&len, page + *offset, sizeof(len));
@@ -174,7 +215,10 @@ static int catalog_cell_size(const Cell* cell) {
         case VAL_INT:    return 1 + 4;
         case VAL_BOOL:   return 1 + 4;
         case VAL_FLOAT:  return 1 + 8;
-        case VAL_STRING: return 1 + 4 + (int)strlen(cell->as.as_string != NULL ? cell->as.as_string : "");
+        case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP:
+            return 1 + 4 + (int)strlen(cell->as.as_string != NULL ? cell->as.as_string : "");
         default:         return 1; /* VAL_NULL: tag only */
     }
 }
@@ -200,7 +244,9 @@ static void catalog_write_cell(uint8_t* page, int* offset, const Cell* cell) {
             *offset += 4;
             break;
         }
-        case VAL_STRING: {
+        case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP: {
             const char* s = cell->as.as_string != NULL ? cell->as.as_string : "";
             int32_t len = (int32_t)strlen(s);
             memcpy(page + *offset, &len, sizeof(len));
@@ -654,7 +700,12 @@ static int row_record_size(Table* table, Cell* cells) {
         switch (cells[i].type) {
             case VAL_INT:    size += 4; break;
             case VAL_FLOAT:  size += 8; break;
-            case VAL_STRING: size += 4 + (int)strlen(cells[i].as.as_string); break;
+            case VAL_STRING:
+            case VAL_DATE:
+            case VAL_TIMESTAMP:
+                size += 4 + (int)strlen(cells[i].as.as_string != NULL
+                                        ? cells[i].as.as_string : "");
+                break;
             case VAL_BOOL:   size += 4; break;
             case VAL_NULL:   break; /* tag only, no payload */
             default:         size += 4; break;
@@ -680,7 +731,9 @@ static void serialize_row(Table* table, Cell* cells, uint8_t* out) {
                 offset += sizeof(v);
                 break;
             }
-            case VAL_STRING: {
+            case VAL_STRING:
+            case VAL_DATE:
+            case VAL_TIMESTAMP: {
                 const char* s = cells[i].as.as_string ? cells[i].as.as_string : "";
                 int32_t len = (int32_t)strlen(s);
                 memcpy(out + offset, &len, sizeof(len));
@@ -739,7 +792,9 @@ static int deserialize_cell(const uint8_t* data, int* offset, Cell* cell) {
             cell->as.as_int = v != 0 ? 1 : 0;
             return 1;
         }
-        case VAL_STRING: {
+        case VAL_STRING:
+        case VAL_DATE:
+        case VAL_TIMESTAMP: {
             int32_t len = 0;
             memcpy(&len, data + *offset, sizeof(len));
             *offset += sizeof(len);
@@ -1019,6 +1074,8 @@ typedef enum {
     TOK_INT,
     TOK_FLOAT,
     TOK_BOOL_KW,
+    TOK_DATE_KW,
+    TOK_TIMESTAMP_KW,
     TOK_TRUE,
     TOK_FALSE,
     TOK_STRING_KW,
@@ -1119,6 +1176,8 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 6 && strncasecmp(start, "STRING", 6) == 0) return TOK_STRING_KW;
     if (length == 4 && strncasecmp(start, "BOOL", 4) == 0) return TOK_BOOL_KW;
     if (length == 7 && strncasecmp(start, "BOOLEAN", 7) == 0) return TOK_BOOL_KW;
+    if (length == 4 && strncasecmp(start, "DATE", 4) == 0) return TOK_DATE_KW;
+    if (length == 9 && strncasecmp(start, "TIMESTAMP", 9) == 0) return TOK_TIMESTAMP_KW;
     if (length == 4 && strncasecmp(start, "TRUE", 4) == 0) return TOK_TRUE;
     if (length == 5 && strncasecmp(start, "FALSE", 5) == 0) return TOK_FALSE;
     if (length == 4 && strncasecmp(start, "NULL", 4) == 0) return TOK_NULL;
@@ -1876,8 +1935,12 @@ static int cell_compare(Cell* a, Cell* b) {
         if (a->as.as_float > b->as.as_float) return 1;
         return 0;
     }
-    if (a->type == VAL_STRING && b->type == VAL_STRING) {
-        return strcmp(a->as.as_string, b->as.as_string);
+    if (cell_owns_text(a->type) && cell_owns_text(b->type)) {
+        /* Dates and timestamps are canonical fixed-width text, so byte order
+           is chronological order, and a plain string literal compares against
+           one without being coerced first. */
+        return strcmp(a->as.as_string != NULL ? a->as.as_string : "",
+                      b->as.as_string != NULL ? b->as.as_string : "");
     }
     /* false sorts before true, and a bool compares with an int by its 0/1
        value, which is how the runtime already treats it. */
@@ -2365,8 +2428,11 @@ static int conjunct_matches_index(WhereNode* node, Table* table, TableIndex* idx
     int col_type = table->columns[column].type;
     if (node->literal.type == VAL_STRING) {
         /* String keys are truncated at 36 bytes: equality only gains extra
-           candidates, but a truncated range bound could lose rows. */
-        return col_type == VAL_STRING && node->cmp_op == 0;
+           candidates, but a truncated range bound could lose rows. Dates and
+           timestamps are written as string literals and share the string key
+           space, so they qualify on the same terms. */
+        return (col_type == VAL_STRING || col_type == VAL_DATE ||
+                col_type == VAL_TIMESTAMP) && node->cmp_op == 0;
     }
     if (node->literal.type == VAL_BOOL) {
         /* Two distinct keys, so only equality is worth serving. */
@@ -2792,6 +2858,14 @@ static int sql_parse_type(SqlToken* tok, int* out_type) {
         *out_type = VAL_BOOL;
         return 1;
     }
+    if (tok->type == TOK_DATE_KW) {
+        *out_type = VAL_DATE;
+        return 1;
+    }
+    if (tok->type == TOK_TIMESTAMP_KW) {
+        *out_type = VAL_TIMESTAMP;
+        return 1;
+    }
     return 0;
 }
 
@@ -2844,6 +2918,13 @@ static int sql_parse_create_table(const char* query, DdlStmt* stmt) {
                          "only one PRIMARY KEY column allowed per table");
                 return 0;
             }
+        }
+        if ((stmt->column_flags[stmt->column_count] & COL_FLAG_HAS_DEFAULT) &&
+            !cell_coerce_to_column(&stmt->column_defaults[stmt->column_count],
+                                   stmt->column_types[stmt->column_count])) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "DEFAULT value is not valid text for column '%.200s'", buf);
+            return 0;
         }
         if ((stmt->column_flags[stmt->column_count] & COL_FLAG_HAS_DEFAULT) &&
             stmt->column_defaults[stmt->column_count].type != VAL_NULL &&
@@ -3168,6 +3249,21 @@ static void trigger_row_free(Row* row) {
     row->fields = NULL;
 }
 
+/* Retags string literals written into date or timestamp columns, so a row
+   reaches storage with the type its column declares. */
+static int cells_coerce_to_columns(Table* table, Cell* cells) {
+    for (int i = 0; i < table->column_count; i++) {
+        if (cell_coerce_to_column(&cells[i], table->columns[i].type)) continue;
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "column '%.100s' expects %s", table->columns[i].name,
+                 table->columns[i].type == VAL_DATE
+                     ? "a date written as 'YYYY-MM-DD'"
+                     : "a timestamp written as 'YYYY-MM-DD HH:MM:SS'");
+        return 0;
+    }
+    return 1;
+}
+
 static int execute_insert_select(Context* ctx, Table* table, const char* select_query) {
     Result* res = sql_exec(select_query, ctx);
     if (res == NULL) return 0;
@@ -3331,7 +3427,8 @@ int sql_exec_ddl(const char* query, Context* ctx) {
             sql_free_ddl_stmt(&stmt);
             return 0;
         }
-        if (!constraints_apply_row(t, stmt.values)) {
+        if (!cells_coerce_to_columns(t, stmt.values) ||
+            !constraints_apply_row(t, stmt.values)) {
             sql_free_ddl_stmt(&stmt);
             return 0;
         }
@@ -3502,6 +3599,16 @@ static int execute_update(Context* ctx, UpdateStmt* stmt) {
             set_col_index = i;
             break;
         }
+    }
+    if (set_col_index >= 0 &&
+        !cell_coerce_to_column(&stmt->set_value,
+                               table->columns[set_col_index].type)) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "column '%.100s' expects %s", table->columns[set_col_index].name,
+                 table->columns[set_col_index].type == VAL_DATE
+                     ? "a date written as 'YYYY-MM-DD'"
+                     : "a timestamp written as 'YYYY-MM-DD HH:MM:SS'");
+        set_col_index = -1;
     }
     if (set_col_index < 0) {
         for (int i = 0; i < row_count; i++) {
@@ -3823,6 +3930,12 @@ static int sql_parse_alter_table(const char* query, char* table_name, size_t tab
         tok = sql_next_token(&lex);
         if (!sql_parse_type(&tok, column_type)) return 0;
         if (!sql_parse_column_constraints(&lex, column_flags, column_default)) return 0;
+        if ((*column_flags & COL_FLAG_HAS_DEFAULT) &&
+            !cell_coerce_to_column(column_default, *column_type)) {
+            snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                     "DEFAULT value is not valid text for column '%s'", column_name);
+            return 0;
+        }
         if ((*column_flags & COL_FLAG_HAS_DEFAULT) &&
             column_default->type != VAL_NULL &&
             column_default->type != *column_type) {
@@ -4774,6 +4887,14 @@ int sql_cell_to_value(const Cell* cell, Value* out) {
         case VAL_STRING:
             *out = value_string(strdup(cell->as.as_string != NULL
                                        ? cell->as.as_string : ""));
+            return 1;
+        case VAL_DATE:
+            *out = value_date(strdup(cell->as.as_string != NULL
+                                     ? cell->as.as_string : ""));
+            return 1;
+        case VAL_TIMESTAMP:
+            *out = value_timestamp(strdup(cell->as.as_string != NULL
+                                          ? cell->as.as_string : ""));
             return 1;
         default:         return 0;
     }

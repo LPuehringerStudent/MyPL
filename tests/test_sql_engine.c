@@ -968,6 +968,152 @@ TEST(sql_bool_column_updates_and_indexes) {
     cleanup(path);
 }
 
+/* -------------------------------------------------------------------------- */
+/* DATE and TIMESTAMP columns                                                 */
+/* -------------------------------------------------------------------------- */
+
+TEST(sql_date_and_timestamp_columns_roundtrip) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE ev (id INT, day DATE, at TIMESTAMP)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "INSERT INTO ev VALUES (1, '2024-03-01', '2024-03-01 09:30:00')", &ctx));
+    catalog_close(&ctx);
+
+    /* New process: the column types and the text both survive the page. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, day, at FROM ev", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_PTR_NOT_NULL(row);
+    /* A string literal written into a date column is stored as a date. */
+    ASSERT_INT_EQ(VAL_DATE, row->fields[1].value.type);
+    ASSERT_STRING_EQ("2024-03-01", row->fields[1].value.as.as_string);
+    ASSERT_INT_EQ(VAL_TIMESTAMP, row->fields[2].value.type);
+    ASSERT_STRING_EQ("2024-03-01 09:30:00", row->fields[2].value.as.as_string);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* Canonical text is fixed width and orders chronologically byte by byte, which
+   is what lets dates share the string key space and compare with strcmp. */
+TEST(sql_date_columns_compare_chronologically) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE d (id INT, day DATE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (1, '2024-03-01')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (2, '2023-12-25')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (3, '2024-07-04')", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM d WHERE day = '2023-12-25'", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    res = sql_exec("SELECT id FROM d WHERE day > '2024-01-01'", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(2, res->row_count);
+    result_free(res);
+
+    res = sql_exec("SELECT id, day FROM d ORDER BY day", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(3, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_STRING_EQ("2023-12-25", row->fields[1].value.as.as_string);
+    row = result_next(res);
+    ASSERT_STRING_EQ("2024-03-01", row->fields[1].value.as.as_string);
+    row = result_next(res);
+    ASSERT_STRING_EQ("2024-07-04", row->fields[1].value.as.as_string);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* A date column that accepted arbitrary text would read back as something that
+   is not a date, so the write is refused instead. */
+TEST(sql_date_columns_reject_text_that_is_not_a_date) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE r (id INT, day DATE, at TIMESTAMP)", &ctx));
+
+    ASSERT_INT_EQ(0, sql_exec_ddl(
+        "INSERT INTO r VALUES (1, 'not-a-date', '2024-01-01 00:00:00')", &ctx));
+    ASSERT_INT_EQ(0, sql_exec_ddl(
+        "INSERT INTO r VALUES (2, '2024-1-1', '2024-01-01 00:00:00')", &ctx));
+    /* A date is not a timestamp: the widths differ. */
+    ASSERT_INT_EQ(0, sql_exec_ddl(
+        "INSERT INTO r VALUES (3, '2024-01-01', '2024-01-01')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "INSERT INTO r VALUES (4, '2024-01-01', '2024-01-01 00:00:00')", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM r", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    /* UPDATE is held to the same rule. */
+    ASSERT_INT_EQ(0, sql_exec_ddl("UPDATE r SET day = 'nope' WHERE id = 4", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE r SET day = '2025-02-02' WHERE id = 4", &ctx));
+
+    res = sql_exec("SELECT day FROM r WHERE id = 4", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    Row* row = result_next(res);
+    ASSERT_STRING_EQ("2025-02-02", row->fields[0].value.as.as_string);
+    ASSERT_INT_EQ(VAL_DATE, row->fields[0].value.type);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_date_default_and_index_and_delete) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE dd (id INT, day DATE DEFAULT '2000-01-01')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO dd VALUES (1, NULL)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO dd VALUES (2, '2024-06-01')", &ctx));
+    catalog_close(&ctx);
+
+    /* The DEFAULT is a catalog cell, so this reopen exercises its encoding. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT day FROM dd WHERE id = 1", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(VAL_DATE, row->fields[0].value.type);
+    ASSERT_STRING_EQ("2000-01-01", row->fields[0].value.as.as_string);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE INDEX dd_day ON dd (day)", &ctx));
+    res = sql_exec("SELECT id FROM dd WHERE day = '2024-06-01'", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("DELETE FROM dd WHERE day = '2000-01-01'", &ctx));
+    res = sql_exec("SELECT id FROM dd", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
@@ -1008,5 +1154,9 @@ int main(void) {
     RUN_TEST(sql_bool_column_filters_and_orders);
     RUN_TEST(sql_bool_default_and_not_null_survive_reopen);
     RUN_TEST(sql_bool_column_updates_and_indexes);
+    RUN_TEST(sql_date_and_timestamp_columns_roundtrip);
+    RUN_TEST(sql_date_columns_compare_chronologically);
+    RUN_TEST(sql_date_columns_reject_text_that_is_not_a_date);
+    RUN_TEST(sql_date_default_and_index_and_delete);
     TEST_SUMMARY();
 }
