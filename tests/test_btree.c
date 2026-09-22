@@ -377,6 +377,41 @@ TEST(btree_delete_keeps_the_leaf_chain_intact) {
     cleanup(path);
 }
 
+/* Deleting in ascending order drains leaves left to right, which exercises the
+   borrow-from-right and merge-with-right paths that the sparse pattern above
+   never reaches. */
+TEST(btree_delete_every_entry_collapses_to_an_empty_root) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    for (int i = 0; i < 800; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+    for (int i = 0; i < 800; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_delete(tree, &k, i, i));
+    }
+
+    BTreeStats stats;
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(0, stats.entry_count);
+    ASSERT_INT_EQ(1, stats.height);
+    ASSERT_INT_EQ(1, stats.node_count);
+
+    /* The emptied tree is still usable. */
+    Cell k = int_key(42);
+    ASSERT_INT_EQ(1, btree_insert(tree, &k, 7, 7));
+    ScanLog log = {0};
+    ASSERT_INT_EQ(1, btree_scan_eq(tree, &k, scan_log_fn, &log));
+    ASSERT_INT_EQ(1, log_has(&log, 7, 7));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
 /* Pages released by merges must go back to the pager, not leak. */
 TEST(btree_delete_returns_merged_pages_to_the_pager) {
     char* path = make_temp_path();
@@ -582,6 +617,7 @@ int main(void) {
     RUN_TEST(btree_delete_across_many_keys_keeps_search_correct);
     RUN_TEST(btree_delete_rebalances_and_shrinks_the_tree);
     RUN_TEST(btree_delete_keeps_the_leaf_chain_intact);
+    RUN_TEST(btree_delete_every_entry_collapses_to_an_empty_root);
     RUN_TEST(btree_delete_returns_merged_pages_to_the_pager);
     RUN_TEST(btree_delete_duplicates_spanning_leaves);
     RUN_TEST(btree_delete_interleaved_with_inserts_stays_correct);

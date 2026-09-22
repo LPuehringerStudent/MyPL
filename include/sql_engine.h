@@ -202,7 +202,9 @@ int    btree_root_page(BTree* tree);
 int    btree_insert(BTree* tree, const Cell* key, int row_page, int row_offset);
 /* Removes a single (key, locator) pair, keeping every node but the root at
    least half full by redistributing with a sibling or merging and freeing a
-   page. Returns 1 when an entry was removed. */
+   page. A merge can shorten the tree, so btree_root_page may report a
+   different root afterwards and callers that persist it must re-read it.
+   Returns 1 when an entry was removed. */
 int    btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset);
 
 typedef void (*BTreeScanFn)(int row_page, int row_offset, void* user);

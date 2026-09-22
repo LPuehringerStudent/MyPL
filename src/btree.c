@@ -23,6 +23,8 @@
 /*                                                                            */
 /* Deletion keeps every node but the root at least half full: an underfull    */
 /* node borrows one entry from a sibling, or merges with it and frees a page.  */
+/* When merges empty the root of its separators the tree loses a level, so     */
+/* root_page can change - callers that persist it must re-read it afterwards.  */
 /* -------------------------------------------------------------------------- */
 
 #define BTREE_KEY_SIZE        37
@@ -636,6 +638,17 @@ int btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset) {
         return 0;
     }
 
+    /* Once merges leave the root without separators, its only child becomes
+       the new root and the tree loses a level. */
+    for (;;) {
+        BtNode root;
+        if (!node_load(tree->pager, tree->root_page, &root)) break;
+        if (root.is_leaf || root.nkeys > 0) break;
+        int child = root.children[0];
+        if (child <= 0) break;
+        pager_free_page(tree->pager, tree->root_page);
+        tree->root_page = child;
+    }
     return 1;
 }
 
