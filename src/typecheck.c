@@ -221,6 +221,7 @@ static Type* sql_type_to_type(int sql_type) {
         case VAL_INT:    return &type_int;
         case VAL_FLOAT:  return &type_float;
         case VAL_STRING: return &type_string;
+        case VAL_BOOL:   return &type_bool;
     }
     return &type_unknown;
 }

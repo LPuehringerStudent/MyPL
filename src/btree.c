@@ -14,7 +14,8 @@
 /*                                                                            */
 /* Keys are encoded to a fixed 37-byte order-preserving byte string:           */
 /*   byte 0: tag (0 NULL, 1 int, 2 float, 3 string)                            */
-/*   int:    4-byte big-endian of value ^ 0x80000000                           */
+/*   int:    4-byte big-endian of value ^ 0x80000000 (bools share this space,  */
+/*           encoded as 0 or 1)                                                */
 /*   float:  8-byte big-endian IEEE-754 with the standard sign transform       */
 /*   string: first 36 bytes, zero-padded (longer strings share a truncated     */
 /*           key, so scans may yield extra candidates, never fewer)            */
@@ -64,7 +65,10 @@ static void encode_key(const Cell* cell, uint8_t* out) {
         out[0] = 0;
         return;
     }
-    if (cell->type == VAL_INT) {
+    if (cell->type == VAL_INT || cell->type == VAL_BOOL) {
+        /* A bool rides in the int key space as 0 or 1: false orders before
+           true, and no new tag is needed. A column is one type, so the spaces
+           never mix in a single index. */
         uint32_t u = ((uint32_t)(int32_t)cell->as.as_int) ^ 0x80000000u;
         out[0] = 1;
         out[1] = (uint8_t)(u >> 24);

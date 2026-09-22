@@ -98,11 +98,16 @@ void catalog_clear(Context* ctx) {
    the view section (u8 sequence_count, then per sequence a u8 name, u8
    has_value, i32 current, i32 increment). V1–V4 files still load — they
    simply have no indexes and/or no constraints and/or no views and/or no
-   sequences; the page is rewritten as V5 on the next save. */
+   sequences; the page is rewritten as V6 on the next save. V6: same layout as
+   V5, but a column type may now be one of the extended scalars (bool today)
+   as well as int, float and string. The layout is unchanged - the marker is
+   what tells an older reader that a type tag it does not know may appear,
+   rather than letting it silently mis-handle one. */
 #define CATALOG_MAGIC_V2 0x4D594932u /* "MYI2" */
 #define CATALOG_MAGIC_V3 0x4D594333u /* "MYC3" */
 #define CATALOG_MAGIC_V4 0x4D595634u /* "MYV4" */
 #define CATALOG_MAGIC_V5 0x4D595635u /* "MYV5" */
+#define CATALOG_MAGIC_V6 0x4D595636u /* "MYV6" */
 
 /* Reads a serialized cell (type tag + payload) from the catalog page. */
 static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
@@ -127,6 +132,14 @@ static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
             cell->as.as_float = v;
             return 1;
         }
+        case VAL_BOOL: {
+            int32_t v = 0;
+            if (*offset + 4 > PAGE_SIZE) return 0;
+            memcpy(&v, page + *offset, sizeof(v));
+            *offset += 4;
+            cell->as.as_int = v != 0 ? 1 : 0;
+            return 1;
+        }
         case VAL_STRING: {
             int32_t len = 0;
             if (*offset + 4 > PAGE_SIZE) return 0;
@@ -149,6 +162,7 @@ static int catalog_read_cell(uint8_t* page, int* offset, Cell* cell) {
 static int catalog_cell_size(const Cell* cell) {
     switch (cell->type) {
         case VAL_INT:    return 1 + 4;
+        case VAL_BOOL:   return 1 + 4;
         case VAL_FLOAT:  return 1 + 8;
         case VAL_STRING: return 1 + 4 + (int)strlen(cell->as.as_string != NULL ? cell->as.as_string : "");
         default:         return 1; /* VAL_NULL: tag only */
@@ -168,6 +182,12 @@ static void catalog_write_cell(uint8_t* page, int* offset, const Cell* cell) {
             double v = cell->as.as_float;
             memcpy(page + *offset, &v, sizeof(v));
             *offset += 8;
+            break;
+        }
+        case VAL_BOOL: {
+            int32_t v = cell->as.as_int != 0 ? 1 : 0;
+            memcpy(page + *offset, &v, sizeof(v));
+            *offset += 4;
             break;
         }
         case VAL_STRING: {
@@ -244,6 +264,10 @@ static int catalog_read_page(Context* ctx) {
         offset += 4;
     } else if (table_count == CATALOG_MAGIC_V5) {
         catalog_version = 5;
+        memcpy(&table_count, page + offset, sizeof(table_count));
+        offset += 4;
+    } else if (table_count == CATALOG_MAGIC_V6) {
+        catalog_version = 6;
         memcpy(&table_count, page + offset, sizeof(table_count));
         offset += 4;
     }
@@ -387,7 +411,7 @@ static int catalog_write_page(Context* ctx) {
     memset(page, 0, PAGE_SIZE);
 
     int offset = 0;
-    uint32_t magic = CATALOG_MAGIC_V5;
+    uint32_t magic = CATALOG_MAGIC_V6;
     memcpy(page + offset, &magic, sizeof(magic));
     offset += 4;
     uint32_t table_count = (uint32_t)g_catalog_count;
@@ -621,6 +645,7 @@ static int row_record_size(Table* table, Cell* cells) {
             case VAL_INT:    size += 4; break;
             case VAL_FLOAT:  size += 8; break;
             case VAL_STRING: size += 4 + (int)strlen(cells[i].as.as_string); break;
+            case VAL_BOOL:   size += 4; break;
             case VAL_NULL:   break; /* tag only, no payload */
             default:         size += 4; break;
         }
@@ -652,6 +677,14 @@ static void serialize_row(Table* table, Cell* cells, uint8_t* out) {
                 offset += sizeof(len);
                 memcpy(out + offset, s, (size_t)len);
                 offset += len;
+                break;
+            }
+            case VAL_BOOL: {
+                /* Stored in the same four bytes an int uses: a bool column is
+                   0 or 1 and its own tag keeps it distinguishable. */
+                int32_t v = cells[i].as.as_int != 0 ? 1 : 0;
+                memcpy(out + offset, &v, sizeof(v));
+                offset += sizeof(v);
                 break;
             }
             case VAL_NULL:
@@ -687,6 +720,13 @@ static int deserialize_cell(const uint8_t* data, int* offset, Cell* cell) {
             memcpy(&v, data + *offset, sizeof(v));
             *offset += sizeof(v);
             cell->as.as_float = v;
+            return 1;
+        }
+        case VAL_BOOL: {
+            int32_t v = 0;
+            memcpy(&v, data + *offset, sizeof(v));
+            *offset += sizeof(v);
+            cell->as.as_int = v != 0 ? 1 : 0;
             return 1;
         }
         case VAL_STRING: {
@@ -968,6 +1008,9 @@ typedef enum {
     TOK_DELETE,
     TOK_INT,
     TOK_FLOAT,
+    TOK_BOOL_KW,
+    TOK_TRUE,
+    TOK_FALSE,
     TOK_STRING_KW,
     TOK_EQ,
     TOK_LT,
@@ -1064,6 +1107,10 @@ static SqlTokenType sql_check_keyword(const char* start, int length) {
     if (length == 3 && strncasecmp(start, "INT", 3) == 0) return TOK_INT;
     if (length == 5 && strncasecmp(start, "FLOAT", 5) == 0) return TOK_FLOAT;
     if (length == 6 && strncasecmp(start, "STRING", 6) == 0) return TOK_STRING_KW;
+    if (length == 4 && strncasecmp(start, "BOOL", 4) == 0) return TOK_BOOL_KW;
+    if (length == 7 && strncasecmp(start, "BOOLEAN", 7) == 0) return TOK_BOOL_KW;
+    if (length == 4 && strncasecmp(start, "TRUE", 4) == 0) return TOK_TRUE;
+    if (length == 5 && strncasecmp(start, "FALSE", 5) == 0) return TOK_FALSE;
     if (length == 4 && strncasecmp(start, "NULL", 4) == 0) return TOK_NULL;
     if (length == 2 && strncasecmp(start, "IS", 2) == 0) return TOK_IS;
     if (length == 3 && strncasecmp(start, "NOT", 3) == 0) return TOK_NOT;
@@ -1822,6 +1869,15 @@ static int cell_compare(Cell* a, Cell* b) {
     if (a->type == VAL_STRING && b->type == VAL_STRING) {
         return strcmp(a->as.as_string, b->as.as_string);
     }
+    /* false sorts before true, and a bool compares with an int by its 0/1
+       value, which is how the runtime already treats it. */
+    if (a->type == VAL_BOOL && b->type == VAL_BOOL) {
+        return a->as.as_int - b->as.as_int;
+    }
+    if ((a->type == VAL_BOOL && b->type == VAL_INT) ||
+        (a->type == VAL_INT && b->type == VAL_BOOL)) {
+        return a->as.as_int - b->as.as_int;
+    }
     if (a->type == VAL_FLOAT || b->type == VAL_FLOAT) {
         double av = (a->type == VAL_FLOAT) ? a->as.as_float : (double)a->as.as_int;
         double bv = (b->type == VAL_FLOAT) ? b->as.as_float : (double)b->as.as_int;
@@ -2302,6 +2358,10 @@ static int conjunct_matches_index(WhereNode* node, Table* table, TableIndex* idx
            candidates, but a truncated range bound could lose rows. */
         return col_type == VAL_STRING && node->cmp_op == 0;
     }
+    if (node->literal.type == VAL_BOOL) {
+        /* Two distinct keys, so only equality is worth serving. */
+        return col_type == VAL_BOOL && node->cmp_op == 0;
+    }
     return col_type == VAL_INT || col_type == VAL_FLOAT;
 }
 
@@ -2397,7 +2457,8 @@ static int try_index_lookup(Context* ctx, Table* table, WhereNode* where,
             scan.table = table;
 
             int ok;
-            if (node->literal.type == VAL_STRING) {
+            if (node->literal.type == VAL_STRING ||
+                node->literal.type == VAL_BOOL) {
                 ok = btree_scan_eq(tree, &node->literal, index_scan_collect, &scan) >= 0;
             } else {
                 ok = index_scan_numeric(tree, node, &scan);
@@ -2656,6 +2717,11 @@ static int sql_parse_literal_cell(SqlToken* tok, Cell* out) {
         out->as.as_int = 0;
         return 1;
     }
+    if (tok->type == TOK_TRUE || tok->type == TOK_FALSE) {
+        out->type = VAL_BOOL;
+        out->as.as_int = tok->type == TOK_TRUE ? 1 : 0;
+        return 1;
+    }
     if (tok->type == TOK_STRING) {
         out->type = VAL_STRING;
         out->as.as_string = malloc((size_t)tok->length + 1);
@@ -2710,6 +2776,10 @@ static int sql_parse_type(SqlToken* tok, int* out_type) {
     }
     if (tok->type == TOK_STRING_KW) {
         *out_type = VAL_STRING;
+        return 1;
+    }
+    if (tok->type == TOK_BOOL_KW) {
+        *out_type = VAL_BOOL;
         return 1;
     }
     return 0;
@@ -4690,6 +4760,7 @@ int sql_cell_to_value(const Cell* cell, Value* out) {
     switch (cell->type) {
         case VAL_INT:    *out = value_int(cell->as.as_int);     return 1;
         case VAL_FLOAT:  *out = value_float(cell->as.as_float); return 1;
+        case VAL_BOOL:   *out = value_bool(cell->as.as_int);    return 1;
         case VAL_STRING:
             *out = value_string(strdup(cell->as.as_string != NULL
                                        ? cell->as.as_string : ""));
