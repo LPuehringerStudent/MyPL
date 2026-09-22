@@ -141,15 +141,20 @@ for n in range(1, 5) {
 create table users (
     id int primary key,
     name string,
-    age int
+    age int,
+    active bool not null default true
 );
 
-insert into users values (1, "alice", 30);
+insert into users values (1, "alice", 30, true);
 
-for user in select id, name from users where age > 25 {
+for user in select id, name from users where age > 25 and active = true {
     print concat(int_to_string(user.id), concat(" ", user.name));
 }
 ```
+
+Column types are `int`, `float`, `string` and `bool`. A `bool` column takes the
+`true` and `false` literals and reads back into a `bool` variable; see
+`examples/bool_columns.mypl`.
 
 ### SELECT INTO
 
