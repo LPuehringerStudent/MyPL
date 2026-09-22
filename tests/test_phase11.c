@@ -1716,6 +1716,211 @@ TEST(phase11_view_over_view) {
     ASSERT_INT_EQ(1, output_contains(out, "3"));
 }
 
+/* -------------------------------------------------------------------------- */
+/* Views as JOIN sources                                                      */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_join_with_view_on_the_right) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj1_l (id int, name string);\n"
+        "    create table vj1_r (id int, tag string);\n"
+        "    insert into vj1_l values (1, \"alice\");\n"
+        "    insert into vj1_l values (2, \"bob\");\n"
+        "    insert into vj1_l values (3, \"carol\");\n"
+        "    insert into vj1_r values (1, \"x\");\n"
+        "    insert into vj1_r values (3, \"z\");\n"
+        "    create view vj1_v as select id, tag from vj1_r;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from vj1_l join vj1_v on vj1_l.id = vj1_v.id;\n"
+        "    print concat(\"n=\", int_to_string(n));\n"
+        "    string t = \"?\";\n"
+        "    select vj1_v.tag into t from vj1_l join vj1_v on vj1_l.id = vj1_v.id\n"
+        "        where vj1_l.id = 3;\n"
+        "    print concat(\"tag=\", t);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "n=2"));
+    /* The prefixed name resolves against the view's half of the combined row. */
+    ASSERT_INT_EQ(1, output_contains(out, "tag=z"));
+}
+
+TEST(phase11_join_with_view_on_the_left_and_both_sides) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj2_l (id int, name string);\n"
+        "    create table vj2_r (id int, tag string);\n"
+        "    insert into vj2_l values (1, \"alice\");\n"
+        "    insert into vj2_l values (2, \"bob\");\n"
+        "    insert into vj2_r values (1, \"x\");\n"
+        "    insert into vj2_r values (2, \"y\");\n"
+        "    create view vj2_lv as select id, name from vj2_l;\n"
+        "    create view vj2_rv as select id, tag from vj2_r;\n"
+        "    int a = -1;\n"
+        "    select count(*) into a from vj2_lv join vj2_r on vj2_lv.id = vj2_r.id;\n"
+        "    print concat(\"left=\", int_to_string(a));\n"
+        "    int b = -1;\n"
+        "    select count(*) into b from vj2_lv join vj2_rv on vj2_lv.id = vj2_rv.id;\n"
+        "    print concat(\"both=\", int_to_string(b));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "left=2"));
+    ASSERT_INT_EQ(1, output_contains(out, "both=2"));
+}
+
+/* The view's own WHERE has to apply before the join sees its rows, and the
+   outer WHERE after - the same composition the single-source path gives. */
+TEST(phase11_join_with_filtered_view_composes_clauses) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj3_l (id int, name string);\n"
+        "    create table vj3_r (id int, tag string, qty int);\n"
+        "    insert into vj3_l values (1, \"alice\");\n"
+        "    insert into vj3_l values (2, \"bob\");\n"
+        "    insert into vj3_l values (3, \"carol\");\n"
+        "    insert into vj3_r values (1, \"x\", 5);\n"
+        "    insert into vj3_r values (2, \"y\", 50);\n"
+        "    insert into vj3_r values (3, \"z\", 80);\n"
+        "    create view vj3_big as select id, tag, qty from vj3_r where qty >= 50;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from vj3_l join vj3_big on vj3_l.id = vj3_big.id;\n"
+        "    print concat(\"inner=\", int_to_string(n));\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from vj3_l join vj3_big on vj3_l.id = vj3_big.id\n"
+        "        where vj3_big.tag = \"z\";\n"
+        "    print concat(\"outer=\", int_to_string(m));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "inner=2"));  /* qty 50 and 80 */
+    ASSERT_INT_EQ(1, output_contains(out, "outer=1"));
+}
+
+/* Views over views resolve recursively, so nesting one inside a join target
+   works without the join path knowing about it. */
+TEST(phase11_join_with_view_over_view) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj4_l (id int, name string);\n"
+        "    create table vj4_r (id int, tag string);\n"
+        "    insert into vj4_l values (1, \"alice\");\n"
+        "    insert into vj4_l values (2, \"bob\");\n"
+        "    insert into vj4_r values (1, \"x\");\n"
+        "    insert into vj4_r values (2, \"y\");\n"
+        "    create view vj4_a as select id, tag from vj4_r;\n"
+        "    create view vj4_b as select id, tag from vj4_a where tag = \"y\";\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from vj4_l join vj4_b on vj4_l.id = vj4_b.id;\n"
+        "    print concat(\"n=\", int_to_string(n));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "n=1"));
+}
+
+/* LEFT JOIN keeps unmatched left rows against a view exactly as against a
+   table, including when the view produces nothing at all - the case where the
+   view has no rows to take a column shape from. */
+TEST(phase11_left_join_with_view_keeps_unmatched_rows) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj5_l (id int, name string);\n"
+        "    create table vj5_r (id int, tag string);\n"
+        "    insert into vj5_l values (1, \"alice\");\n"
+        "    insert into vj5_l values (2, \"bob\");\n"
+        "    insert into vj5_l values (3, \"carol\");\n"
+        "    insert into vj5_r values (1, \"x\");\n"
+        "    create view vj5_v as select id, tag from vj5_r;\n"
+        "    create view vj5_none as select id, tag from vj5_r where id = 999;\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from vj5_l left join vj5_v on vj5_l.id = vj5_v.id;\n"
+        "    print concat(\"left=\", int_to_string(n));\n"
+        "    int m = -1;\n"
+        "    select count(*) into m from vj5_l left join vj5_none on vj5_l.id = vj5_none.id;\n"
+        "    print concat(\"empty=\", int_to_string(m));\n"
+        "    int k = -1;\n"
+        "    select count(*) into k from vj5_l join vj5_none on vj5_l.id = vj5_none.id;\n"
+        "    print concat(\"inner=\", int_to_string(k));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "left=3"));
+    ASSERT_INT_EQ(1, output_contains(out, "empty=3"));
+    ASSERT_INT_EQ(1, output_contains(out, "inner=0"));
+}
+
+/* Resolving views in joins must not turn a missing source into a silently
+   empty one: a dropped view fails a join exactly as a name that was never a
+   table does. */
+TEST(phase11_join_with_dropped_view_matches_missing_table) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table vj6_l (id int, name string);\n"
+        "    create table vj6_r (id int, tag string);\n"
+        "    insert into vj6_l values (1, \"alice\");\n"
+        "    insert into vj6_r values (1, \"x\");\n"
+        "    create view vj6_v as select id, tag from vj6_r;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* The view still resolves as a join target while it exists. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from vj6_l join vj6_v on vj6_l.id = vj6_v.id;\n"
+        "    print concat(\"n=\", int_to_string(n));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "n=1"));
+
+    /* After DROP VIEW it does not, and neither does a name that never existed. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    drop view vj6_v;\n"
+        "    for row in select vj6_l.id from vj6_l join vj6_v on vj6_l.id = vj6_v.id {\n"
+        "        print \"unreachable\";\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    for row in select vj6_l.id from vj6_l join vj6_never on vj6_l.id = vj6_never.id {\n"
+        "        print \"unreachable\";\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+}
+
 /* A SQL loop variable reads the current row whatever it is named; only `row`
  * used to work (examples/inventory.mypl, migration.mypl and todo.mypl). */
 TEST(phase11_named_sql_loop_variable_reads_fields) {
@@ -1838,6 +2043,12 @@ int main(void) {
     RUN_TEST(phase11_create_view_duplicate_name_errors);
     RUN_TEST(phase11_create_view_on_table_name_errors);
     RUN_TEST(phase11_view_over_view);
+    RUN_TEST(phase11_join_with_view_on_the_right);
+    RUN_TEST(phase11_join_with_view_on_the_left_and_both_sides);
+    RUN_TEST(phase11_join_with_filtered_view_composes_clauses);
+    RUN_TEST(phase11_join_with_view_over_view);
+    RUN_TEST(phase11_left_join_with_view_keeps_unmatched_rows);
+    RUN_TEST(phase11_join_with_dropped_view_matches_missing_table);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     TEST_SUMMARY();
 }

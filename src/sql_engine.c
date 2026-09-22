@@ -2437,18 +2437,58 @@ static int try_index_lookup(Context* ctx, Table* table, WhereNode* where,
     return 0;
 }
 
-/* A FROM source is usable when it names an existing table or view. A view
-   definition is only valid when its sources exist: the main source may be a
-   table or another view; JOIN targets must be tables (views in JOINs are not
-   resolved). */
+/* A FROM source is usable when it names an existing table or view. Either side
+   of a JOIN may be a view, because a view is materialized into rows wherever a
+   table would be read. */
+static int source_exists(Context* ctx, const char* name) {
+    return catalog_find_table(ctx, name) != NULL ||
+           catalog_view_query(ctx, name) != NULL;
+}
+
+/* A view definition stays valid only while its own sources exist. */
 static int view_source_exists(Context* ctx, SelectStmt* stmt) {
-    if (catalog_find_table(ctx, stmt->table_name) == NULL &&
-        catalog_view_query(ctx, stmt->table_name) == NULL) {
+    if (!source_exists(ctx, stmt->table_name)) return 0;
+    if (stmt->has_join && !source_exists(ctx, stmt->join_table_name)) return 0;
+    return 1;
+}
+
+static Result* execute_select(Context* ctx, SelectStmt* stmt);
+
+/* Materializes a view by executing its stored SELECT and taking the rows it
+   produces. Views over views work because the recursive call resolves the
+   inner one the same way, and a view whose own FROM is a join resolves through
+   the join path below. The caller owns the returned rows.
+
+   Returns 0 only for a genuine failure; callers check catalog_view_query first
+   when a missing view should mean an empty result rather than an error. */
+static int materialize_view(Context* ctx, const char* name,
+                            Row** out_rows, int* out_count) {
+    *out_rows = NULL;
+    *out_count = 0;
+
+    const char* view_query = catalog_view_query(ctx, name);
+    if (view_query == NULL) return 0;
+
+    SelectStmt view_stmt;
+    if (!sql_parse_select(view_query, &view_stmt)) {
+        sql_free_select_stmt(&view_stmt);
         return 0;
     }
-    if (stmt->has_join && catalog_find_table(ctx, stmt->join_table_name) == NULL) {
+    if (!view_source_exists(ctx, &view_stmt)) {
+        /* e.g. the base table was dropped after CREATE VIEW */
+        sql_free_select_stmt(&view_stmt);
         return 0;
     }
+    Result* inner = execute_select(ctx, &view_stmt);
+    sql_free_select_stmt(&view_stmt);
+    if (inner == NULL) return 0;
+
+    /* Steal the inner row array rather than copying it. */
+    *out_rows = inner->rows;
+    *out_count = inner->row_count;
+    inner->rows = NULL;
+    inner->row_count = 0;
+    free(inner);
     return 1;
 }
 
@@ -2475,9 +2515,16 @@ static int materialize_source(Context* ctx, const char* name, JoinSource* out) {
     out->column_count = 0;
 
     Table* table = catalog_find_table(ctx, name);
-    if (table == NULL) return 0;
-    if (!read_all_rows(ctx, table, &out->rows, &out->count)) return 0;
-    out->column_count = table->column_count;
+    if (table != NULL) {
+        if (!read_all_rows(ctx, table, &out->rows, &out->count)) return 0;
+        out->column_count = table->column_count;
+        return 1;
+    }
+
+    if (!materialize_view(ctx, name, &out->rows, &out->count)) return 0;
+    /* A view has no catalog column list, so its width is whatever its rows
+       carry. An empty view leaves it at zero - see join_source_zero_row. */
+    out->column_count = out->count > 0 ? out->rows[0].field_count : 0;
     return 1;
 }
 
@@ -2485,14 +2532,37 @@ static int materialize_source(Context* ctx, const char* name, JoinSource* out) {
    SQL NULLs, which is what this path has always produced. */
 static int join_source_zero_row(Context* ctx, const char* name,
                                 JoinSource* src, Row* out) {
-    (void)src;
     out->fields = NULL;
     out->field_count = 0;
 
     Table* table = catalog_find_table(ctx, name);
-    if (table == NULL) return 0;
-    *out = row_zero(table);
-    return out->fields != NULL;
+    if (table != NULL) {
+        *out = row_zero(table);
+        return out->fields != NULL;
+    }
+
+    /* A view's shape is only visible in the rows it produced. An empty view
+       therefore gets an empty filler: a LEFT JOIN against it still keeps every
+       left row, and references to the view's own columns resolve to 0 the way
+       result_append handles any name it cannot find. */
+    if (src->count == 0) return 1;
+
+    Row* shape = &src->rows[0];
+    out->fields = calloc((size_t)shape->field_count, sizeof(Field));
+    if (out->fields == NULL) return 0;
+    out->field_count = shape->field_count;
+    for (int i = 0; i < out->field_count; i++) {
+        out->fields[i].name = strdup(shape->fields[i].name);
+        out->fields[i].value.type = shape->fields[i].value.type;
+        if (shape->fields[i].value.type == VAL_STRING) {
+            out->fields[i].value.as.as_string = strdup("");
+        } else if (shape->fields[i].value.type == VAL_FLOAT) {
+            out->fields[i].value.as.as_float = 0.0;
+        } else {
+            out->fields[i].value.as.as_int = 0;
+        }
+    }
+    return 1;
 }
 
 static Result* execute_select(Context* ctx, SelectStmt* stmt) {
@@ -2570,36 +2640,15 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
                 return result_create(0);
             }
         } else {
-            /* View resolution: a view is materialized by executing its stored
-               SELECT recursively (so views over views work) and using the
-               result rows as a read-only source set. The outer WHERE/ORDER
-               BY/LIMIT then run over those rows, composing with the view's
-               own clauses. */
-            const char* view_query = catalog_view_query(ctx, stmt->table_name);
-            if (view_query == NULL) {
+            /* View resolution: the view's rows become a read-only source set,
+               and the outer WHERE/ORDER BY/LIMIT then run over them, composing
+               with the view's own clauses. */
+            if (catalog_view_query(ctx, stmt->table_name) == NULL) {
                 return result_create(0);
             }
-            SelectStmt view_stmt;
-            if (!sql_parse_select(view_query, &view_stmt)) {
-                sql_free_select_stmt(&view_stmt);
+            if (!materialize_view(ctx, stmt->table_name, &source_rows, &source_count)) {
                 return NULL;
             }
-            if (!view_source_exists(ctx, &view_stmt)) {
-                /* e.g. the base table was dropped after CREATE VIEW */
-                sql_free_select_stmt(&view_stmt);
-                return NULL;
-            }
-            Result* inner = execute_select(ctx, &view_stmt);
-            sql_free_select_stmt(&view_stmt);
-            if (inner == NULL) {
-                return NULL;
-            }
-            /* Steal the inner row array; it is freed via free_rows below. */
-            source_rows = inner->rows;
-            source_count = inner->row_count;
-            inner->rows = NULL;
-            inner->row_count = 0;
-            free(inner);
         }
     }
 
