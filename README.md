@@ -479,17 +479,6 @@ Useful commands:
   `assert`, `format`, `sort`, `reverse`, `clamp`, `to_date`, `to_char`,
   `current_date`, `current_timestamp`, file I/O, and more.
 
-## Roadmap / Next Steps
-
-Phases 1–12 are complete: stored programs and packages, triggers,
-sequences, views, indexes, constraints, NULL semantics, the `dbms_sql`
-cursor API, imported-module package initialization, overridable built-in
-packages, `utl_file` expansion, FFI marshalling, and command-line
-conditional-compilation flags all landed. See
-[`NEXT_STEPS.md`](NEXT_STEPS.md) for the concrete, phased comparison with
-Oracle PL/SQL and what remains: Phase 13 hardening (install target and man
-page — done — README refresh, dynamic growth of the VM's fixed ceilings,
-incremental REPL compilation, and cycle-safe garbage collection).
 
 Contributions and ideas are welcome — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow (failing-test-first,
