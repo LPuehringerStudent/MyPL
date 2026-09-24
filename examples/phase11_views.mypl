@@ -5,6 +5,9 @@
  * - SELECT ... FROM view             runs the stored SELECT and applies the
  *                                    outer WHERE / ORDER BY / LIMIT on top
  * - DROP VIEW name [IF EXISTS]       removes the definition
+ * - JOIN ... ON                      either side may be a view; it is
+ *                                    materialized into rows the way a table
+ *                                    is read
  * Views are read-only (INSERT/UPDATE/DELETE on a view is a runtime error)
  * and persist in the database catalog across process restarts.
  */
@@ -47,9 +50,43 @@ proc main() -> int {
     select count(*) into m from huge_orders;
     print m;              /* 2 */
 
+    print "=== a view as a JOIN source ===";
+    drop table if exists customers;
+    create table customers (name string, city string);
+    insert into customers values ("bob", "berlin");
+    insert into customers values ("carol", "cologne");
+    insert into customers values ("dan", "dresden");
+
+    /* The view's own WHERE runs first, so only the three big orders reach the
+     * join; the outer WHERE then runs over the joined rows. */
+    int joined = -1;
+    select count(*) into joined from customers
+        join big_orders on customers.name = big_orders.customer;
+    print joined;         /* 3 */
+
+    string city = "?";
+    select customers.city into city from customers
+        join big_orders on customers.name = big_orders.customer
+        where big_orders.total = 30;
+    print city;           /* cologne */
+
+    /* LEFT JOIN keeps customers with no big order, the same as against a
+     * table. alice is missing from the view, but she is not a customer here -
+     * so add someone who is. */
+    drop table if exists prospects;
+    create table prospects (name string);
+    insert into prospects values ("bob");
+    insert into prospects values ("zoe");
+    int kept = -1;
+    select count(*) into kept from prospects
+        left join big_orders on prospects.name = big_orders.customer;
+    print kept;           /* 2: zoe is kept with no match */
+
     print "=== drop view ===";
     drop view huge_orders;
     drop view big_orders;
+    drop table prospects;
+    drop table customers;
     drop table orders;
 
     /* Errors, not exercised here:
