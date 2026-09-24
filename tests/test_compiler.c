@@ -1292,6 +1292,97 @@ TEST(compiler_string_constants_owned_by_chunk_only) {
     free_chunk(&chunk);
 }
 
+/* --- Loop stack accounting (#89) ---
+   Assignments left their value on the VM stack, so a loop overflowed it
+   (STACK_MAX slots) after about a million iterations; a C-style for leaked
+   its init variable each time it ran; and break/continue popped the wrong
+   locals in several loop kinds. Each program returns one int to check. */
+
+static int run_main_int(const char* source, int* result) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    if (!compile(source, &chunk, error, sizeof(error))) {
+        fprintf(stderr, "compile error: %s\n", error);
+        free_chunk(&chunk);
+        return 0;
+    }
+    VM* vm = vm_init();
+    int ok = vm_interpret(vm, &chunk) == INTERPRET_OK;
+    if (ok) {
+        *result = vm_pop(vm).as.as_int;
+    } else {
+        fprintf(stderr, "runtime error: %s\n", vm_get_error(vm));
+    }
+    vm_free(vm);
+    free_chunk(&chunk);
+    return ok;
+}
+
+TEST(compiler_loop_assignments_do_not_grow_the_stack) {
+    int result = 0;
+    ASSERT_INT_EQ(1, run_main_int(
+        "proc main() -> int { int i = 0; while i < 1100000 { i = i + 1; } return i; }",
+        &result));
+    ASSERT_INT_EQ(1100000, result);
+}
+
+TEST(compiler_nested_cfor_does_not_grow_the_stack) {
+    int result = 0;
+    ASSERT_INT_EQ(1, run_main_int(
+        "proc main() -> int {\n"
+        "    int n = 0;\n"
+        "    while n < 1100000 { for (int j = 0; j < 1; j = j + 1) { n = n + 1; } }\n"
+        "    return n;\n"
+        "}",
+        &result));
+    ASSERT_INT_EQ(1100000, result);
+}
+
+/* Each loop sums d = 2 * i for i in 0..9, skipping i = 2 and stopping at
+   i = 7: 0 + 2 + 6 + 8 + 10 + 12 = 38. A local declared after the loop must
+   still read back as itself, so the result is 38 * 100 + 5. The guard g
+   turns a continue that never advances (it used to, in for-in loops) into
+   -1 instead of a hang. */
+TEST(compiler_break_and_continue_pop_the_right_locals) {
+    const char* loops[] = {
+        "for (int i = 0; i < 10; i = i + 1) {"
+        " g = g + 1; if g > 100 { return -1; } int d = i * 2; if i == 7 { break; } if i == 2 { continue; } s = s + d; }",
+        "for i in range(0, 10) {"
+        " g = g + 1; if g > 100 { return -1; } int d = i * 2; if i == 7 { break; } if i == 2 { continue; } s = s + d; }",
+        "array<int> a = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]; for i in a {"
+        " g = g + 1; if g > 100 { return -1; } int d = i * 2; if i == 7 { break; } if i == 2 { continue; } s = s + d; }",
+        "int i = 0; while i < 10 {"
+        " g = g + 1; if g > 100 { return -1; } int d = i * 2; i = i + 1; if i == 8 { break; } if i == 3 { continue; } s = s + d; }",
+        "int i = 0; do {"
+        " g = g + 1; if g > 100 { return -1; } int d = i * 2; i = i + 1; if i == 8 { break; } if i == 3 { continue; } s = s + d; }"
+        " while i < 10;",
+    };
+    for (size_t k = 0; k < sizeof(loops) / sizeof(loops[0]); k++) {
+        char source[512];
+        snprintf(source, sizeof(source),
+                 "proc main() -> int { int s = 0; int g = 0; %s int after = 5; return s * 100 + after; }",
+                 loops[k]);
+        int result = 0;
+        ASSERT_INT_EQ(1, run_main_int(source, &result));
+        ASSERT_INT_EQ(3805, result);
+    }
+}
+
+TEST(compiler_do_while_continue_checks_the_condition) {
+    /* continue on the last pass must end the loop, not re-enter the body. */
+    int result = 0;
+    ASSERT_INT_EQ(1, run_main_int(
+        "proc main() -> int {\n"
+        "    int i = 0;\n"
+        "    int s = 0;\n"
+        "    do { i = i + 1; if i > 2 { continue; } s = s + 1; } while i < 3;\n"
+        "    return s * 10 + i;\n"
+        "}",
+        &result));
+    ASSERT_INT_EQ(23, result);
+}
+
 TEST(compiler_reports_source_line_on_native_error) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -1482,6 +1573,10 @@ int main(void) {
     RUN_TEST(compiler_compiles_nested_index_assignment);
     RUN_TEST(compiler_emits_sql_exec);
     RUN_TEST(compiler_string_constants_owned_by_chunk_only);
+    RUN_TEST(compiler_loop_assignments_do_not_grow_the_stack);
+    RUN_TEST(compiler_nested_cfor_does_not_grow_the_stack);
+    RUN_TEST(compiler_break_and_continue_pop_the_right_locals);
+    RUN_TEST(compiler_do_while_continue_checks_the_condition);
     RUN_TEST(compiler_reports_source_line_on_native_error);
     RUN_TEST(compiler_compiles_format_native);
     RUN_TEST(compiler_compiles_sort_native);

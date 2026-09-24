@@ -1051,6 +1051,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 if (slot >= 0) {
                     emit_byte(compiler, OP_SET_GLOBAL);
                     emit_byte(compiler, (uint8_t)slot);
+                    emit_byte(compiler, OP_POP);
                     break;
                 }
             }
@@ -1060,7 +1061,11 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 error(compiler, msg);
                 return;
             }
+            /* The set opcodes store the value and leave it on the stack,
+               which a declaration keeps as the new local's slot; an
+               assignment has no use for it (#89). */
             emit_set_local(compiler, slot);
+            emit_byte(compiler, OP_POP);
             break;
         }
         case STMT_FIELD_ASSIGN: {
@@ -1105,6 +1110,9 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 if (!push_loop(compiler, body_start, start_count, start_count)) return;
                 compile_block(compiler, w->body);
                 if (compiler->had_error) return;
+                /* continue goes to the condition, as in a while loop; the
+                   top of the body would skip the check. */
+                compiler->loops[compiler->loop_count - 1].continue_target = compiler->chunk->count;
                 compile_expr(compiler, w->condition);
                 if (compiler->had_error) return;
                 int exit_jump = emit_jump(compiler, OP_JZ);
@@ -1142,7 +1150,9 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             int var_slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
             emit_set_local(compiler, var_slot);
             int loop_start = compiler->chunk->count;
-            if (!push_loop(compiler, loop_start, start_count, start_count + 3)) return;
+            /* break and continue pop only the body's locals: the three
+               loop locals are popped once, at the exit both reach. */
+            if (!push_loop(compiler, loop_start, start_count + 3, start_count + 3)) return;
             emit_get_local(compiler, idx_slot);
             emit_get_local(compiler, array_slot);
             int len_native = native_find("length");
@@ -1158,6 +1168,9 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_byte(compiler, OP_POP);
             compile_block(compiler, f->body);
             if (compiler->had_error) return;
+            /* continue has to advance the index, or it repeats the same
+               element forever. */
+            compiler->loops[compiler->loop_count - 1].continue_target = compiler->chunk->count;
             emit_get_local(compiler, idx_slot);
             emit_constant(compiler, value_int(1));
             emit_byte(compiler, OP_ADD);
@@ -1235,6 +1248,10 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 compile_stmt(compiler, cf->init);
                 if (compiler->had_error) return;
             }
+            /* A variable the init declares lives for the whole loop: break
+               and continue pop only what the body declared, and the exit
+               below pops the init's locals once, for both ways out. */
+            int loop_locals = compiler->local_count;
 
             int loop_start = compiler->chunk->count;
 
@@ -1248,7 +1265,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
 
             /* Push loop before body so break/continue are captured; continue
                target will be set to the step clause once the body is emitted. */
-            if (!push_loop(compiler, loop_start, start_count, start_count)) return;
+            if (!push_loop(compiler, loop_start, loop_locals, loop_locals)) return;
 
             compile_block(compiler, cf->body);
             if (compiler->had_error) return;
@@ -1265,6 +1282,7 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             patch_jump(compiler, exit_jump);
             pop_loop(compiler);
 
+            for (int i = start_count; i < loop_locals; i++) emit_byte(compiler, OP_POP);
             compiler->local_count = start_count;
             break;
         }
