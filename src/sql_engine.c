@@ -2137,6 +2137,9 @@ static Row row_zero(Table* table) {
     return row;
 }
 
+/* Frees a row's fields but not the Row itself, which may live on the stack
+   (row_zero) or inside a rows array. A Row from deserialize_row also needs
+   free(row). */
 static void free_row(Row* row) {
     if (row == NULL) return;
     for (int i = 0; i < row->field_count; i++) {
@@ -4663,13 +4666,11 @@ static int index_build_from_rows(Context* ctx, Table* table, int column, BTree* 
 
             Row* row = deserialize_row(table, page + offset);
             if (row == NULL) return 0;
-            if (column < row->field_count) {
-                if (!btree_insert(tree, &row->fields[column].value, page_num, offset)) {
-                    free_row(row);
-                    return 0;
-                }
-            }
+            int inserted = column >= row->field_count ||
+                btree_insert(tree, &row->fields[column].value, page_num, offset);
             free_row(row);
+            free(row);
+            if (!inserted) return 0;
             offset += (int)record_size;
         }
 
