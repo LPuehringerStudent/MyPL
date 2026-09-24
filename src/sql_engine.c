@@ -1030,7 +1030,8 @@ typedef enum {
     TOK_UNIQUE,
     TOK_DEFAULT,
     TOK_VIEW,
-    TOK_AS
+    TOK_AS,
+    TOK_PARAM  /* ?N bind placeholder; the token text is the digits */
 } SqlTokenType;
 
 typedef struct {
@@ -1171,6 +1172,15 @@ static SqlToken sql_next_token(SqlLexer* lex) {
         return tok;
     }
 
+    if (c == '?' && isdigit((unsigned char)lex->current[1])) {
+        lex->current++;
+        lex->start = lex->current;
+        while (isdigit((unsigned char)*lex->current)) {
+            lex->current++;
+        }
+        return sql_make_token(lex, TOK_PARAM);
+    }
+
     lex->current++;
     switch (c) {
         case '*': return sql_make_token(lex, TOK_STAR);
@@ -1196,6 +1206,47 @@ static void sql_token_text(SqlToken* tok, char* out, size_t out_size) {
     if (len >= out_size) len = out_size - 1;
     memcpy(out, tok->text, len);
     out[len] = '\0';
+}
+
+/* Values bound to the ?N placeholders of the statement being executed (see
+   sql_exec_params). The parsers read them while turning a TOK_PARAM into a
+   literal; NULL/0 outside a bound statement, so a stray ?N fails to parse. */
+static const Value* g_sql_binds;
+static int          g_sql_bind_count;
+
+/* Turns the TOK_PARAM `tok` (?1, ?2, ...) into the Cell holding the bound
+   value. String cells are heap copies, freed like any parsed literal.
+   Returns 0 when no such value is bound. */
+static int sql_param_cell(const SqlToken* tok, Cell* out) {
+    int index = 0;
+    for (int i = 0; i < tok->length; i++) {
+        index = index * 10 + (tok->text[i] - '0');
+        if (index > g_sql_bind_count) return 0;
+    }
+    if (index < 1 || g_sql_binds == NULL) return 0;
+
+    Value v = g_sql_binds[index - 1];
+    switch (v.type) {
+        case VAL_INT:
+        case VAL_BOOL:
+            out->type = VAL_INT;
+            out->as.as_int = v.as.as_int;
+            return 1;
+        case VAL_FLOAT:
+            out->type = VAL_FLOAT;
+            out->as.as_float = v.as.as_float;
+            return 1;
+        case VAL_STRING: {
+            const char* s = v.as.as_string != NULL ? v.as.as_string : "";
+            out->type = VAL_STRING;
+            out->as.as_string = strdup(s);
+            return out->as.as_string != NULL;
+        }
+        default:
+            out->type = VAL_NULL;
+            out->as.as_int = 0;
+            return 1;
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1333,6 +1384,8 @@ static int where_parse_literal(SqlLexer* lex, SqlToken* tok, Cell* out) {
     } else if (tok->type == TOK_NULL) {
         out->type = VAL_NULL;
         out->as.as_int = 0;
+    } else if (tok->type == TOK_PARAM) {
+        if (!sql_param_cell(tok, out)) return 0;
     } else {
         return 0;
     }
@@ -1435,8 +1488,9 @@ static WhereNode* where_parse_primary(SqlLexer* lex, SqlToken* tok) {
         node->type = WHERE_LIKE;
         node->negate = is_not;
         *tok = sql_next_token(lex);
-        if (tok->type != TOK_STRING ||
-            !where_parse_literal(lex, tok, &node->literal)) {
+        if ((tok->type != TOK_STRING && tok->type != TOK_PARAM) ||
+            !where_parse_literal(lex, tok, &node->literal) ||
+            node->literal.type != VAL_STRING) {
             where_free(node);
             return NULL;
         }
@@ -1831,10 +1885,21 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
 
     if (tok.type == TOK_LIMIT) {
         tok = sql_next_token(&lex);
-        if (tok.type != TOK_NUMBER) return 0;
-        char buf[64];
-        sql_token_text(&tok, buf, sizeof(buf));
-        stmt->limit_count = atoi(buf);
+        if (tok.type == TOK_PARAM) {
+            Cell bound;
+            if (!sql_param_cell(&tok, &bound)) return 0;
+            if (bound.type != VAL_INT) {
+                if (bound.type == VAL_STRING) free(bound.as.as_string);
+                return 0;
+            }
+            stmt->limit_count = bound.as.as_int;
+        } else if (tok.type == TOK_NUMBER) {
+            char buf[64];
+            sql_token_text(&tok, buf, sizeof(buf));
+            stmt->limit_count = atoi(buf);
+        } else {
+            return 0;
+        }
         if (stmt->limit_count < 0) stmt->limit_count = 0;
         stmt->has_limit = 1;
         tok = sql_next_token(&lex);
@@ -2578,8 +2643,17 @@ static Result* execute_select(Context* ctx, SelectStmt* stmt) {
             if (view_query == NULL) {
                 return result_create(0);
             }
+            /* The view body is stored text, not part of the calling statement:
+               it must not pick up that statement's bind values. */
+            const Value* saved_binds = g_sql_binds;
+            int saved_bind_count = g_sql_bind_count;
+            g_sql_binds = NULL;
+            g_sql_bind_count = 0;
             SelectStmt view_stmt;
-            if (!sql_parse_select(view_query, &view_stmt)) {
+            int view_parsed = sql_parse_select(view_query, &view_stmt);
+            g_sql_binds = saved_binds;
+            g_sql_bind_count = saved_bind_count;
+            if (!view_parsed) {
                 sql_free_select_stmt(&view_stmt);
                 return NULL;
             }
@@ -2876,6 +2950,8 @@ static int sql_parse_insert(const char* query, DdlStmt* stmt) {
         } else if (tok.type == TOK_NULL) {
             stmt->values[stmt->value_count].type = VAL_NULL;
             stmt->values[stmt->value_count].as.as_int = 0;
+        } else if (tok.type == TOK_PARAM) {
+            if (!sql_param_cell(&tok, &stmt->values[stmt->value_count])) return 0;
         } else if (tok.type == TOK_STRING) {
             stmt->values[stmt->value_count].type = VAL_STRING;
             stmt->values[stmt->value_count].as.as_string = malloc((size_t)tok.length + 1);
@@ -3295,6 +3371,21 @@ int sql_exec_ddl(const char* query, Context* ctx) {
         int select_len = 0;
         if (sql_parse_create_view(query, view_name, sizeof(view_name),
                                   &select_text, &select_len)) {
+            /* A view body is stored and re-parsed on every use, long after
+               the values bound to this statement are gone. */
+            char quote = '\0';
+            for (int i = 0; i < select_len; i++) {
+                char c = select_text[i];
+                if (quote != '\0') {
+                    if (c == quote) quote = '\0';
+                } else if (c == '\'' || c == '"') {
+                    quote = c;
+                } else if (c == '?') {
+                    snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                             "bind parameters are not allowed in a view");
+                    return 0;
+                }
+            }
             return execute_create_view(ctx, view_name, select_text, select_len);
         }
         int if_exists = 0;
@@ -3446,6 +3537,8 @@ static int sql_parse_update(const char* query, UpdateStmt* stmt) {
     } else if (tok.type == TOK_NULL) {
         stmt->set_value.type = VAL_NULL;
         stmt->set_value.as.as_int = 0;
+    } else if (tok.type == TOK_PARAM) {
+        if (!sql_param_cell(&tok, &stmt->set_value)) return 0;
     } else if (tok.type == TOK_STRING) {
         stmt->set_value.type = VAL_STRING;
         stmt->set_value.as.as_string = malloc((size_t)tok.length + 1);
@@ -4554,6 +4647,90 @@ Result* sql_exec(const char* query, Context* ctx) {
     return res;
 }
 
+/* Rewrites the bare `?` placeholders of `query` (outside string literals) to
+   `?1`, `?2`, ... in order, so each keeps its position when the statement is
+   later split up (INSERT ... SELECT hands the SELECT to sql_exec on its own).
+   Returns a malloc'd copy, or NULL with g_sql_ddl_error set when the number
+   of placeholders differs from `param_count`. Existing `?N` are left alone. */
+static char* sql_number_placeholders(const char* query, int param_count) {
+    size_t len = strlen(query);
+    int placeholders = 0;
+    char quote = '\0';
+    for (const char* p = query; *p != '\0'; p++) {
+        if (quote != '\0') {
+            if (*p == quote) quote = '\0';
+        } else if (*p == '\'' || *p == '"') {
+            quote = *p;
+        } else if (*p == '?' && !isdigit((unsigned char)p[1])) {
+            placeholders++;
+        }
+    }
+    if (placeholders != param_count) {
+        snprintf(g_sql_ddl_error, sizeof(g_sql_ddl_error),
+                 "SQL has %d bind placeholder(s) but %d value(s) were supplied",
+                 placeholders, param_count);
+        return NULL;
+    }
+
+    char* out = malloc(len + (size_t)placeholders * 11 + 1);
+    if (out == NULL) return NULL;
+    char* dst = out;
+    int next = 1;
+    quote = '\0';
+    for (const char* p = query; *p != '\0'; p++) {
+        *dst++ = *p;
+        if (quote != '\0') {
+            if (*p == quote) quote = '\0';
+        } else if (*p == '\'' || *p == '"') {
+            quote = *p;
+        } else if (*p == '?' && !isdigit((unsigned char)p[1])) {
+            dst += sprintf(dst, "%d", next++);
+        }
+    }
+    *dst = '\0';
+    return out;
+}
+
+Result* sql_exec_params(const char* query, Context* ctx, const Value* params, int param_count) {
+    g_sql_ddl_error[0] = '\0';
+    char* numbered = NULL;
+    if (param_count > 0) {
+        numbered = sql_number_placeholders(query, param_count);
+        if (numbered == NULL) return NULL;
+    }
+
+    /* Bind for this statement only; restored so a nested statement (a trigger
+       body run from inside DML) never sees another statement's values. */
+    const Value* saved_binds = g_sql_binds;
+    int saved_count = g_sql_bind_count;
+    g_sql_binds = param_count > 0 ? params : NULL;
+    g_sql_bind_count = param_count > 0 ? param_count : 0;
+    Result* res = sql_exec(numbered != NULL ? numbered : query, ctx);
+    g_sql_binds = saved_binds;
+    g_sql_bind_count = saved_count;
+    free(numbered);
+    return res;
+}
+
+int sql_exec_ddl_params(const char* query, Context* ctx, const Value* params, int param_count) {
+    g_sql_ddl_error[0] = '\0';
+    char* numbered = NULL;
+    if (param_count > 0) {
+        numbered = sql_number_placeholders(query, param_count);
+        if (numbered == NULL) return 0;
+    }
+
+    const Value* saved_binds = g_sql_binds;
+    int saved_count = g_sql_bind_count;
+    g_sql_binds = param_count > 0 ? params : NULL;
+    g_sql_bind_count = param_count > 0 ? param_count : 0;
+    int rc = sql_exec_ddl(numbered != NULL ? numbered : query, ctx);
+    g_sql_binds = saved_binds;
+    g_sql_bind_count = saved_count;
+    free(numbered);
+    return rc;
+}
+
 Row* result_next(Result* res) {
     if (res == NULL || res->current >= res->row_count) {
         return NULL;
@@ -4725,7 +4902,6 @@ static void custom_close(DBDriver* driver) {
 }
 
 static int custom_exec(DBDriver* driver, const char* sql, Value* params, int param_count) {
-    (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
     /* Install the VM's row-level trigger hook (NULL when none is active).
        Save/restore so a nested statement executed from inside a trigger body
@@ -4734,7 +4910,7 @@ static int custom_exec(DBDriver* driver, const char* sql, Value* params, int par
     void* saved_user = g_row_trigger_user;
     g_row_trigger_fn = driver->row_trigger_fn;
     g_row_trigger_user = driver->row_trigger_user;
-    int row_count = sql_exec_ddl(sql, &impl->ctx);
+    int row_count = sql_exec_ddl_params(sql, &impl->ctx, params, param_count);
     g_row_trigger_fn = saved_fn;
     g_row_trigger_user = saved_user;
     if (!row_count) {
@@ -4752,12 +4928,16 @@ static int custom_exec(DBDriver* driver, const char* sql, Value* params, int par
 }
 
 static int custom_query(DBDriver* driver, const char* sql, Value* params, int param_count, void** result_handle) {
-    (void)params; (void)param_count;
     CustomDriverImpl* impl = (CustomDriverImpl*)driver->impl;
-    Result* res = sql_exec(sql, &impl->ctx);
+    Result* res = sql_exec_params(sql, &impl->ctx, params, param_count);
     if (res == NULL) {
-        snprintf(driver->error_message, sizeof(driver->error_message),
-                 "custom engine: could not execute '%s'", sql);
+        if (g_sql_ddl_error[0] != '\0') {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "%s", g_sql_ddl_error);
+        } else {
+            snprintf(driver->error_message, sizeof(driver->error_message),
+                     "custom engine: could not execute '%s'", sql);
+        }
         return 0;
     }
     driver->error_message[0] = '\0';

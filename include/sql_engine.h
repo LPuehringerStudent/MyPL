@@ -113,6 +113,16 @@ int         catalog_table_column_type(Context* ctx, int index, int col);
 /* SQL execution */
 Result* sql_exec(const char* query, Context* ctx);
 int     sql_exec_ddl(const char* query, Context* ctx);
+
+/* Same, with bind values for the statement's `?` placeholders, in order of
+   appearance: the first `?` takes params[0], and so on. The number of
+   placeholders (outside string literals) must equal param_count. Values may
+   appear where a literal can: INSERT VALUES, UPDATE SET, WHERE comparisons,
+   IN lists, LIKE patterns and LIMIT. A placeholder count that differs from
+   param_count fails up front (NULL / 0); otherwise these behave like sql_exec
+   and sql_exec_ddl. Values are copied; the caller keeps ownership of params. */
+Result* sql_exec_params(const char* query, Context* ctx, const Value* params, int param_count);
+int     sql_exec_ddl_params(const char* query, Context* ctx, const Value* params, int param_count);
 Row*    result_next(Result* res);
 void    result_free(Result* res);
 Cell    row_get_field(Row* row, const char* name);
