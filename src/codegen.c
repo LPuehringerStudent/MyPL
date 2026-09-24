@@ -2805,6 +2805,7 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
     }
 
     free_exception_entries(&compiler);
+    free_trigger_entries(&compiler);
     free_module_init_entries(&compiler);
     free_proc_entries(&compiler);
     free_global_names(&compiler);
