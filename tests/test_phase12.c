@@ -786,6 +786,210 @@ TEST(phase12_external_call_string_missing_symbol_fails) {
     ASSERT_INT_EQ(1, output_contains(out, "external_call_string:"));
 }
 
+/* --- external_call_sig (#61) ---
+   Every descriptor from "i()" to "s(ssss)" goes through its own function
+   pointer prototype, spelled out by X-macros in natives.c. This sweep builds
+   a library with one function per descriptor and calls all 363 from MyPL:
+   a prototype with a wrong type would scramble or crash its call. */
+
+static const char* const SIG_CTYPES[] = {"int", "double", "const char*"};
+
+static int sig_pow3(int n) {
+    int p = 1;
+    for (int i = 0; i < n; i++) p *= 3;
+    return p;
+}
+
+/* Argument i of a sweep call is i + 2 as an int, i + 2.5 as a double, or a
+   string of i + 2 characters; each function returns twice the sum of
+   (i + 1) * argument (string length for strings), which is a whole number. */
+static int sig_expected(const int* types, int n) {
+    double v = 0;
+    for (int i = 0; i < n; i++) {
+        double arg = types[i] == 1 ? i + 2.5 : i + 2;
+        v += (i + 1) * arg;
+    }
+    return (int)(v * 2);
+}
+
+static void sig_name(char* buf, size_t size, int ret, const int* types, int n) {
+    int len = snprintf(buf, size, "sig_%c_", "ids"[ret]);
+    for (int i = 0; i < n; i++) buf[len++] = "ids"[types[i]];
+    buf[len] = '\0';
+}
+
+TEST(phase12_external_call_sig_sweeps_every_signature) {
+    FILE* c = fopen("/tmp/test_phase12_sig.c", "w");
+    ASSERT_PTR_NOT_NULL(c);
+    fprintf(c, "#include <stdio.h>\n#include <string.h>\n");
+    size_t src_cap = 1 << 17;
+    char* src = malloc(src_cap);
+    ASSERT_PTR_NOT_NULL(src);
+    size_t src_len = (size_t)snprintf(src, src_cap, "proc main() -> int {\n");
+    int calls = 0;
+    for (int ret = 0; ret < 3; ret++) {
+        for (int n = 0; n <= 4; n++) {
+            for (int code = 0; code < sig_pow3(n); code++) {
+                int types[4];
+                for (int i = 0; i < n; i++) types[i] = (code / sig_pow3(i)) % 3;
+                char name[32];
+                sig_name(name, sizeof(name), ret, types, n);
+
+                /* C side */
+                fprintf(c, "%s %s(", SIG_CTYPES[ret], name);
+                if (n == 0) fprintf(c, "void");
+                for (int i = 0; i < n; i++) {
+                    fprintf(c, "%s%s a%d", i > 0 ? ", " : "", SIG_CTYPES[types[i]], i);
+                }
+                fprintf(c, ") {\n    double v = 0;\n");
+                for (int i = 0; i < n; i++) {
+                    fprintf(c, types[i] == 2 ? "    v += %d * (double)strlen(a%d);\n"
+                                             : "    v += %d * (double)a%d;\n", i + 1, i);
+                }
+                fprintf(c, "    int k = (int)(v * 2);\n");
+                if (ret == 2) {
+                    fprintf(c, "    static char buf[16];\n"
+                               "    snprintf(buf, sizeof(buf), \"%%d\", k);\n"
+                               "    return buf;\n}\n");
+                } else {
+                    fprintf(c, "    return k;\n}\n");
+                }
+
+                /* MyPL side: print "name:result" */
+                char sig[16];
+                int sl = snprintf(sig, sizeof(sig), "%c(", "ids"[ret]);
+                for (int i = 0; i < n; i++) sig[sl++] = "ids"[types[i]];
+                sig[sl++] = ')';
+                sig[sl] = '\0';
+                char args[128];
+                size_t al = 0;
+                args[0] = '\0';
+                for (int i = 0; i < n; i++) {
+                    if (types[i] == 0) {
+                        al += (size_t)snprintf(args + al, sizeof(args) - al, ", %d", i + 2);
+                    } else if (types[i] == 1) {
+                        al += (size_t)snprintf(args + al, sizeof(args) - al, ", %d.5", i + 2);
+                    } else {
+                        al += (size_t)snprintf(args + al, sizeof(args) - al, ", \"%.*s\"",
+                                               i + 2, "xxxxxxxx");
+                    }
+                }
+                const char* wrap_open = ret == 0 ? "int_to_string(" : ret == 1 ? "float_to_string(" : "";
+                const char* wrap_close = ret == 2 ? "" : ")";
+                src_len += (size_t)snprintf(src + src_len, src_cap - src_len,
+                    "    print concat(\"%s:\", %sexternal_call_sig(\"/tmp/test_phase12_sig.so\", "
+                    "\"%s\", \"%s\"%s)%s);\n",
+                    name, wrap_open, name, sig, args, wrap_close);
+                calls++;
+            }
+        }
+    }
+    snprintf(src + src_len, src_cap - src_len, "    return 0;\n}\n");
+    fclose(c);
+    ASSERT_INT_EQ(363, calls);
+    ASSERT_INT_EQ(0, system("cc -shared -fPIC -o /tmp/test_phase12_sig.so /tmp/test_phase12_sig.c"));
+
+    char* out = malloc(1 << 15);
+    ASSERT_PTR_NOT_NULL(out);
+    int rc = run_mypl(src, out, 1 << 15);
+    free(src);
+    if (rc != 0) fprintf(stderr, "%.400s\n", out);
+    ASSERT_INT_EQ(0, rc);
+
+    int matched = 0;
+    for (int ret = 0; ret < 3; ret++) {
+        for (int n = 0; n <= 4; n++) {
+            for (int code = 0; code < sig_pow3(n); code++) {
+                int types[4];
+                for (int i = 0; i < n; i++) types[i] = (code / sig_pow3(i)) % 3;
+                char line[64];
+                char name[32];
+                sig_name(name, sizeof(name), ret, types, n);
+                snprintf(line, sizeof(line), "%s:%d\n", name, sig_expected(types, n));
+                if (strstr(out, line) != NULL) {
+                    matched++;
+                } else {
+                    fprintf(stderr, "    missing %s", line);
+                }
+            }
+        }
+    }
+    free(out);
+    ASSERT_INT_EQ(363, matched);
+}
+
+TEST(phase12_external_call_sig_checks_signature_at_compile_time) {
+    char out[512];
+    struct {
+        const char* call;
+        const char* error;
+    } cases[] = {
+        {"external_call_sig(\"libm.so.6\", \"pow\", \"d(dd)\", 2.0)",
+         "signature 'd(dd)' takes 2 argument(s), got 1"},
+        {"external_call_sig(\"libm.so.6\", \"pow\", \"d(dd)\", 2.0, \"ten\")",
+         "argument 2 must be a float, as signature 'd(dd)' says"},
+        {"external_call_sig(\"libm.so.6\", \"pow\", \"q(dd)\", 2.0, 1.0)",
+         "must look like"},
+        {"external_call_sig(\"libm.so.6\", \"pow\", \"d(ddddd)\", 1.0, 1.0, 1.0, 1.0, 1.0)",
+         "at most 4 arguments"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char src[512];
+        snprintf(src, sizeof(src),
+                 "proc main() -> int {\n    print %s;\n    return 0;\n}\n", cases[i].call);
+        int rc = run_mypl(src, out, sizeof(out));
+        ASSERT_INT_EQ(1, rc);
+        ASSERT_INT_EQ(1, output_contains(out, "Compile error"));
+        ASSERT_INT_EQ(1, output_contains(out, cases[i].error));
+    }
+    /* A signature that is not a literal cannot be checked, so it is refused. */
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string sig = \"d(dd)\";\n"
+        "    print external_call_sig(\"libm.so.6\", \"pow\", sig, 2.0, 3.0);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "needs its signature as a string literal"));
+}
+
+TEST(phase12_external_call_sig_types_its_result) {
+    /* A library of its own: libm/libc sonames differ between Linux and macOS. */
+    FILE* f = fopen("/tmp/test_phase12_sig_typed.c", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f,
+        "#include <string.h>\n"
+        "double scale(double x, int shift) { return x * (1 << shift); }\n"
+        "int compare(const char* a, const char* b) { return strcmp(a, b) == 0; }\n"
+        "const char* pick(int which, const char* a, const char* b) {\n"
+        "    return which ? a : b;\n"
+        "}\n");
+    fclose(f);
+    ASSERT_INT_EQ(0, system("cc -shared -fPIC -o /tmp/test_phase12_sig_typed.so "
+                            "/tmp/test_phase12_sig_typed.c"));
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string lib = \"/tmp/test_phase12_sig_typed.so\";\n"
+        "    float x = external_call_sig(lib, \"scale\", \"d(di)\", 1.5, 3);\n"
+        "    int same = external_call_sig(lib, \"compare\", \"i(ss)\", \"abc\", \"abc\");\n"
+        "    string p = external_call_sig(lib, \"pick\", \"s(iss)\", 0, \"first\", \"second\");\n"
+        "    float y = external_call_sig(lib, \"scale\", \"d(di)\", 2, 1);\n"
+        "    print concat(\"scale:\", float_to_string(x));\n"
+        "    print concat(\"same:\", int_to_string(same));\n"
+        "    print concat(\"pick:\", p);\n"
+        "    print concat(\"int-as-float:\", float_to_string(y));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "scale:12"));
+    ASSERT_INT_EQ(1, output_contains(out, "same:1"));
+    ASSERT_INT_EQ(1, output_contains(out, "pick:second"));
+    ASSERT_INT_EQ(1, output_contains(out, "int-as-float:4"));
+}
+
 #ifdef USE_SQLITE
 static int run_mypl_sqlite(const char* source, char* out, size_t out_size) {
     FILE* f = fopen("/tmp/test_phase12_sql_src.mypl", "w");
@@ -1714,6 +1918,9 @@ int main(void) {
     RUN_TEST(phase12_external_call_rejects_bool_argument);
     RUN_TEST(phase12_external_call_string_result_type_is_checked);
     RUN_TEST(phase12_external_call_string_missing_symbol_fails);
+    RUN_TEST(phase12_external_call_sig_sweeps_every_signature);
+    RUN_TEST(phase12_external_call_sig_checks_signature_at_compile_time);
+    RUN_TEST(phase12_external_call_sig_types_its_result);
 #ifdef USE_SQLITE
     RUN_TEST(phase12_dbms_sql_sqlite_bind_and_execute);
     RUN_TEST(phase12_dbms_sql_sqlite_bind_string_with_quote);

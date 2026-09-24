@@ -5,6 +5,7 @@
 #include <stdarg.h>
 
 #include "diagnostics.h"
+#include "natives.h"
 #include "sql_engine.h"
 #include "typecheck.h"
 
@@ -846,6 +847,7 @@ static int is_native(const char* name) {
            strcmp(name, "external_call") == 0 ||
            strcmp(name, "external_call_float") == 0 ||
            strcmp(name, "external_call_string") == 0 ||
+           strcmp(name, "external_call_sig") == 0 ||
            strcmp(name, "to_date") == 0 ||
            strcmp(name, "to_char") == 0 ||
            strcmp(name, "current_date") == 0 ||
@@ -2018,6 +2020,52 @@ static Type* check_native_call(TypeChecker* tc, const char* name, Expr** args, i
         if (strcmp(name, "external_call_float") == 0) return &type_float;
         if (strcmp(name, "external_call_string") == 0) return &type_string;
         return &type_int;
+    }
+    if (strcmp(name, "external_call_sig") == 0) {
+        /* The signature must be a literal: it fixes the call's return type
+           and what each argument has to be, and both are checked here. */
+        if (arg_count < 3) {
+            type_error(tc, loc, "external_call_sig expects a library, a symbol, "
+                                "a signature and the arguments it names");
+            return NULL;
+        }
+        for (int i = 0; i < 2; i++) {
+            Type* a = infer_expr(tc, args[i], NULL);
+            if (a != &type_unknown && a != NULL && a->kind != TYPE_STRING) {
+                type_error(tc, loc, "external_call_sig expects string library and symbol");
+            }
+        }
+        Expr* sig = args[2];
+        infer_expr(tc, sig, NULL);
+        if (sig->kind != EXPR_LITERAL || sig->as.literal.value.type != VAL_STRING ||
+            sig->as.literal.value.as.as_string == NULL) {
+            type_error(tc, loc, "external_call_sig needs its signature as a string literal");
+            return NULL;
+        }
+        const char* text = sig->as.literal.value.as.as_string;
+        int ret = 0;
+        int types[EXTERNAL_SIG_MAX_ARGS];
+        int count = 0;
+        char msg[256];
+        if (!external_sig_parse(text, &ret, types, &count, msg, sizeof(msg))) {
+            type_error(tc, loc, "external_call_sig: %s", msg);
+            return NULL;
+        }
+        if (arg_count - 3 != count) {
+            type_error(tc, loc, "external_call_sig: signature '%s' takes %d argument(s), got %d",
+                       text, count, arg_count - 3);
+            return NULL;
+        }
+        static Type* const expected[] = {&type_int, &type_float, &type_string};
+        static const char* const names[] = {"an int", "a float", "a string"};
+        for (int i = 0; i < count; i++) {
+            Type* a = infer_expr(tc, args[3 + i], NULL);
+            if (a != &type_unknown && a != NULL && !types_compatible(expected[types[i]], a)) {
+                type_error(tc, loc, "external_call_sig: argument %d must be %s, as signature '%s' says",
+                           i + 1, names[types[i]], text);
+            }
+        }
+        return expected[ret];
     }
     return NULL;
 }

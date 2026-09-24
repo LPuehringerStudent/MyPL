@@ -771,7 +771,15 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
 
             if (is_native) {
                 int expected_arity = native_arity(native_idx);
-                if (c->arg_count != expected_arity) {
+                if (expected_arity == NATIVE_VARIADIC && c->arg_count > MAX_NATIVE_ARGS) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "%s takes at most %d arguments", c->name,
+                             MAX_NATIVE_ARGS);
+                    error(compiler, msg);
+                    free(effective_name);
+                    return;
+                }
+                if (expected_arity != NATIVE_VARIADIC && c->arg_count != expected_arity) {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "%s expects %d argument(s)", c->name, expected_arity);
                     error(compiler, msg);

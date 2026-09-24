@@ -2253,7 +2253,52 @@ static int native_drop_sequence(VM* vm, int argc, Value* argv, Value* out) {
 /* external_call marshalling: MyPL int, float and string map to C int, double
  * and const char*. The argument's C type follows the runtime type of argv[2];
  * the return type is selected by which external_call* native was called. */
+/* Same order as EXTERNAL_SIG_INT/FLOAT/STRING, so a signature's return type
+   can be passed where an ExtKind is expected. */
 typedef enum { EXT_INT, EXT_FLOAT, EXT_STRING } ExtKind;
+
+/* Looks `sym` up in `lib`, reporting failures as `who`. */
+static int ext_resolve(VM* vm, const char* who, const char* lib, const char* sym, void** addr) {
+    dlerror();
+    void* handle = dlopen(lib != NULL ? lib : "", RTLD_NOW | RTLD_LOCAL);
+    if (handle == NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s: %s", who, dlerror());
+        vm_set_error(vm, msg);
+        return 0;
+    }
+    dlerror();
+    *addr = dlsym(handle, sym != NULL ? sym : "");
+    const char* sym_err = dlerror();
+    if (sym_err != NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s: %s", who, sym_err);
+        dlclose(handle);
+        vm_set_error(vm, msg);
+        return 0;
+    }
+    return 1;
+}
+
+/* Wraps a C return value of kind `ret` as a MyPL value. */
+static int ext_return_value(VM* vm, int ret, int i_ret, double f_ret, const char* s_ret, Value* out) {
+    if (ret == EXT_INT) {
+        *out = value_int(i_ret);
+    } else if (ret == EXT_FLOAT) {
+        *out = value_float(f_ret);
+    } else if (s_ret == NULL) {
+        *out = value_null();
+    } else {
+        /* The library owns the returned buffer: copy it, never free it. */
+        char* copy = strdup(s_ret);
+        if (copy == NULL) {
+            vm_set_error(vm, "Out of memory");
+            return 0;
+        }
+        *out = value_string(copy);
+    }
+    return 1;
+}
 
 static int external_call_invoke(VM* vm, const char* who, ExtKind ret, int argc, Value* argv, Value* out) {
     if (argc != 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING ||
@@ -2263,27 +2308,8 @@ static int external_call_invoke(VM* vm, const char* who, ExtKind ret, int argc, 
         vm_set_error(vm, msg);
         return 0;
     }
-    const char* lib = argv[0].as.as_string ? argv[0].as.as_string : "";
-    const char* sym = argv[1].as.as_string ? argv[1].as.as_string : "";
-
-    dlerror();
-    void* handle = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
-    if (handle == NULL) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s: %s", who, dlerror());
-        vm_set_error(vm, msg);
-        return 0;
-    }
-    dlerror();
-    void* addr = dlsym(handle, sym);
-    const char* sym_err = dlerror();
-    if (sym_err != NULL) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s: %s", who, sym_err);
-        dlclose(handle);
-        vm_set_error(vm, msg);
-        return 0;
-    }
+    void* addr = NULL;
+    if (!ext_resolve(vm, who, argv[0].as.as_string, argv[1].as.as_string, &addr)) return 0;
 
     ExtKind arg = argv[2].type == VAL_INT ? EXT_INT :
                   argv[2].type == VAL_FLOAT ? EXT_FLOAT : EXT_STRING;
@@ -2324,22 +2350,186 @@ static int external_call_invoke(VM* vm, const char* who, ExtKind ret, int argc, 
     }
 #undef EXT_DISPATCH
 
-    if (ret == EXT_INT) {
-        *out = value_int(i_ret);
-    } else if (ret == EXT_FLOAT) {
-        *out = value_float(f_ret);
-    } else if (s_ret == NULL) {
-        *out = value_null();
-    } else {
-        /* The library owns the returned buffer: copy it, never free it. */
-        char* copy = strdup(s_ret);
-        if (copy == NULL) {
-            vm_set_error(vm, "Out of memory");
+    return ext_return_value(vm, ret, i_ret, f_ret, s_ret, out);
+}
+
+/* ----- external_call_sig: fixed multi-argument signatures -----
+   Without libffi a C function can only be called through a function pointer
+   of its exact prototype, so every return/argument combination a descriptor
+   can name gets one. The X-macros below spell out all of them, 3 returns x
+   (1 + 3 + 9 + 27 + 81) argument lists for 0..4 arguments, as the cases of
+   one switch keyed by EXT_KEY. Type index 0/1/2 is int/double/const char*. */
+
+int external_sig_parse(const char* sig, int* ret, int* arg_types, int* arg_count,
+                       char* error, size_t error_size) {
+    static const char* letters = "ids";
+    const char* p = sig != NULL ? sig : "";
+    const char* r = *p != '\0' ? strchr(letters, *p) : NULL;
+    if (r == NULL || p[1] != '(') {
+        snprintf(error, error_size,
+                 "signature '%s' must look like \"i(ds)\": a return type i, d or s, "
+                 "then the argument types in parentheses", p);
+        return 0;
+    }
+    *ret = (int)(r - letters);
+    int count = 0;
+    for (p += 2; *p != ')'; p++) {
+        const char* a = *p != '\0' ? strchr(letters, *p) : NULL;
+        if (a == NULL) {
+            snprintf(error, error_size,
+                     "signature '%s': argument types are i, d or s, closed by ')'", sig);
             return 0;
         }
-        *out = value_string(copy);
+        if (count == EXTERNAL_SIG_MAX_ARGS) {
+            snprintf(error, error_size, "signature '%s': at most %d arguments",
+                     sig, EXTERNAL_SIG_MAX_ARGS);
+            return 0;
+        }
+        arg_types[count++] = (int)(a - letters);
     }
+    if (p[1] != '\0') {
+        snprintf(error, error_size, "signature '%s': unexpected text after ')'", sig);
+        return 0;
+    }
+    *arg_count = count;
     return 1;
+}
+
+typedef union {
+    int i;
+    double d;
+    const char* s;
+} ExtValue;
+
+#define EXT_T0 int
+#define EXT_T1 double
+#define EXT_T2 const char*
+#define EXT_F0 i
+#define EXT_F1 d
+#define EXT_F2 s
+
+#define EXT_KEY(r, n, a, b, c, d) ((((r) * 5 + (n)) * 81) + (a) * 27 + (b) * 9 + (c) * 3 + (d))
+
+/* One case: call through a pointer of this exact prototype. Function
+   pointers are copied out of the void* with memcpy, as the object-to-
+   function pointer cast is not valid ISO C. */
+#define EXT_CASE(r, key, params, call_args)                         \
+    case key: {                                                     \
+        EXT_T##r (*fn) params;                                      \
+        memcpy(&fn, &addr, sizeof(fn));                             \
+        result.EXT_F##r = fn call_args;                             \
+        break;                                                      \
+    }
+
+#define EXT_EACH_R(M) M(0) M(1) M(2)
+#define EXT_EACH_1(M, ...) M(0, __VA_ARGS__) M(1, __VA_ARGS__) M(2, __VA_ARGS__)
+#define EXT_EACH_2(M, ...) M(0, __VA_ARGS__) M(1, __VA_ARGS__) M(2, __VA_ARGS__)
+#define EXT_EACH_3(M, ...) M(0, __VA_ARGS__) M(1, __VA_ARGS__) M(2, __VA_ARGS__)
+#define EXT_EACH_4(M, ...) M(0, __VA_ARGS__) M(1, __VA_ARGS__) M(2, __VA_ARGS__)
+
+#define EXT_C0(r) EXT_CASE(r, EXT_KEY(r, 0, 0, 0, 0, 0), (void), ())
+#define EXT_C1(a, r)                                                \
+    EXT_CASE(r, EXT_KEY(r, 1, a, 0, 0, 0), (EXT_T##a),              \
+             (args[0].EXT_F##a))
+#define EXT_C2(b, a, r)                                             \
+    EXT_CASE(r, EXT_KEY(r, 2, a, b, 0, 0), (EXT_T##a, EXT_T##b),    \
+             (args[0].EXT_F##a, args[1].EXT_F##b))
+#define EXT_C3(c, b, a, r)                                          \
+    EXT_CASE(r, EXT_KEY(r, 3, a, b, c, 0),                          \
+             (EXT_T##a, EXT_T##b, EXT_T##c),                        \
+             (args[0].EXT_F##a, args[1].EXT_F##b, args[2].EXT_F##c))
+#define EXT_C4(d, c, b, a, r)                                       \
+    EXT_CASE(r, EXT_KEY(r, 4, a, b, c, d),                          \
+             (EXT_T##a, EXT_T##b, EXT_T##c, EXT_T##d),              \
+             (args[0].EXT_F##a, args[1].EXT_F##b,                   \
+              args[2].EXT_F##c, args[3].EXT_F##d))
+
+#define EXT_A0(r) EXT_C0(r)
+#define EXT_A1(r) EXT_EACH_1(EXT_C1, r)
+#define EXT_A2(r) EXT_EACH_1(EXT_A2_B, r)
+#define EXT_A2_B(a, r) EXT_EACH_2(EXT_C2, a, r)
+#define EXT_A3(r) EXT_EACH_1(EXT_A3_B, r)
+#define EXT_A3_B(a, r) EXT_EACH_2(EXT_A3_C, a, r)
+#define EXT_A3_C(b, a, r) EXT_EACH_3(EXT_C3, b, a, r)
+#define EXT_A4(r) EXT_EACH_1(EXT_A4_B, r)
+#define EXT_A4_B(a, r) EXT_EACH_2(EXT_A4_C, a, r)
+#define EXT_A4_C(b, a, r) EXT_EACH_3(EXT_A4_D, b, a, r)
+#define EXT_A4_D(c, b, a, r) EXT_EACH_4(EXT_C4, c, b, a, r)
+
+static int ext_dispatch(void* addr, int ret, const int* types, int count,
+                        const ExtValue* args, ExtValue* out) {
+    int t[EXTERNAL_SIG_MAX_ARGS] = {0, 0, 0, 0};
+    for (int i = 0; i < count; i++) t[i] = types[i];
+    ExtValue result;
+    result.i = 0;
+    switch (EXT_KEY(ret, count, t[0], t[1], t[2], t[3])) {
+        EXT_EACH_R(EXT_A0)
+        EXT_EACH_R(EXT_A1)
+        EXT_EACH_R(EXT_A2)
+        EXT_EACH_R(EXT_A3)
+        EXT_EACH_R(EXT_A4)
+        default:
+            return 0;
+    }
+    *out = result;
+    return 1;
+}
+
+static int native_external_call_sig(VM* vm, int argc, Value* argv, Value* out) {
+    const char* who = "external_call_sig";
+    if (argc < 3 || argv[0].type != VAL_STRING || argv[1].type != VAL_STRING ||
+        argv[2].type != VAL_STRING) {
+        vm_set_error(vm, "external_call_sig expects (string library, string symbol, "
+                         "string signature, arguments...)");
+        return 0;
+    }
+    char msg[256];
+    int ret = 0;
+    int types[EXTERNAL_SIG_MAX_ARGS];
+    int count = 0;
+    if (!external_sig_parse(argv[2].as.as_string, &ret, types, &count, msg, sizeof(msg))) {
+        char full[320];
+        snprintf(full, sizeof(full), "%s: %s", who, msg);
+        vm_set_error(vm, full);
+        return 0;
+    }
+    if (argc - 3 != count) {
+        snprintf(msg, sizeof(msg), "%s: signature '%s' takes %d argument(s), got %d",
+                 who, argv[2].as.as_string, count, argc - 3);
+        vm_set_error(vm, msg);
+        return 0;
+    }
+    ExtValue args[EXTERNAL_SIG_MAX_ARGS];
+    for (int i = 0; i < count; i++) {
+        Value v = argv[3 + i];
+        int ok = 1;
+        if (types[i] == EXTERNAL_SIG_INT) {
+            ok = v.type == VAL_INT;
+            args[i].i = ok ? v.as.as_int : 0;
+        } else if (types[i] == EXTERNAL_SIG_FLOAT) {
+            ok = v.type == VAL_FLOAT || v.type == VAL_INT;
+            args[i].d = v.type == VAL_FLOAT ? v.as.as_float : (double)v.as.as_int;
+        } else {
+            ok = v.type == VAL_STRING;
+            args[i].s = ok && v.as.as_string != NULL ? v.as.as_string : "";
+        }
+        if (!ok) {
+            static const char* names[] = {"an int", "a float", "a string"};
+            snprintf(msg, sizeof(msg), "%s: argument %d must be %s, as the signature says",
+                     who, i + 1, names[types[i]]);
+            vm_set_error(vm, msg);
+            return 0;
+        }
+    }
+
+    void* addr = NULL;
+    if (!ext_resolve(vm, who, argv[0].as.as_string, argv[1].as.as_string, &addr)) return 0;
+    ExtValue result;
+    if (!ext_dispatch(addr, ret, types, count, args, &result)) {
+        vm_set_error(vm, "external_call_sig: unsupported signature");
+        return 0;
+    }
+    return ext_return_value(vm, ret, result.i, result.d, result.s, out);
 }
 
 static int native_external_call(VM* vm, int argc, Value* argv, Value* out) {
@@ -2466,6 +2656,7 @@ static NativeDef natives[] = {
     {"external_call", 3, native_external_call},
     {"external_call_float", 3, native_external_call_float},
     {"external_call_string", 3, native_external_call_string},
+    {"external_call_sig", NATIVE_VARIADIC, native_external_call_sig},
     {"assert", 2, native_assert},
     {"parse_int", 1, native_parse_int},
     {"split_lines", 1, native_split_lines},
@@ -2499,7 +2690,7 @@ int native_call(VM* vm, int idx, int argc, Value* argv, Value* out) {
         return 0;
     }
     NativeDef* def = &natives[idx];
-    if (argc != def->arity) {
+    if (def->arity == NATIVE_VARIADIC ? argc > MAX_NATIVE_ARGS : argc != def->arity) {
         char msg[256];
         snprintf(msg, sizeof(msg), "%s expects %d argument(s)", def->name, def->arity);
         vm_set_error(vm, msg);
