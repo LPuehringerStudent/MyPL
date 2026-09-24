@@ -23,6 +23,28 @@ static int run_mypl(const char* source, char* out, size_t out_size) {
     return WEXITSTATUS(rc);
 }
 
+/* Same as run_mypl, but with MYPL_INDEX_DEBUG set so the engine logs every
+   index-served lookup. Asserting on that log is the only way to tell an index
+   scan from a full scan, since both must produce the same rows. */
+static int run_mypl_index_debug(const char* source, char* out, size_t out_size) {
+    FILE* f = fopen("/tmp/test_phase11_src.mypl", "w");
+    if (f == NULL) return -1;
+    fprintf(f, "%s", source);
+    fclose(f);
+
+    int rc = system("MYPL_INDEX_DEBUG=1 ./bin/mypl /tmp/test_phase11_src.mypl"
+                    " > /tmp/test_phase11_out.txt 2>&1");
+
+    FILE* outf = fopen("/tmp/test_phase11_out.txt", "r");
+    if (outf != NULL) {
+        out[0] = '\0';
+        size_t n = fread(out, 1, out_size - 1, outf);
+        out[n] = '\0';
+        fclose(outf);
+    }
+    return WEXITSTATUS(rc);
+}
+
 static int output_contains(const char* out, const char* substr) {
     return strstr(out, substr) != NULL;
 }
@@ -1074,6 +1096,178 @@ TEST(phase11_index_string_lookup) {
     ASSERT_INT_EQ(1, output_contains(out, "0"));
 }
 
+/* Exactly BTREE_STRING_KEY_BYTES characters, so anything appended to it falls
+   outside the index key and the three rows below collide as one key. */
+#define IX_PREFIX "abcdefghijklmnopqrstuvwxyz0123456789"
+
+TEST(phase11_index_string_range_lookup) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix15_t (id int, name string);\n"
+        "    insert into ix15_t values (1, \"alice\");\n"
+        "    insert into ix15_t values (2, \"bob\");\n"
+        "    insert into ix15_t values (3, \"carol\");\n"
+        "    insert into ix15_t values (4, \"dave\");\n"
+        "    create index ix15_name on ix15_t (name);\n"
+        "    int gt = -1;\n"
+        "    select count(*) into gt from ix15_t where name > \"bob\";\n"
+        "    print concat(\"gt=\", int_to_string(gt));\n"
+        "    int ge = -1;\n"
+        "    select count(*) into ge from ix15_t where name >= \"bob\";\n"
+        "    print concat(\"ge=\", int_to_string(ge));\n"
+        "    int lt = -1;\n"
+        "    select count(*) into lt from ix15_t where name < \"carol\";\n"
+        "    print concat(\"lt=\", int_to_string(lt));\n"
+        "    int le = -1;\n"
+        "    select count(*) into le from ix15_t where name <= \"carol\";\n"
+        "    print concat(\"le=\", int_to_string(le));\n"
+        "    int none = -1;\n"
+        "    select count(*) into none from ix15_t where name > \"zulu\";\n"
+        "    print concat(\"none=\", int_to_string(none));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "gt=2"));   /* carol, dave */
+    ASSERT_INT_EQ(1, output_contains(out, "ge=3"));   /* bob, carol, dave */
+    ASSERT_INT_EQ(1, output_contains(out, "lt=2"));   /* alice, bob */
+    ASSERT_INT_EQ(1, output_contains(out, "le=3"));   /* alice, bob, carol */
+    ASSERT_INT_EQ(1, output_contains(out, "none=0"));
+}
+
+/* Three rows whose names are identical for the whole significant prefix: the
+   index cannot tell them apart, so it must hand back all of them and let the
+   WHERE pass decide. Losing one would be a wrong answer, gaining one is only
+   wasted work. */
+TEST(phase11_index_long_string_keys_keep_every_row) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ix16_t (id int, name string);\n"
+        "    insert into ix16_t values (1, \"" IX_PREFIX "-alpha\");\n"
+        "    insert into ix16_t values (2, \"" IX_PREFIX "-beta\");\n"
+        "    insert into ix16_t values (3, \"" IX_PREFIX "-gamma\");\n"
+        "    insert into ix16_t values (4, \"zulu\");\n"
+        "    create index ix16_name on ix16_t (name);\n"
+        "    int eq = -1;\n"
+        "    select count(*) into eq from ix16_t where name = \"" IX_PREFIX "-beta\";\n"
+        "    print concat(\"eq=\", int_to_string(eq));\n"
+        "    int gt = -1;\n"
+        "    select count(*) into gt from ix16_t where name > \"" IX_PREFIX "-beta\";\n"
+        "    print concat(\"gt=\", int_to_string(gt));\n"
+        "    int ge = -1;\n"
+        "    select count(*) into ge from ix16_t where name >= \"" IX_PREFIX "-beta\";\n"
+        "    print concat(\"ge=\", int_to_string(ge));\n"
+        "    int lt = -1;\n"
+        "    select count(*) into lt from ix16_t where name < \"" IX_PREFIX "-beta\";\n"
+        "    print concat(\"lt=\", int_to_string(lt));\n"
+        "    string first = \"?\";\n"
+        "    select name into first from ix16_t where name = \"" IX_PREFIX "-alpha\";\n"
+        "    print first;\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "eq=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "gt=2"));  /* -gamma, zulu */
+    ASSERT_INT_EQ(1, output_contains(out, "ge=3"));  /* -beta, -gamma, zulu */
+    ASSERT_INT_EQ(1, output_contains(out, "lt=1"));  /* -alpha */
+    /* SELECT INTO would raise TOO_MANY_ROWS if the collisions reached it. */
+    ASSERT_INT_EQ(1, output_contains(out, IX_PREFIX "-alpha"));
+}
+
+/* An index must never change an answer, so the same predicates are run against
+   the same data with and without one. */
+TEST(phase11_index_string_predicates_agree_with_full_scan) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc report(tag string) -> int {\n"
+        "    int gt = -1;\n"
+        "    select count(*) into gt from ix17_t where name > \"" IX_PREFIX "-beta\";\n"
+        "    print concat(tag, concat(\"-gt=\", int_to_string(gt)));\n"
+        "    int lt = -1;\n"
+        "    select count(*) into lt from ix17_t where name < \"carol\";\n"
+        "    print concat(tag, concat(\"-lt=\", int_to_string(lt)));\n"
+        "    int le = -1;\n"
+        "    select count(*) into le from ix17_t where name <= \"" IX_PREFIX "-beta\";\n"
+        "    print concat(tag, concat(\"-le=\", int_to_string(le)));\n"
+        "    return 0;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table ix17_t (id int, name string);\n"
+        "    insert into ix17_t values (1, \"" IX_PREFIX "-alpha\");\n"
+        "    insert into ix17_t values (2, \"" IX_PREFIX "-beta\");\n"
+        "    insert into ix17_t values (3, \"" IX_PREFIX "-gamma\");\n"
+        "    insert into ix17_t values (4, \"bob\");\n"
+        "    insert into ix17_t values (5, \"zulu\");\n"
+        "    int a = report(\"scan\");\n"
+        "    create index ix17_name on ix17_t (name);\n"
+        "    int b = report(\"idx\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* Sort order is -alpha < -beta < -gamma < bob < zulu: "bob" lands above the
+       shared prefix, which is exactly the kind of row a truncated bound must
+       not skip over. */
+    ASSERT_INT_EQ(1, output_contains(out, "scan-gt=3")); /* -gamma, bob, zulu */
+    ASSERT_INT_EQ(1, output_contains(out, "idx-gt=3"));
+    ASSERT_INT_EQ(1, output_contains(out, "scan-lt=4")); /* everything but zulu */
+    ASSERT_INT_EQ(1, output_contains(out, "idx-lt=4"));
+    ASSERT_INT_EQ(1, output_contains(out, "scan-le=2")); /* -alpha, -beta */
+    ASSERT_INT_EQ(1, output_contains(out, "idx-le=2"));
+}
+
+/* String ranges used to be excluded from index lookups outright, so this is
+   the case that says the capability exists at all rather than that the answers
+   are right. */
+TEST(phase11_index_serves_string_ranges_not_just_equality) {
+    remove("mypl.db");
+    char out[2048];
+    int rc = run_mypl_index_debug(
+        "proc main() -> int {\n"
+        "    create table ix18_t (id int, name string);\n"
+        "    insert into ix18_t values (1, \"alice\");\n"
+        "    insert into ix18_t values (2, \"bob\");\n"
+        "    insert into ix18_t values (3, \"carol\");\n"
+        "    create index ix18_name on ix18_t (name);\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix18_t where name >= \"bob\";\n"
+        "    print concat(\"ge=\", int_to_string(n));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "ge=2"));
+    ASSERT_INT_EQ(1, output_contains(out, "index lookup on ix18_t(name)"));
+}
+
+/* A <> term still has to fall back: it selects everything except one key, which
+   no single range scan describes. */
+TEST(phase11_index_skips_string_inequality) {
+    remove("mypl.db");
+    char out[2048];
+    int rc = run_mypl_index_debug(
+        "proc main() -> int {\n"
+        "    create table ix19_t (id int, name string);\n"
+        "    insert into ix19_t values (1, \"alice\");\n"
+        "    insert into ix19_t values (2, \"bob\");\n"
+        "    create index ix19_name on ix19_t (name);\n"
+        "    int n = -1;\n"
+        "    select count(*) into n from ix19_t where name <> \"bob\";\n"
+        "    print concat(\"ne=\", int_to_string(n));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "ne=1"));
+    ASSERT_INT_EQ(0, output_contains(out, "index lookup on ix19_t(name)"));
+}
+
 TEST(phase11_index_survives_alter_rebuild) {
     remove("mypl.db");
     char out[512];
@@ -1854,6 +2048,11 @@ int main(void) {
     RUN_TEST(phase11_drop_table_removes_its_indexes);
     RUN_TEST(phase11_index_range_lookup);
     RUN_TEST(phase11_index_string_lookup);
+    RUN_TEST(phase11_index_string_range_lookup);
+    RUN_TEST(phase11_index_long_string_keys_keep_every_row);
+    RUN_TEST(phase11_index_string_predicates_agree_with_full_scan);
+    RUN_TEST(phase11_index_serves_string_ranges_not_just_equality);
+    RUN_TEST(phase11_index_skips_string_inequality);
     RUN_TEST(phase11_index_survives_alter_rebuild);
     RUN_TEST(phase11_not_null_rejects_null_insert);
     RUN_TEST(phase11_not_null_accepts_values);

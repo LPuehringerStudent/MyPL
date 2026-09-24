@@ -832,7 +832,6 @@ TEST(sql_insert_into_select_with_where) {
     catalog_close(&ctx);
     cleanup(path);
 }
-
 /* Row-page chain (issue #50): a page's next_page link shares header bytes
  * with the old record-count field, so a full page that has a successor used
  * to read back as empty. These tables are sized to span many pages: each row
@@ -1290,6 +1289,98 @@ TEST(custom_engine_cursors_bind_placeholders) {
     cleanup(path);
 }
 
+/* Indexed string predicates vs. full scans                                   */
+/* -------------------------------------------------------------------------- */
+
+/* Exactly BTREE_STRING_KEY_BYTES characters: anything appended to it is invisible
+   to the index key. */
+#define SWEEP_PREFIX "abcdefghijklmnopqrstuvwxyz0123456789"
+
+/* Three families of names, so the sweep covers every case the key encoding
+   distinguishes: short names that fit inside the key, long names that are
+   identical for the whole significant prefix, and long names that differ inside
+   it. */
+static void sweep_name(char* buf, size_t size, int i) {
+    if (i % 3 == 0) {
+        snprintf(buf, size, "name%02d", i);
+    } else if (i % 3 == 1) {
+        snprintf(buf, size, "%s-%03d", SWEEP_PREFIX, i);
+    } else {
+        snprintf(buf, size, "zz%02d" SWEEP_PREFIX "-tail", i);
+    }
+}
+
+static int sweep_count(Context* ctx, const char* op, const char* literal) {
+    char query[512];
+    snprintf(query, sizeof(query),
+             "SELECT id FROM sweep WHERE name %s '%s'", op, literal);
+    Result* res = sql_exec(query, ctx);
+    if (res == NULL) return -1;
+    int count = res->row_count;
+    result_free(res);
+    return count;
+}
+
+/* An index may not change an answer. Every comparison is run over the same rows
+   before and after CREATE INDEX, across literals that sit inside, on and past
+   the significant prefix - the boundary where a mis-widened bound would start
+   dropping rows. */
+TEST(sql_indexed_string_predicates_match_full_scans) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE sweep (id INT, name STRING)", &ctx));
+    for (int i = 0; i < 60; i++) {
+        char name[128];
+        char query[256];
+        sweep_name(name, sizeof(name), i);
+        snprintf(query, sizeof(query),
+                 "INSERT INTO sweep VALUES (%d, '%s')", i, name);
+        ASSERT_INT_EQ(1, sql_exec_ddl(query, &ctx));
+    }
+
+    const char* ops[] = { "=", "<", "<=", ">", ">=" };
+    const int op_count = 5;
+
+    char literals[16][128];
+    int literal_count = 0;
+    for (int i = 0; i < 60; i += 7) {
+        sweep_name(literals[literal_count++], sizeof(literals[0]), i);
+    }
+    snprintf(literals[literal_count++], sizeof(literals[0]), "%s", "");
+    snprintf(literals[literal_count++], sizeof(literals[0]), "%s", "a");
+    snprintf(literals[literal_count++], sizeof(literals[0]), "%s", SWEEP_PREFIX);
+    snprintf(literals[literal_count++], sizeof(literals[0]), "%s-999", SWEEP_PREFIX);
+
+    int expected[16 * 5];
+    int total = 0;
+    int k = 0;
+    for (int l = 0; l < literal_count; l++) {
+        for (int o = 0; o < op_count; o++) {
+            expected[k] = sweep_count(&ctx, ops[o], literals[l]);
+            ASSERT(expected[k] >= 0);
+            total += expected[k];
+            k++;
+        }
+    }
+    /* If nothing matched, the comparison below would be vacuous. */
+    ASSERT(total > 0);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE INDEX sweep_name ON sweep (name)", &ctx));
+
+    k = 0;
+    for (int l = 0; l < literal_count; l++) {
+        for (int o = 0; o < op_count; o++) {
+            ASSERT_INT_EQ(expected[k], sweep_count(&ctx, ops[o], literals[l]));
+            k++;
+        }
+    }
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_scan_returns_rows_from_full_middle_pages);
     RUN_TEST(sql_index_build_sees_rows_on_full_middle_pages);
@@ -1341,5 +1432,6 @@ int main(void) {
     RUN_TEST(custom_driver_binds_params_for_exec_and_query);
     RUN_TEST(custom_driver_reports_placeholder_count_mismatch);
     RUN_TEST(custom_engine_cursors_bind_placeholders);
+    RUN_TEST(sql_indexed_string_predicates_match_full_scans);
     TEST_SUMMARY();
 }

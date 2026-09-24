@@ -3,9 +3,12 @@
  * - CREATE INDEX idx ON tbl (col) / DROP INDEX idx
  * - Indexes are page-based B+ trees persisted in the database file
  * - INSERT/UPDATE/DELETE/ALTER keep every index on a table in sync
- * - WHERE terms like "indexed_col = literal" (and numeric ranges) read
- *   candidate rows through the index instead of scanning the whole table;
+ * - WHERE terms like "indexed_col = literal" and ranges (numeric or string)
+ *   read candidate rows through the index instead of scanning the whole table;
  *   results are identical to a full scan
+ * - Only the first 36 bytes of a string reach the index key, so longer strings
+ *   sharing that prefix are one key: the index over-reports candidates and the
+ *   WHERE pass drops the surplus, which is why answers never change
  */
 
 proc main() -> int {
@@ -37,6 +40,42 @@ proc main() -> int {
     int gone = -1;
     select count(*) into gone from people where id = 1;
     print gone;           /* 0 */
+
+    print "=== string ranges through an index ===";
+    drop table if exists towns;
+    create table towns (id int, name string);
+    insert into towns values (1, "amsterdam");
+    insert into towns values (2, "bruges");
+    insert into towns values (3, "cologne");
+    insert into towns values (4, "delft");
+    create index towns_name on towns (name);
+
+    int after_b = -1;
+    select count(*) into after_b from towns where name > "bruges";
+    print after_b;        /* 2: cologne, delft */
+    int upto_c = -1;
+    select count(*) into upto_c from towns where name <= "cologne";
+    print upto_c;         /* 3: amsterdam, bruges, cologne */
+
+    /* Two names that are identical for the first 36 bytes. The index hands
+     * back both for either literal; the WHERE pass keeps the right one. */
+    drop table if exists longnames;
+    create table longnames (id int, name string);
+    insert into longnames values (1, "abcdefghijklmnopqrstuvwxyz0123456789-alpha");
+    insert into longnames values (2, "abcdefghijklmnopqrstuvwxyz0123456789-beta");
+    create index longnames_name on longnames (name);
+
+    int which = -1;
+    select id into which from longnames
+        where name = "abcdefghijklmnopqrstuvwxyz0123456789-beta";
+    print which;          /* 2 */
+    int above = -1;
+    select count(*) into above from longnames
+        where name > "abcdefghijklmnopqrstuvwxyz0123456789-alpha";
+    print above;          /* 1: only -beta */
+
+    drop table longnames;
+    drop table towns;
 
     print "=== drop index ===";
     drop index people_id;
