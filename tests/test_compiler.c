@@ -1261,6 +1261,37 @@ TEST(compiler_emits_sql_exec) {
     free_chunk(&chunk);
 }
 
+/* Once compile returns, the chunk must hold the only reference to each string
+   constant, or free_chunk leaves it behind (#80). Covers the constants codegen
+   builds itself: static SQL, a row loop's query, a field name, a cursor query. */
+TEST(compiler_string_constants_owned_by_chunk_only) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    char error[256];
+    int ok = compile(
+        "proc main() -> int {\n"
+        "    create table t (id int);\n"
+        "    insert into t values (7);\n"
+        "    int s = 0;\n"
+        "    for row in select id from t { s = s + row.id; }\n"
+        "    cursor c is select id from t;\n"
+        "    open c;\n"
+        "    close c;\n"
+        "    return s;\n"
+        "}",
+        &chunk, error, sizeof(error));
+    ASSERT_INT_EQ(1, ok);
+
+    int strings = 0;
+    for (int i = 0; i < chunk.constants_count; i++) {
+        if (chunk.constants[i].type != VAL_STRING) continue;
+        strings++;
+        ASSERT_INT_EQ(1, value_ref_count(chunk.constants[i]));
+    }
+    ASSERT_INT_EQ(1, strings >= 5);
+    free_chunk(&chunk);
+}
+
 TEST(compiler_reports_source_line_on_native_error) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -1450,6 +1481,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_abs_float_native);
     RUN_TEST(compiler_compiles_nested_index_assignment);
     RUN_TEST(compiler_emits_sql_exec);
+    RUN_TEST(compiler_string_constants_owned_by_chunk_only);
     RUN_TEST(compiler_reports_source_line_on_native_error);
     RUN_TEST(compiler_compiles_format_native);
     RUN_TEST(compiler_compiles_sort_native);
