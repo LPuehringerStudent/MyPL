@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 
 static int run_mypl(const char* source, const char* args, char* out, size_t out_size) {
     FILE* f = fopen("/tmp/test_phase4_src.mypl", "w");

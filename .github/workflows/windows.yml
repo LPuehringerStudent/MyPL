@@ -33,6 +33,15 @@ jobs:
           mingw-w64-x86_64-libsystre
           mingw-w64-x86_64-sqlite3
 
+    - name: Prepare the test environment
+      run: |
+        # The tests write to /tmp paths, which a native Windows program
+        # resolves against the root of the current drive.
+        drive=$(cygpath -m "$PWD" | cut -c1 | tr 'A-Z' 'a-z')
+        mkdir -p "/$drive/tmp"
+        # Some tests build shared libraries with cc.
+        command -v cc || cp "$(command -v gcc)" "$(dirname "$(command -v gcc)")/cc.exe"
+
     - name: Build project
       run: make clean && make all CC=gcc
 
@@ -41,3 +50,12 @@ jobs:
 
     - name: Run examples
       run: make examples-test CC=gcc
+
+    - name: Run each test suite (diagnostic)
+      continue-on-error: true
+      run: |
+        make -k test CC=gcc > /dev/null 2>&1 || true
+        for t in bin/test_*.exe; do
+          echo "=== $t"
+          timeout 300 "$t" 2>&1 | grep -E "FAIL|[0-9]+ run" | head -40 || true
+        done

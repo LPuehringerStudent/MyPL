@@ -1,7 +1,6 @@
 #include "test_harness.h"
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 
 TEST(cli_runs_file_and_prints_int_result) {
     int rc = system("./bin/mypl tests/fixtures/add.mypl > /tmp/mypl_out.txt 2>&1");
