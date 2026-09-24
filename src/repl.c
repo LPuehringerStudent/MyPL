@@ -503,8 +503,13 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
     Context* ctx = session->driver_open ? NULL : &session->ctx;
     char* persisted = packages_load_source(driver, ctx);
     if (persisted != NULL) {
+        /* Saved text ends in a newline already; adding one per load would
+           grow the stored source by a blank line every session. */
         string_buffer_append(&session->procedures, persisted);
-        string_buffer_append(&session->procedures, "\n");
+        size_t n = strlen(persisted);
+        if (n == 0 || persisted[n - 1] != '\n') {
+            string_buffer_append(&session->procedures, "\n");
+        }
         free(persisted);
     }
 
@@ -817,7 +822,7 @@ static int run_input_definition(ReplSession* session, const char* complete,
     Context* ctx = session->driver_open ? NULL : &session->ctx;
 
     if (session->compile_stuck || session->runtime_stuck) {
-        if (is_package) packages_save_source(driver, ctx, session->procedures.data, 1);
+        if (is_package) packages_save_source(driver, ctx, session->procedures.data, 0);
         run_stuck_input(session, "0", 0);
         return 1;
     }
@@ -836,7 +841,10 @@ static int run_input_definition(ReplSession* session, const char* complete,
         return 1;
     }
     remove_replaced_definitions(&session->procedures, mark);
-    if (is_package) packages_save_source(driver, ctx, session->procedures.data, 1);
+    /* The buffer holds everything persisted plus this session's definitions,
+       so it replaces the stored source; appending stored every definition
+       again on each package input (#85). */
+    if (is_package) packages_save_source(driver, ctx, session->procedures.data, 0);
     session_execute(session, 0);
     return 1;
 }
