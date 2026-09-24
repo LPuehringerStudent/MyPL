@@ -1,16 +1,19 @@
 // Phase 9: utl_file example
 proc main() -> int {
-    int h = utl_file.fopen("/tmp/phase9_utl_file.txt", "w");
+    // A relative path: the file lands in the current directory, on any OS.
+    string path = "phase9_utl_file.txt";
+    int h = utl_file.fopen(path, "w");
     utl_file.put_line(h, "First line");
     utl_file.put_line(h, "Second line");
     utl_file.fclose(h);
 
-    int r = utl_file.fopen("/tmp/phase9_utl_file.txt", "r");
+    int r = utl_file.fopen(path, "r");
     for line in range(0, 2) {
         string s = utl_file.get_line(r);
         print s;
     }
     utl_file.fclose(r);
+    utl_file.remove(path);
 
     return 0;
 }
