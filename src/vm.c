@@ -349,7 +349,6 @@ void vm_dbms_output_put_line(VM* vm, Value line) {
         set_runtime_error(vm, "dbms_output buffer full");
         return;
     }
-    value_retain(line);
     array_append(vm->dbms_output_buffer, line);
 }
 
@@ -369,9 +368,7 @@ Value vm_dbms_output_get_lines(VM* vm) {
     ArrayObj* result = array_new();
     int n = array_length(vm->dbms_output_buffer);
     for (int i = 0; i < n; i++) {
-        Value v = array_get(vm->dbms_output_buffer, i);
-        value_retain(v);
-        array_append(result, v);
+        array_append(result, array_get(vm->dbms_output_buffer, i));
     }
     array_free(vm->dbms_output_buffer);
     vm->dbms_output_buffer = array_new();
@@ -2859,7 +2856,7 @@ dispatch:
                             set_runtime_error(vm, "Invalid local variable slot");
                             THROW(vm);
                         }
-                        value_retain(col_value);
+                        /* col_value is a new value; its reference moves into the slot. */
                         value_release(vm->frame_base[slot]);
                         vm->frame_base[slot] = col_value;
                     }
