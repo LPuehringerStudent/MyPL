@@ -912,6 +912,26 @@ TEST(phase12_sqlite_row_trigger_dml_on_own_table_errors) {
     remove("/tmp/test_phase12.db");
 }
 
+/* A row trigger's own error reaches the statement's error message on SQLite,
+   as it does on the custom engine, instead of a bare "SQL execution failed". */
+TEST(phase12_sqlite_row_trigger_error_message_is_reported) {
+    remove("/tmp/test_phase12.db");
+    char out[1024];
+    int rc = run_mypl_sqlite(
+        "trigger trg_sqe before insert on trg_sqe_t for each row {\n"
+        "    raise_application_error(-20001, \"negative total\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_sqe_t (id int);\n"
+        "    insert into trg_sqe_t values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "negative total"));
+    remove("/tmp/test_phase12.db");
+}
+
 TEST(phase12_trigger_fires_on_execute_immediate) {
     clean_trigger_db();
     char out[512];
@@ -1622,6 +1642,7 @@ int main(void) {
     RUN_TEST(phase12_sqlite_drop_sequence_persists);
     RUN_TEST(phase12_trigger_static_fires);
     RUN_TEST(phase12_sqlite_row_trigger_dml_on_own_table_errors);
+    RUN_TEST(phase12_sqlite_row_trigger_error_message_is_reported);
     RUN_TEST(phase12_trigger_persists_across_restarts);
     RUN_TEST(phase12_drop_trigger_stops_and_persists);
     RUN_TEST(phase12_trigger_fires_on_execute_immediate);

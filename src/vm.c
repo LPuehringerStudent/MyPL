@@ -1694,6 +1694,12 @@ static int vm_fire_row_trigger_pair(VM* vm, int event, const char* table,
              vm_fire_row_triggers(vm, TRIGGER_AFTER, event, table, new_row, old_row);
     value_release(new_row);
     value_release(old_row);
+    if (!ok && vm->driver != NULL) {
+        /* The statement's caller reports the driver's error, as it does for
+           the custom engine's row-trigger hook: carry the trigger's there. */
+        snprintf(vm->driver->error_message, sizeof(vm->driver->error_message), "%s",
+                 vm->error_message[0] != '\0' ? vm->error_message : "row trigger failed");
+    }
     return ok;
 }
 
