@@ -21,16 +21,21 @@
 /* Ordering: NULL < int < float < string, numeric inside the int/float key     */
 /* spaces, bytewise inside the string space.                                   */
 /*                                                                            */
-/* Deletion removes the entry from its leaf without merging or redistributing  */
-/* nodes may underflow, but separators remain valid bounds, so searches stay   */
-/* correct. The SQL layer rebuilds indexes wholesale when a table's row chain  */
-/* is rewritten (UPDATE/DELETE/ALTER), so underflow never accumulates there.   */
+/* Deletion keeps every node but the root at least half full: an underfull    */
+/* node borrows one entry from a sibling, or merges with it and frees a page.  */
+/* When merges empty the root of its separators the tree loses a level, so     */
+/* root_page can change - callers that persist it must re-read it afterwards.  */
 /* -------------------------------------------------------------------------- */
 
 #define BTREE_KEY_SIZE        37
 #define BTREE_STRING_BYTES    36
 #define BTREE_LEAF_MAX        90
 #define BTREE_INTERNAL_MAX    99
+
+/* Minimum occupancy for every node but the root. Deletion redistributes or
+   merges to restore it. */
+#define BTREE_LEAF_MIN        (BTREE_LEAF_MAX / 2)
+#define BTREE_INTERNAL_MIN    (BTREE_INTERNAL_MAX / 2)
 
 #define BTREE_TYPE_LEAF       1
 #define BTREE_TYPE_INTERNAL   2
@@ -236,6 +241,29 @@ void btree_free_pages(BTree* tree) {
     free_pages_rec(tree->pager, tree->root_page);
 }
 
+static int stats_rec(Pager* pager, int page_num, BTreeStats* out, int depth) {
+    BtNode node;
+    if (!node_load(pager, page_num, &node)) return 0;
+    out->node_count++;
+    if (depth > out->height) out->height = depth;
+    if (node.is_leaf) {
+        out->leaf_count++;
+        out->entry_count += node.nkeys;
+        return 1;
+    }
+    for (int i = 0; i <= node.nkeys; i++) {
+        if (node.children[i] <= 0) return 0;
+        if (!stats_rec(pager, node.children[i], out, depth + 1)) return 0;
+    }
+    return 1;
+}
+
+int btree_stats(BTree* tree, BTreeStats* out) {
+    if (tree == NULL || out == NULL || tree->root_page <= 0) return 0;
+    memset(out, 0, sizeof(*out));
+    return stats_rec(tree->pager, tree->root_page, out, 1);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Insert                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -380,8 +408,221 @@ int btree_insert(BTree* tree, const Cell* key, int row_page, int row_offset) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Delete (no rebalancing — see file header)                                  */
+/* Delete                                                                     */
 /* -------------------------------------------------------------------------- */
+
+static void leaf_remove_at(BtNode* node, int i) {
+    for (int j = i + 1; j < node->nkeys; j++) {
+        memcpy(node->keys[j - 1], node->keys[j], BTREE_KEY_SIZE);
+        node->row_pages[j - 1] = node->row_pages[j];
+        node->row_offsets[j - 1] = node->row_offsets[j];
+    }
+    node->nkeys--;
+}
+
+/* Drops separator sep and the child to its right from an internal node. */
+static void internal_remove_separator(BtNode* node, int sep) {
+    for (int j = sep + 1; j < node->nkeys; j++) {
+        memcpy(node->keys[j - 1], node->keys[j], BTREE_KEY_SIZE);
+    }
+    for (int j = sep + 2; j <= node->nkeys; j++) {
+        node->children[j - 1] = node->children[j];
+    }
+    node->nkeys--;
+}
+
+/* Moves the left sibling's last entry into child and refreshes the separator
+   between them. */
+static void borrow_from_left(BTree* tree, int parent_page, BtNode* parent, int idx,
+                             BtNode* left, BtNode* child) {
+    int left_page = parent->children[idx - 1];
+    int child_page = parent->children[idx];
+
+    if (child->is_leaf) {
+        for (int j = child->nkeys; j > 0; j--) {
+            memcpy(child->keys[j], child->keys[j - 1], BTREE_KEY_SIZE);
+            child->row_pages[j] = child->row_pages[j - 1];
+            child->row_offsets[j] = child->row_offsets[j - 1];
+        }
+        memcpy(child->keys[0], left->keys[left->nkeys - 1], BTREE_KEY_SIZE);
+        child->row_pages[0] = left->row_pages[left->nkeys - 1];
+        child->row_offsets[0] = left->row_offsets[left->nkeys - 1];
+        child->nkeys++;
+        left->nkeys--;
+        /* Leaf separators are copies of the right child's first key. */
+        memcpy(parent->keys[idx - 1], child->keys[0], BTREE_KEY_SIZE);
+    } else {
+        for (int j = child->nkeys; j > 0; j--) {
+            memcpy(child->keys[j], child->keys[j - 1], BTREE_KEY_SIZE);
+        }
+        for (int j = child->nkeys + 1; j > 0; j--) {
+            child->children[j] = child->children[j - 1];
+        }
+        /* The separator rotates down to bound the subtree that moves with it;
+           the left sibling's last key becomes the new separator. */
+        memcpy(child->keys[0], parent->keys[idx - 1], BTREE_KEY_SIZE);
+        child->children[0] = left->children[left->nkeys];
+        memcpy(parent->keys[idx - 1], left->keys[left->nkeys - 1], BTREE_KEY_SIZE);
+        child->nkeys++;
+        left->nkeys--;
+    }
+    node_store(tree->pager, left_page, left);
+    node_store(tree->pager, child_page, child);
+    node_store(tree->pager, parent_page, parent);
+}
+
+/* Mirror of borrow_from_left: takes the right sibling's first entry. */
+static void borrow_from_right(BTree* tree, int parent_page, BtNode* parent, int idx,
+                              BtNode* child, BtNode* right) {
+    int child_page = parent->children[idx];
+    int right_page = parent->children[idx + 1];
+
+    if (child->is_leaf) {
+        memcpy(child->keys[child->nkeys], right->keys[0], BTREE_KEY_SIZE);
+        child->row_pages[child->nkeys] = right->row_pages[0];
+        child->row_offsets[child->nkeys] = right->row_offsets[0];
+        child->nkeys++;
+        leaf_remove_at(right, 0);
+        memcpy(parent->keys[idx], right->keys[0], BTREE_KEY_SIZE);
+    } else {
+        memcpy(child->keys[child->nkeys], parent->keys[idx], BTREE_KEY_SIZE);
+        child->children[child->nkeys + 1] = right->children[0];
+        child->nkeys++;
+        memcpy(parent->keys[idx], right->keys[0], BTREE_KEY_SIZE);
+        for (int j = 1; j < right->nkeys; j++) {
+            memcpy(right->keys[j - 1], right->keys[j], BTREE_KEY_SIZE);
+        }
+        for (int j = 1; j <= right->nkeys; j++) {
+            right->children[j - 1] = right->children[j];
+        }
+        right->nkeys--;
+    }
+    node_store(tree->pager, child_page, child);
+    node_store(tree->pager, right_page, right);
+    node_store(tree->pager, parent_page, parent);
+}
+
+/* Folds children sep and sep+1 into the left one and drops separator sep.
+   Only ever called when neither sibling can spare an entry, so the result
+   fits: leaves hold at most BTREE_LEAF_MIN + (BTREE_LEAF_MIN - 1) entries and
+   internal nodes at most 2 * BTREE_INTERNAL_MIN keys. */
+static void merge_children(BTree* tree, int parent_page, BtNode* parent, int sep) {
+    int left_page = parent->children[sep];
+    int right_page = parent->children[sep + 1];
+    BtNode left;
+    BtNode right;
+    if (!node_load(tree->pager, left_page, &left)) return;
+    if (!node_load(tree->pager, right_page, &right)) return;
+
+    if (left.is_leaf) {
+        for (int j = 0; j < right.nkeys; j++) {
+            memcpy(left.keys[left.nkeys + j], right.keys[j], BTREE_KEY_SIZE);
+            left.row_pages[left.nkeys + j] = right.row_pages[j];
+            left.row_offsets[left.nkeys + j] = right.row_offsets[j];
+        }
+        left.nkeys += right.nkeys;
+        left.next = right.next; /* keep the range-scan chain intact */
+    } else {
+        /* The separator is not a copy of anything below it, so it becomes a
+           key of the merged node rather than being discarded. */
+        memcpy(left.keys[left.nkeys], parent->keys[sep], BTREE_KEY_SIZE);
+        left.nkeys++;
+        for (int j = 0; j < right.nkeys; j++) {
+            memcpy(left.keys[left.nkeys + j], right.keys[j], BTREE_KEY_SIZE);
+        }
+        for (int j = 0; j <= right.nkeys; j++) {
+            left.children[left.nkeys + j] = right.children[j];
+        }
+        left.nkeys += right.nkeys;
+    }
+
+    internal_remove_separator(parent, sep);
+    node_store(tree->pager, left_page, &left);
+    node_store(tree->pager, parent_page, parent);
+    pager_free_page(tree->pager, right_page);
+}
+
+/* Restores minimum occupancy for child idx: redistribute when a sibling has a
+   spare entry, merge otherwise. Updates parent in place. */
+static void rebalance_child(BTree* tree, int parent_page, BtNode* parent, int idx) {
+    BtNode child;
+    if (!node_load(tree->pager, parent->children[idx], &child)) return;
+    int min = child.is_leaf ? BTREE_LEAF_MIN : BTREE_INTERNAL_MIN;
+    if (child.nkeys >= min) return;
+
+    if (idx > 0) {
+        BtNode left;
+        if (node_load(tree->pager, parent->children[idx - 1], &left) &&
+            left.nkeys > min) {
+            borrow_from_left(tree, parent_page, parent, idx, &left, &child);
+            return;
+        }
+    }
+    if (idx < parent->nkeys) {
+        BtNode right;
+        if (node_load(tree->pager, parent->children[idx + 1], &right) &&
+            right.nkeys > min) {
+            borrow_from_right(tree, parent_page, parent, idx, &child, &right);
+            return;
+        }
+    }
+    if (idx > 0) {
+        merge_children(tree, parent_page, parent, idx - 1);
+    } else if (parent->nkeys > 0) {
+        merge_children(tree, parent_page, parent, idx);
+    }
+    /* A keyless internal node can only be the root, which btree_delete
+       collapses; every other level is back at minimum occupancy here. */
+}
+
+/* Removes (key, locator) from the subtree at page_num. Sets *underflow when
+   that subtree's root dropped below minimum occupancy and the caller must
+   rebalance it. Returns 1 when an entry was removed. */
+static int delete_rec(BTree* tree, int page_num, const uint8_t* key,
+                      int row_page, int row_offset, int* underflow) {
+    *underflow = 0;
+    BtNode node;
+    if (!node_load(tree->pager, page_num, &node)) return 0;
+
+    if (node.is_leaf) {
+        for (int i = 0; i < node.nkeys; i++) {
+            int cmp = memcmp(node.keys[i], key, BTREE_KEY_SIZE);
+            if (cmp > 0) break; /* past the key: this leaf does not hold it */
+            if (cmp < 0) continue;
+            if (node.row_pages[i] != row_page || node.row_offsets[i] != row_offset) {
+                continue; /* same key, different row */
+            }
+            leaf_remove_at(&node, i);
+            node_store(tree->pager, page_num, &node);
+            *underflow = node.nkeys < BTREE_LEAF_MIN;
+            return 1;
+        }
+        return 0;
+    }
+
+    /* Duplicates of one key can span several subtrees: descend into the
+       leftmost candidate, then keep going right while the separator behind us
+       still equals the key. */
+    int i = 0;
+    while (i < node.nkeys && memcmp(key, node.keys[i], BTREE_KEY_SIZE) > 0) {
+        i++;
+    }
+    for (; i <= node.nkeys; i++) {
+        if (i > 0 && memcmp(node.keys[i - 1], key, BTREE_KEY_SIZE) > 0) break;
+        if (node.children[i] <= 0) break;
+        int child_underflow = 0;
+        if (!delete_rec(tree, node.children[i], key, row_page, row_offset,
+                        &child_underflow)) {
+            continue;
+        }
+        if (child_underflow) {
+            rebalance_child(tree, page_num, &node, i);
+        }
+        *underflow = node.nkeys < BTREE_INTERNAL_MIN;
+        return 1;
+    }
+    return 0;
+}
 
 int btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset) {
     if (tree == NULL || key == NULL) return 0;
@@ -389,40 +630,26 @@ int btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset) {
     uint8_t enc[BTREE_KEY_SIZE];
     encode_key(key, enc);
 
-    int page_num = tree->root_page;
-    for (;;) {
-        BtNode node;
-        if (!node_load(tree->pager, page_num, &node)) return 0;
-        if (node.is_leaf) break;
-        int i = 0;
-        while (i < node.nkeys && memcmp(enc, node.keys[i], BTREE_KEY_SIZE) > 0) {
-            i++;
-        }
-        page_num = node.children[i];
+    /* The root is exempt from minimum occupancy, so its underflow flag is
+       not actionable here. */
+    int root_underflow = 0;
+    if (!delete_rec(tree, tree->root_page, enc, row_page, row_offset,
+                    &root_underflow)) {
+        return 0;
     }
 
-    /* Duplicates may span leaf boundaries; walk forward while keys match. */
-    while (page_num != 0) {
-        BtNode node;
-        if (!node_load(tree->pager, page_num, &node)) return 0;
-        for (int i = 0; i < node.nkeys; i++) {
-            int cmp = memcmp(node.keys[i], enc, BTREE_KEY_SIZE);
-            if (cmp > 0) return 0;
-            if (cmp == 0 && node.row_pages[i] == row_page &&
-                node.row_offsets[i] == row_offset) {
-                for (int j = i + 1; j < node.nkeys; j++) {
-                    memcpy(node.keys[j - 1], node.keys[j], BTREE_KEY_SIZE);
-                    node.row_pages[j - 1] = node.row_pages[j];
-                    node.row_offsets[j - 1] = node.row_offsets[j];
-                }
-                node.nkeys--;
-                node_store(tree->pager, page_num, &node);
-                return 1;
-            }
-        }
-        page_num = node.next;
+    /* Once merges leave the root without separators, its only child becomes
+       the new root and the tree loses a level. */
+    for (;;) {
+        BtNode root;
+        if (!node_load(tree->pager, tree->root_page, &root)) break;
+        if (root.is_leaf || root.nkeys > 0) break;
+        int child = root.children[0];
+        if (child <= 0) break;
+        pager_free_page(tree->pager, tree->root_page);
+        tree->root_page = child;
     }
-    return 0;
+    return 1;
 }
 
 /* -------------------------------------------------------------------------- */

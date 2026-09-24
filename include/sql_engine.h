@@ -210,8 +210,11 @@ int    btree_root_page(BTree* tree);
    their own key space, strings bytewise (only the first 36 bytes are
    significant). The locator (row_page, row_offset) identifies one row record. */
 int    btree_insert(BTree* tree, const Cell* key, int row_page, int row_offset);
-/* Removes a single (key, locator) pair. No rebalancing: nodes may underflow,
-   searches stay correct. Returns 1 when an entry was removed. */
+/* Removes a single (key, locator) pair, keeping every node but the root at
+   least half full by redistributing with a sibling or merging and freeing a
+   page. A merge can shorten the tree, so btree_root_page may report a
+   different root afterwards and callers that persist it must re-read it.
+   Returns 1 when an entry was removed. */
 int    btree_delete(BTree* tree, const Cell* key, int row_page, int row_offset);
 
 typedef void (*BTreeScanFn)(int row_page, int row_offset, void* user);
@@ -220,6 +223,17 @@ typedef void (*BTreeScanFn)(int row_page, int row_offset, void* user);
 int    btree_scan_eq(BTree* tree, const Cell* key, BTreeScanFn fn, void* user);
 int    btree_scan_range(BTree* tree, const Cell* lo, int lo_inclusive,
                         const Cell* hi, int hi_inclusive, BTreeScanFn fn, void* user);
+
+/* Shape of a tree, for tests and diagnostics. */
+typedef struct {
+    int height;      /* 1 when the root is a leaf */
+    int node_count;  /* pages the tree occupies */
+    int leaf_count;
+    int entry_count; /* leaf entries, duplicates included */
+} BTreeStats;
+
+/* Walks the whole tree. Returns 1 and fills out, or 0 on a corrupt page. */
+int    btree_stats(BTree* tree, BTreeStats* out);
 
 int    os_open(const char* path);
 int    os_close(int fd);

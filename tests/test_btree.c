@@ -299,6 +299,222 @@ TEST(btree_delete_across_many_keys_keeps_search_correct) {
     cleanup(path);
 }
 
+/* The 90-entry leaf capacity puts the minimum occupancy at 45, so a tree
+   holding 100 entries must fit in three leaves once deletion rebalances.
+   Without rebalancing the same workload leaves ~23 near-empty leaves. */
+TEST(btree_delete_rebalances_and_shrinks_the_tree) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    for (int i = 0; i < 2000; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+    BTreeStats before;
+    ASSERT_INT_EQ(1, btree_stats(tree, &before));
+    ASSERT_INT_EQ(2000, before.entry_count);
+    ASSERT(before.leaf_count >= 22);
+
+    /* Keep every twentieth key. */
+    for (int i = 0; i < 2000; i++) {
+        if (i % 20 == 0) continue;
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_delete(tree, &k, i, i));
+    }
+
+    BTreeStats after;
+    ASSERT_INT_EQ(1, btree_stats(tree, &after));
+    ASSERT_INT_EQ(100, after.entry_count);
+    ASSERT(after.leaf_count <= 3);
+    ASSERT(after.node_count < before.node_count);
+    ASSERT(after.height <= before.height);
+
+    /* Every survivor is still reachable and nothing deleted came back. */
+    for (int i = 0; i < 2000; i++) {
+        Cell k = int_key(i);
+        ScanLog log = {0};
+        int n = btree_scan_eq(tree, &k, scan_log_fn, &log);
+        if (i % 20 == 0) {
+            ASSERT_INT_EQ(1, n);
+            ASSERT_INT_EQ(1, log_has(&log, i, i));
+        } else {
+            ASSERT_INT_EQ(0, n);
+        }
+    }
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* Merging two leaves has to relink the leaf chain, or range scans silently
+   stop early. */
+TEST(btree_delete_keeps_the_leaf_chain_intact) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    for (int i = 0; i < 1200; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+    for (int i = 0; i < 1200; i += 2) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_delete(tree, &k, i, i));
+    }
+
+    ScanLog log = {0};
+    int n = btree_scan_range(tree, NULL, 0, NULL, 0, scan_log_fn, &log);
+    ASSERT_INT_EQ(600, n);
+    ASSERT_INT_EQ(600, log.count);
+    for (int i = 0; i < log.count; i++) {
+        ASSERT_INT_EQ(2 * i + 1, log.pages[i]); /* ascending, no gaps */
+    }
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* Deleting in ascending order drains leaves left to right, which exercises the
+   borrow-from-right and merge-with-right paths that the sparse pattern above
+   never reaches. */
+TEST(btree_delete_every_entry_collapses_to_an_empty_root) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    for (int i = 0; i < 800; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+    for (int i = 0; i < 800; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_delete(tree, &k, i, i));
+    }
+
+    BTreeStats stats;
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(0, stats.entry_count);
+    ASSERT_INT_EQ(1, stats.height);
+    ASSERT_INT_EQ(1, stats.node_count);
+
+    /* The emptied tree is still usable. */
+    Cell k = int_key(42);
+    ASSERT_INT_EQ(1, btree_insert(tree, &k, 7, 7));
+    ScanLog log = {0};
+    ASSERT_INT_EQ(1, btree_scan_eq(tree, &k, scan_log_fn, &log));
+    ASSERT_INT_EQ(1, log_has(&log, 7, 7));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* Pages released by merges must go back to the pager, not leak. */
+TEST(btree_delete_returns_merged_pages_to_the_pager) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    for (int i = 0; i < 1000; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+    int high_water = pager_page_count(pager);
+    for (int i = 0; i < 990; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_delete(tree, &k, i, i));
+    }
+
+    /* Freed pages are reused before the file grows again. */
+    int reused = pager_allocate_page(pager);
+    ASSERT(reused > 0 && reused < high_water);
+    ASSERT_INT_EQ(high_water, pager_page_count(pager));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* More duplicates than one leaf holds, so they span several subtrees and the
+   descent has to try more than one child. */
+TEST(btree_delete_duplicates_spanning_leaves) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    Cell dup = int_key(500);
+    for (int i = 0; i < 400; i++) {
+        ASSERT_INT_EQ(1, btree_insert(tree, &dup, 1000 + i, i));
+    }
+    /* Neighbours on both sides, to catch separators drifting during merges. */
+    Cell low = int_key(1);
+    Cell high = int_key(999);
+    ASSERT_INT_EQ(1, btree_insert(tree, &low, 1, 1));
+    ASSERT_INT_EQ(1, btree_insert(tree, &high, 2, 2));
+
+    ScanLog log = {0};
+    ASSERT_INT_EQ(400, btree_scan_eq(tree, &dup, scan_log_fn, &log));
+
+    for (int i = 0; i < 400; i++) {
+        ASSERT_INT_EQ(1, btree_delete(tree, &dup, 1000 + i, i));
+        ScanLog step = {0};
+        ASSERT_INT_EQ(399 - i, btree_scan_eq(tree, &dup, scan_log_fn, &step));
+    }
+
+    ScanLog rest = {0};
+    ASSERT_INT_EQ(1, btree_scan_eq(tree, &low, scan_log_fn, &rest));
+    ASSERT_INT_EQ(1, log_has(&rest, 1, 1));
+    ScanLog rest2 = {0};
+    ASSERT_INT_EQ(1, btree_scan_eq(tree, &high, scan_log_fn, &rest2));
+    ASSERT_INT_EQ(1, log_has(&rest2, 2, 2));
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
+/* Interleaved inserts and deletes in a scrambled order: the tree must stay
+   searchable whatever the borrow/merge sequence turns out to be. */
+TEST(btree_delete_interleaved_with_inserts_stays_correct) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    int present[1500];
+    memset(present, 0, sizeof(present));
+    unsigned seed = 12345u;
+    for (int round = 0; round < 6000; round++) {
+        seed = seed * 1103515245u + 12345u;
+        int i = (int)((seed >> 8) % 1500u);
+        Cell k = int_key(i);
+        if (present[i]) {
+            ASSERT_INT_EQ(1, btree_delete(tree, &k, i, i));
+            present[i] = 0;
+        } else {
+            ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+            present[i] = 1;
+        }
+    }
+
+    int expected = 0;
+    for (int i = 0; i < 1500; i++) {
+        Cell k = int_key(i);
+        ScanLog log = {0};
+        ASSERT_INT_EQ(present[i], btree_scan_eq(tree, &k, scan_log_fn, &log));
+        expected += present[i];
+    }
+    BTreeStats stats;
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(expected, stats.entry_count);
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
 TEST(btree_numeric_ordering_int_and_float_spaces) {
     char* path = make_temp_path();
     Pager* pager = pager_open(path);
@@ -339,6 +555,34 @@ TEST(btree_numeric_ordering_int_and_float_spaces) {
     cleanup(path);
 }
 
+TEST(btree_stats_reports_shape) {
+    char* path = make_temp_path();
+    Pager* pager = pager_open(path);
+    BTree* tree = btree_create(pager);
+
+    BTreeStats stats;
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(1, stats.height);
+    ASSERT_INT_EQ(1, stats.node_count);
+    ASSERT_INT_EQ(1, stats.leaf_count);
+    ASSERT_INT_EQ(0, stats.entry_count);
+
+    for (int i = 0; i < 300; i++) {
+        Cell k = int_key(i);
+        ASSERT_INT_EQ(1, btree_insert(tree, &k, i, i));
+    }
+
+    ASSERT_INT_EQ(1, btree_stats(tree, &stats));
+    ASSERT_INT_EQ(300, stats.entry_count);
+    ASSERT(stats.height >= 2);
+    ASSERT(stats.leaf_count >= 4);
+    ASSERT(stats.node_count > stats.leaf_count); /* at least one internal node */
+
+    btree_destroy(tree);
+    pager_close(pager);
+    cleanup(path);
+}
+
 TEST(btree_free_pages_releases_pages) {
     char* path = make_temp_path();
     Pager* pager = pager_open(path);
@@ -371,7 +615,14 @@ int main(void) {
     RUN_TEST(btree_duplicate_keys_all_found);
     RUN_TEST(btree_delete_removes_only_target_locator);
     RUN_TEST(btree_delete_across_many_keys_keeps_search_correct);
+    RUN_TEST(btree_delete_rebalances_and_shrinks_the_tree);
+    RUN_TEST(btree_delete_keeps_the_leaf_chain_intact);
+    RUN_TEST(btree_delete_every_entry_collapses_to_an_empty_root);
+    RUN_TEST(btree_delete_returns_merged_pages_to_the_pager);
+    RUN_TEST(btree_delete_duplicates_spanning_leaves);
+    RUN_TEST(btree_delete_interleaved_with_inserts_stays_correct);
     RUN_TEST(btree_numeric_ordering_int_and_float_spaces);
+    RUN_TEST(btree_stats_reports_shape);
     RUN_TEST(btree_free_pages_releases_pages);
     TEST_SUMMARY();
 }
