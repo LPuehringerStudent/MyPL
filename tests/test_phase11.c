@@ -1914,6 +1914,9 @@ TEST(phase11_view_over_view) {
 /* Views as JOIN sources                                                      */
 /* -------------------------------------------------------------------------- */
 
+/* Views as JOIN sources                                                      */
+/* -------------------------------------------------------------------------- */
+
 TEST(phase11_join_with_view_on_the_right) {
     remove("mypl.db");
     char out[512];
@@ -2100,9 +2103,12 @@ TEST(phase11_join_with_view_built_from_a_join) {
     ASSERT_INT_EQ(1, output_contains(out, "outer=3"));
 }
 
-/* Resolving views in joins must not turn a missing source into a silently
-   empty one: a dropped view fails a join exactly as a name that was never a
-   table does. */
+/* A join whose source has gone missing resolves to no rows, exactly like a
+   query against a name that was never a table (the engine's long-standing
+   convention: a missing source yields an empty result, not an error). Since
+   #75 a row loop over that empty result is a clean no-op; before the fix the
+   same program died with a stack-underflow "unknown error", which is what
+   this test used to observe here. */
 TEST(phase11_join_with_dropped_view_matches_missing_table) {
     remove("mypl.db");
     char out[512];
@@ -2130,7 +2136,8 @@ TEST(phase11_join_with_dropped_view_matches_missing_table) {
     ASSERT_INT_EQ(0, rc);
     ASSERT_INT_EQ(1, output_contains(out, "n=1"));
 
-    /* After DROP VIEW it does not, and neither does a name that never existed. */
+    /* After DROP VIEW the join yields no rows and the loop is a no-op, the
+       same as a name that never existed. */
     rc = run_mypl(
         "proc main() -> int {\n"
         "    drop view vj6_v;\n"
@@ -2140,7 +2147,7 @@ TEST(phase11_join_with_dropped_view_matches_missing_table) {
         "    return 0;\n"
         "}\n",
         out, sizeof(out));
-    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(0, rc);
     ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
 
     rc = run_mypl(
@@ -2151,9 +2158,143 @@ TEST(phase11_join_with_dropped_view_matches_missing_table) {
         "    return 0;\n"
         "}\n",
         out, sizeof(out));
-    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(0, rc);
     ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
 }
+
+/* -------------------------------------------------------------------------- */
+/* SQL loops over empty results                                               */
+/* -------------------------------------------------------------------------- */
+
+/* SQL loops over empty results                                               */
+/* -------------------------------------------------------------------------- */
+
+/* The loop iterator occupies a stack slot that the exit path pops. It used to
+   be pushed inside the loop, so a query returning no rows jumped straight to
+   the pop and underflowed the stack - reported only as "unknown error",
+   because that path returns without setting a message. */
+TEST(phase11_sql_loop_over_empty_result_is_a_no_op) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table el_t (id int, name string);\n"
+        "    create table el_empty (id int);\n"
+        "    insert into el_t values (1, \"alice\");\n"
+        "    insert into el_t values (2, \"bob\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    print \"before\";\n"
+        "    for row in select id from el_empty {\n"
+        "        print \"unreachable\";\n"
+        "    }\n"
+        "    print \"after-empty-table\";\n"
+        "    for row in select id from el_t where id = 999 {\n"
+        "        print \"unreachable\";\n"
+        "    }\n"
+        "    print \"after-empty-where\";\n"
+        "    for row in select id from el_t {\n"
+        "        print row.id;\n"
+        "    }\n"
+        "    print \"after-rows\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+    ASSERT_INT_EQ(1, output_contains(out, "before"));
+    ASSERT_INT_EQ(1, output_contains(out, "after-empty-table"));
+    ASSERT_INT_EQ(1, output_contains(out, "after-empty-where"));
+    /* A loop that does run still works after one that did not. */
+    ASSERT_INT_EQ(1, output_contains(out, "after-rows"));
+}
+
+/* Locals declared before the loop must survive it, whether or not the body
+   ran: an unbalanced iterator slot would shift every slot below it. */
+TEST(phase11_sql_loop_leaves_surrounding_locals_intact) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table ls_t (id int);\n"
+        "    create table ls_empty (id int);\n"
+        "    insert into ls_t values (5);\n"
+        "    insert into ls_t values (7);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int total = 100;\n"
+        "    string label = \"kept\";\n"
+        "    for row in select id from ls_empty {\n"
+        "        total = total + 1000;\n"
+        "    }\n"
+        "    for row in select id from ls_t {\n"
+        "        total = total + row.id;\n"
+        "    }\n"
+        "    print concat(\"total=\", int_to_string(total));\n"
+        "    print concat(\"label=\", label);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "total=112"));
+    ASSERT_INT_EQ(1, output_contains(out, "label=kept"));
+}
+
+/* break and continue emit their own pops for the iterator slot, so moving
+   where it is pushed has to keep both balanced. */
+TEST(phase11_sql_loop_break_and_continue_stay_balanced) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bc_loop (id int);\n"
+        "    insert into bc_loop values (1);\n"
+        "    insert into bc_loop values (2);\n"
+        "    insert into bc_loop values (3);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int marker = 9;\n"
+        "    int seen = 0;\n"
+        "    for row in select id from bc_loop {\n"
+        "        if row.id == 2 {\n"
+        "            break;\n"
+        "        }\n"
+        "        seen = seen + row.id;\n"
+        "    }\n"
+        "    print concat(\"broke=\", int_to_string(seen));\n"
+        "    int skipped = 0;\n"
+        "    for row in select id from bc_loop {\n"
+        "        if row.id == 2 {\n"
+        "            continue;\n"
+        "        }\n"
+        "        skipped = skipped + row.id;\n"
+        "    }\n"
+        "    print concat(\"skipped=\", int_to_string(skipped));\n"
+        "    print concat(\"marker=\", int_to_string(marker));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "broke=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "skipped=4"));
+    ASSERT_INT_EQ(1, output_contains(out, "marker=9"));
+}
+
 
 /* A SQL loop variable reads the current row whatever it is named; only `row`
  * used to work (examples/inventory.mypl, migration.mypl and todo.mypl). */
@@ -2335,6 +2476,9 @@ int main(void) {
     RUN_TEST(phase11_left_join_with_view_keeps_unmatched_rows);
     RUN_TEST(phase11_join_with_view_built_from_a_join);
     RUN_TEST(phase11_join_with_dropped_view_matches_missing_table);
+    RUN_TEST(phase11_sql_loop_over_empty_result_is_a_no_op);
+    RUN_TEST(phase11_sql_loop_leaves_surrounding_locals_intact);
+    RUN_TEST(phase11_sql_loop_break_and_continue_stay_balanced);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     RUN_TEST(phase11_row_loop_over_table_created_in_same_program);
     RUN_TEST(phase11_row_loop_over_table_created_by_proc_defined_after_main);

@@ -1317,13 +1317,12 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_u16(compiler, (uint16_t)query_idx);
             emit_u16(compiler, (uint16_t)stmt->loc.line);
 
-            int loop_start = compiler->chunk->count;
-            if (!push_loop(compiler, loop_start, start_count, start_count + 1)) return;
-            int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
-
-            /* Bind iterator variable to a local slot. The value is unused
-               because fields are read with OP_GET_FIELD, but we need a slot
-               so any nested locals keep correct offsets. */
+            /* Bind the iterator variable to a local slot before the loop
+               begins. The value is unused because fields are read with
+               OP_GET_FIELD, but the slot has to exist so nested locals keep
+               correct offsets - and it has to be pushed here rather than
+               inside the loop, because the exit path pops it unconditionally
+               and a query returning no rows never enters the body. */
             int slot = add_local(compiler, f->var_name, (int)strlen(f->var_name), &type_unknown);
             if (slot < 0) {
                 error(compiler, "too many locals");
@@ -1333,6 +1332,10 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_byte(compiler, OP_CONST);
             emit_u16(compiler, (uint16_t)add_constant(compiler->chunk, value_int(0)));
             emit_set_local(compiler, slot);
+
+            int loop_start = compiler->chunk->count;
+            if (!push_loop(compiler, loop_start, start_count, start_count + 1)) return;
+            int exit_jump = emit_jump(compiler, OP_SQL_NEXT);
 
             compile_block(compiler, f->body);
             if (compiler->had_error) return;
