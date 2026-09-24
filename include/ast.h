@@ -318,6 +318,8 @@ typedef struct {
 typedef struct {
     char* name;
     char* sql_query;  /* static query for declarations, NULL for uninitialized */
+    Expr** params;    /* ?var placeholders of sql_query, in order; bound when the cursor is opened */
+    int param_count;
 } CursorDeclStmt;
 
 typedef struct {
@@ -526,7 +528,7 @@ Stmt* create_sql_stmt(int kind, char* sql, Expr** params, int param_count, char*
 Stmt* create_sql_transaction_stmt(int kind, const char* name);
 Stmt* create_try_catch_stmt(Block* try_block, const char* catch_var, Block* catch_block);
 Stmt* create_case_stmt(Expr* selector, Expr** values, Block** blocks, int branch_count, Block* else_block);
-Stmt* create_cursor_decl_stmt(const char* name, char* sql_query);
+Stmt* create_cursor_decl_stmt(const char* name, char* sql_query, Expr** params, int param_count);
 Stmt* create_cursor_open_stmt(const char* name, char* sql_query, Expr** params, int param_count);
 Stmt* create_cursor_fetch_stmt(const char* name, char** into_vars, int into_count);
 Stmt* create_cursor_close_stmt(const char* name);

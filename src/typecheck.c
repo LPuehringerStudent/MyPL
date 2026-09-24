@@ -38,6 +38,8 @@ typedef struct {
 typedef struct {
     const char* var_name;
     const char* query;  /* pointer to AST-owned query string */
+    Expr** params;      /* AST-owned ?var placeholders of the query */
+    int param_count;
 } CursorBinding;
 
 typedef struct {
@@ -180,12 +182,22 @@ static RowBinding* find_row(TypeChecker* tc, const char* var_name) {
     return NULL;
 }
 
-static int bind_cursor(TypeChecker* tc, const char* var_name, const char* query) {
+static int bind_cursor(TypeChecker* tc, const char* var_name, const char* query,
+                        Expr** params, int param_count) {
     if (tc->cursor_count >= MAX_ROWS) return 0;
     tc->cursors[tc->cursor_count].var_name = var_name;
     tc->cursors[tc->cursor_count].query = query;
+    tc->cursors[tc->cursor_count].params = params;
+    tc->cursors[tc->cursor_count].param_count = param_count;
     tc->cursor_count++;
     return 1;
+}
+
+static CursorBinding* find_cursor(TypeChecker* tc, const char* var_name) {
+    for (int i = tc->cursor_count - 1; i >= 0; i--) {
+        if (strcmp(tc->cursors[i].var_name, var_name) == 0) return &tc->cursors[i];
+    }
+    return NULL;
 }
 
 static StructInfo* find_struct(TypeChecker* tc, const char* name) {
@@ -2809,7 +2821,7 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 return;
             }
             if (d->sql_query != NULL) {
-                if (!bind_cursor(tc, d->name, d->sql_query)) {
+                if (!bind_cursor(tc, d->name, d->sql_query, d->params, d->param_count)) {
                     type_error(tc, stmt->loc, "too many cursor bindings");
                 }
             }
@@ -2831,8 +2843,16 @@ static void check_stmt(TypeChecker* tc, Stmt* stmt) {
                 infer_expr(tc, o->params[i], NULL);
                 if (tc->had_error) return;
             }
+            if (o->sql_query == NULL) {
+                /* `open c;` reads the declared query's ?var values now. */
+                CursorBinding* declared = find_cursor(tc, o->name);
+                for (int i = 0; declared != NULL && i < declared->param_count; i++) {
+                    infer_expr(tc, declared->params[i], NULL);
+                    if (tc->had_error) return;
+                }
+            }
             if (o->sql_query != NULL) {
-                if (!bind_cursor(tc, o->name, o->sql_query)) {
+                if (!bind_cursor(tc, o->name, o->sql_query, o->params, o->param_count)) {
                     type_error(tc, stmt->loc, "too many cursor bindings");
                 }
             }

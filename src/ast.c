@@ -565,6 +565,10 @@ void free_stmt(Stmt* stmt) {
         case STMT_CURSOR_DECL:
             free(stmt->as.cursor_decl.name);
             free(stmt->as.cursor_decl.sql_query);
+            for (int i = 0; i < stmt->as.cursor_decl.param_count; i++) {
+                free_expr(stmt->as.cursor_decl.params[i]);
+            }
+            free(stmt->as.cursor_decl.params);
             break;
         case STMT_CURSOR_OPEN:
             free(stmt->as.cursor_open.name);
@@ -1172,10 +1176,12 @@ Expr* create_map_literal_expr(Expr** keys, Expr** values, int count) {
     return expr;
 }
 
-Stmt* create_cursor_decl_stmt(const char* name, char* sql_query) {
+Stmt* create_cursor_decl_stmt(const char* name, char* sql_query, Expr** params, int param_count) {
     Stmt* stmt = malloc(sizeof(Stmt));
     if (stmt == NULL) {
         free(sql_query);
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
         return NULL;
     }
     stmt->loc = (SourceLoc){0, 0};
@@ -1183,10 +1189,14 @@ Stmt* create_cursor_decl_stmt(const char* name, char* sql_query) {
     stmt->as.cursor_decl.name = copy_string(name);
     if (stmt->as.cursor_decl.name == NULL && name != NULL) {
         free(sql_query);
+        for (int i = 0; i < param_count; i++) free_expr(params[i]);
+        free(params);
         free(stmt);
         return NULL;
     }
     stmt->as.cursor_decl.sql_query = sql_query;
+    stmt->as.cursor_decl.params = params;
+    stmt->as.cursor_decl.param_count = param_count;
     return stmt;
 }
 

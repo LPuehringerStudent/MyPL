@@ -904,6 +904,49 @@ TEST(typecheck_still_checks_catalog_table_when_program_creates_other_tables) {
     unlink(db_path);
 }
 
+TEST(typecheck_accepts_declared_cursor_with_defined_sql_param) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { int lim = 1; cursor c is select id from t where id > ?lim; open c; return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, NULL, error, sizeof(error), NULL, NULL, 0));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_declared_cursor_with_undefined_sql_param_at_open) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { cursor c is select id from t where id > ?missing; open c; return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, NULL, error, sizeof(error), NULL, NULL, 0));
+    ASSERT_INT_EQ(1, strstr(error, "missing") != NULL);
+    free_program(program);
+}
+
+TEST(typecheck_accepts_declared_cursor_param_defined_after_the_declaration) {
+    /* The value is read when the cursor is opened, so the variable only has
+       to exist by then. */
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { cursor c is select id from t where id > ?lim; int lim = 1; open c; return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(1, typecheck_program(program, NULL, 0, NULL, NULL, error, sizeof(error), NULL, NULL, 0));
+    free_program(program);
+}
+
+TEST(typecheck_rejects_open_for_with_undefined_sql_param) {
+    char error[256];
+    Program* program = parse(
+        "proc main() -> int { cursor c; open c for select id from t where id = ?missing; return 0; }",
+        error, sizeof(error));
+    ASSERT_PTR_NOT_NULL(program);
+    ASSERT_INT_EQ(0, typecheck_program(program, NULL, 0, NULL, NULL, error, sizeof(error), NULL, NULL, 0));
+    free_program(program);
+}
+
 int main(void) {
     RUN_TEST(typecheck_accepts_row_loop_over_table_created_earlier_in_same_proc);
     RUN_TEST(typecheck_accepts_row_loop_over_table_created_by_a_later_proc);
@@ -980,6 +1023,10 @@ int main(void) {
     RUN_TEST(typecheck_accepts_sql_param);
     RUN_TEST(typecheck_accepts_for_loop_with_sql_param);
     RUN_TEST(typecheck_rejects_for_loop_with_undefined_sql_param);
+    RUN_TEST(typecheck_accepts_declared_cursor_with_defined_sql_param);
+    RUN_TEST(typecheck_rejects_declared_cursor_with_undefined_sql_param_at_open);
+    RUN_TEST(typecheck_accepts_declared_cursor_param_defined_after_the_declaration);
+    RUN_TEST(typecheck_rejects_open_for_with_undefined_sql_param);
     RUN_TEST(typecheck_accepts_format_with_string_array);
     RUN_TEST(typecheck_rejects_format_with_int_array);
     RUN_TEST(typecheck_accepts_sort_int_array);

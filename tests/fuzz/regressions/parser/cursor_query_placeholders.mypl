@@ -1,0 +1,11 @@
+proc main() -> int {
+    int lim = 1;
+    string who = "a";
+    cursor c is select id from t where id > ?lim and name <> ?who;
+    cursor d;
+    open d for select id from t where name = ?who and note = 'why?not';
+    open c;
+    close c;
+    close d;
+    return 0;
+}

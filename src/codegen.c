@@ -70,6 +70,8 @@ typedef struct {
     const char* name;
     int length;
     const char* query;
+    Expr** params;   /* ?var placeholders of query, owned by the declaration's AST */
+    int param_count;
 } CursorQuery;
 
 typedef struct {
@@ -490,11 +492,14 @@ static int struct_has_field(const StructDecl* decl, const char* name) {
     return 0;
 }
 
-static void register_cursor_query(Compiler* compiler, const char* name, int length, const char* query) {
+static void register_cursor_query(Compiler* compiler, const char* name, int length, const char* query,
+                                  Expr** params, int param_count) {
     for (int i = 0; i < compiler->cursor_query_count; i++) {
         if (compiler->cursor_queries[i].length == length &&
             memcmp(compiler->cursor_queries[i].name, name, (size_t)length) == 0) {
             compiler->cursor_queries[i].query = query;
+            compiler->cursor_queries[i].params = params;
+            compiler->cursor_queries[i].param_count = param_count;
             return;
         }
     }
@@ -509,14 +514,16 @@ static void register_cursor_query(Compiler* compiler, const char* name, int leng
     compiler->cursor_queries[compiler->cursor_query_count].name = name;
     compiler->cursor_queries[compiler->cursor_query_count].length = length;
     compiler->cursor_queries[compiler->cursor_query_count].query = query;
+    compiler->cursor_queries[compiler->cursor_query_count].params = params;
+    compiler->cursor_queries[compiler->cursor_query_count].param_count = param_count;
     compiler->cursor_query_count++;
 }
 
-static const char* find_cursor_query(Compiler* compiler, const char* name, int length) {
+static const CursorQuery* find_cursor_query(Compiler* compiler, const char* name, int length) {
     for (int i = 0; i < compiler->cursor_query_count; i++) {
         if (compiler->cursor_queries[i].length == length &&
             memcmp(compiler->cursor_queries[i].name, name, (size_t)length) == 0) {
-            return compiler->cursor_queries[i].query;
+            return &compiler->cursor_queries[i];
         }
     }
     return NULL;
@@ -1552,7 +1559,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             emit_constant(compiler, value_cursor(NULL));
             emit_set_local(compiler, slot);
             if (d->sql_query != NULL) {
-                register_cursor_query(compiler, d->name, (int)strlen(d->name), d->sql_query);
+                register_cursor_query(compiler, d->name, (int)strlen(d->name), d->sql_query,
+                                      d->params, d->param_count);
             }
             break;
         }
@@ -1566,19 +1574,26 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 return;
             }
             const char* query = o->sql_query;
+            Expr** params = o->params;
+            int param_count = o->param_count;
             if (query == NULL) {
-                query = find_cursor_query(compiler, o->name, (int)strlen(o->name));
-                if (query == NULL) {
+                /* A plain `open c;` runs the declared query, and its ?var
+                   placeholders are read here, at open time. */
+                const CursorQuery* declared = find_cursor_query(compiler, o->name, (int)strlen(o->name));
+                if (declared == NULL) {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Cursor '%s' has no associated query", o->name);
                     error(compiler, msg);
                     return;
                 }
+                query = declared->query;
+                params = declared->params;
+                param_count = declared->param_count;
             }
-            for (int i = 0; i < o->param_count; i++) {
-                compile_expr(compiler, o->params[i]);
+            for (int i = 0; i < param_count; i++) {
+                compile_expr(compiler, params[i]);
                 if (compiler->had_error) return;
-                const char* name = o->params[i]->as.sql_param.name;
+                const char* name = params[i]->as.sql_param.name;
                 Type* t = resolve_local_type(compiler, name, (int)strlen(name));
                 if (t != NULL && t->kind == TYPE_STRING) {
                     emit_byte(compiler, OP_SQL_BIND_STRING);
