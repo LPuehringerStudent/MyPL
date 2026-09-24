@@ -276,6 +276,10 @@ utl_file.put_line(f, "appended line");
 utl_file.fclose(f);
 ```
 
+`utl_file.get_line` returns the next line, of any length, without its line
+ending. Past the last line it raises `no_data_found` (`sqlcode` 100), as
+PL/SQL's `UTL_FILE` does, so a reader can loop until that is caught.
+
 ### Calling native libraries (external_call)
 
 `external_call` invokes a C function from a shared library via
