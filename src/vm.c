@@ -399,28 +399,40 @@ int vm_utl_file_fopen(VM* vm, const char* path, const char* mode) {
     return slot;
 }
 
-Value vm_utl_file_get_line(VM* vm, int handle) {
-    if (vm == NULL || handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL) {
-        char* empty = strdup("");
-        return value_string(empty ? empty : "");
+/* Reads the next line, of any length, without its line ending. Past the
+   last line it raises no_data_found (SQLCODE 100), as PL/SQL's UTL_FILE
+   does, so a reader loop can end on it; a bad handle or a read error is an
+   ordinary error. Returns 0 with the error set, 1 with *out set. */
+int vm_utl_file_get_line(VM* vm, int handle, Value* out) {
+    if (vm == NULL) return 0;
+    if (handle < 0 || handle >= UTL_FILE_MAX_HANDLES || vm->utl_file_handles[handle] == NULL) {
+        set_runtime_error(vm, "utl_file.get_line: invalid file handle");
+        return 0;
     }
     FILE* f = vm->utl_file_handles[handle];
-    char buffer[1024];
-    if (fgets(buffer, sizeof(buffer), f) == NULL) {
-        char* empty = strdup("");
-        return value_string(empty ? empty : "");
+    char* line = NULL;
+    size_t capacity = 0;
+    ssize_t len = getline(&line, &capacity, f);
+    if (len < 0) {
+        int failed = ferror(f);
+        free(line);
+        if (failed) {
+            clearerr(f);
+            set_runtime_error(vm, "utl_file.get_line: read failed");
+        } else {
+            set_runtime_error_ex(vm, "utl_file.get_line: end of file (no_data_found)",
+                                 100 /* no_data_found */);
+        }
+        return 0;
     }
-    size_t len = strlen(buffer);
-    if (len > 0 && buffer[len - 1] == '\n') {
-        buffer[len - 1] = '\0';
-        len--;
+    if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
+    if (len > 0 && line[len - 1] == '\r') line[--len] = '\0';
+    *out = value_string(line);
+    if (out->as.as_string == NULL) {
+        set_runtime_error(vm, "Out of memory");
+        return 0;
     }
-    if (len > 0 && buffer[len - 1] == '\r') {
-        buffer[len - 1] = '\0';
-        len--;
-    }
-    char* copy = strdup(buffer);
-    return value_string(copy ? copy : buffer);
+    return 1;
 }
 
 int vm_utl_file_put_line(VM* vm, int handle, const char* text) {

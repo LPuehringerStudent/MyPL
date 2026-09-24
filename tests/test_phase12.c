@@ -1532,6 +1532,85 @@ TEST(phase12_issue30_external_call_float_and_string) {
     remove("/tmp/test_phase12_ac_ext.so");
 }
 
+/* Issue #60: get_line reads lines of any length, and past the last line it
+   raises no_data_found (SQLCODE 100) instead of returning "". */
+TEST(phase12_utl_file_get_line_reads_long_lines) {
+    FILE* f = fopen("/tmp/test_phase12_utl_long.txt", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    for (int i = 0; i < 5000; i++) fputc('x', f);
+    fputs("END\nshort\nlast-without-newline", f);
+    fclose(f);
+
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int r = utl_file.fopen(\"/tmp/test_phase12_utl_long.txt\", \"r\");\n"
+        "    string first = utl_file.get_line(r);\n"
+        "    print concat(\"len:\", int_to_string(length(first)));\n"
+        "    print concat(\"tail:\", substring(first, 5000, 5003));\n"
+        "    print concat(\"2:\", utl_file.get_line(r));\n"
+        "    print concat(\"3:\", utl_file.get_line(r));\n"
+        "    utl_file.fclose(r);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "len:5003"));
+    ASSERT_INT_EQ(1, output_contains(out, "tail:END"));
+    ASSERT_INT_EQ(1, output_contains(out, "2:short"));
+    ASSERT_INT_EQ(1, output_contains(out, "3:last-without-newline"));
+    remove("/tmp/test_phase12_utl_long.txt");
+}
+
+TEST(phase12_utl_file_get_line_raises_no_data_found_at_eof) {
+    FILE* f = fopen("/tmp/test_phase12_utl_eof.txt", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fputs("one\n\ntwo\n", f);  /* an empty line is data, not the end */
+    fclose(f);
+
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int r = utl_file.fopen(\"/tmp/test_phase12_utl_eof.txt\", \"r\");\n"
+        "    int count = 0;\n"
+        "    bool done = false;\n"
+        /* Bounded, so a get_line that never raises fails fast. */
+        "    for attempt in range(0, 10) {\n"
+        "        if !done {\n"
+        "            try {\n"
+        "                string line = utl_file.get_line(r);\n"
+        "                count = count + 1;\n"
+        "            } catch (err) {\n"
+        "                print concat(\"sqlcode:\", int_to_string(sqlcode));\n"
+        "                print err;\n"
+        "                done = true;\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    utl_file.fclose(r);\n"
+        "    print concat(\"lines:\", int_to_string(count));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "lines:3"));
+    ASSERT_INT_EQ(1, output_contains(out, "sqlcode:100"));
+    ASSERT_INT_EQ(1, output_contains(out, "end of file (no_data_found)"));
+    remove("/tmp/test_phase12_utl_eof.txt");
+}
+
+TEST(phase12_utl_file_get_line_rejects_bad_handles) {
+    char out[1024];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    string s = utl_file.get_line(12);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "utl_file.get_line: invalid file handle"));
+}
+
 TEST(phase12_utl_file_seek_append_and_flush) {
     remove("/tmp/test_phase12_utl_file.txt");
     char out[512];
@@ -1662,6 +1741,9 @@ int main(void) {
     RUN_TEST(phase12_issue29_utl_file_mkdir_and_remove);
     RUN_TEST(phase12_issue30_external_call_float_and_string);
     RUN_TEST(phase12_utl_file_seek_append_and_flush);
+    RUN_TEST(phase12_utl_file_get_line_reads_long_lines);
+    RUN_TEST(phase12_utl_file_get_line_raises_no_data_found_at_eof);
+    RUN_TEST(phase12_utl_file_get_line_rejects_bad_handles);
     RUN_TEST(phase12_utl_file_many_open_handles);
     RUN_TEST(phase12_utl_file_directory_operations);
     TEST_SUMMARY();

@@ -1910,8 +1910,7 @@ static int native_utl_file_get_line(VM* vm, int argc, Value* argv, Value* out) {
         vm_set_error(vm, "utl_file_get_line expects an int handle");
         return 0;
     }
-    *out = vm_utl_file_get_line(vm, argv[0].as.as_int);
-    return 1;
+    return vm_utl_file_get_line(vm, argv[0].as.as_int, out);
 }
 
 static int native_utl_file_put_line(VM* vm, int argc, Value* argv, Value* out) {
