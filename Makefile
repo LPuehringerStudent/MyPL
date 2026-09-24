@@ -10,7 +10,8 @@ LDFLAGS += -lsqlite3
 endif
 
 # Windows (MinGW-w64, e.g. MSYS2's MINGW64 shell): executables get .exe, and
-# the POSIX regex API the regexp_* natives use comes from libgnurx.
+# the POSIX regex API the regexp_* natives use comes from a separate library,
+# linked as libgnurx (MSYS2's libsystre package provides it under that name).
 ifeq ($(OS),Windows_NT)
 EXE      = .exe
 LDFLAGS += -lgnurx
