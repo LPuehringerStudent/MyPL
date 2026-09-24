@@ -32,6 +32,7 @@ typedef struct {
     int out_count;
     int out_positions[MAX_OUT_PARAMS];
     int out_slots[MAX_OUT_PARAMS];
+    int entry_offset;   /* chunk offset the call entered: which proc runs */
 } OutParamFrame;
 
 typedef struct {
@@ -101,6 +102,11 @@ struct VM {
     /* 1 in short-lived child VMs (trigger firing, autonomous transactions):
        children never run the cycle collector; only the top-level VM does. */
     int           is_child;
+    /* A child VM's creator and the chunk offset it started at (-1 in a
+       top-level VM), so a trigger's DML can see every trigger running above
+       it, across the child VMs dynamic SQL and row triggers run in. */
+    struct VM*    parent;
+    int           entry_offset;
     int           dbms_output_enabled;
     int           dbms_output_limit;
     ArrayObj*     dbms_output_buffer;
@@ -165,6 +171,8 @@ VM* vm_init(void) {
     vm->dbms_output_limit = 0;
     vm->dbms_output_buffer = NULL;
     vm->is_child = 0;
+    vm->parent = NULL;
+    vm->entry_offset = -1;
     for (int i = 0; i < UTL_FILE_MAX_HANDLES; i++) {
         vm->utl_file_handles[i] = NULL;
     }
@@ -1319,13 +1327,75 @@ static void vm_gc_collect(VM* vm) {
  * same connection/transaction).
  * ------------------------------------------------------------------------ */
 
+/* --------------------------------------------------------------------------
+ * Trigger self-modification guard (#59)
+ *
+ * A trigger must not modify the table it fires on, directly or through a
+ * proc, dynamic SQL, or another table's trigger: the custom engine would
+ * rewrite the row chain it is iterating, and any driver would recurse. Each
+ * call frame records the proc it entered, and a child VM its creator and
+ * start offset, so the running triggers are exactly the frames, in this VM
+ * and every VM above it, that entered a trigger proc.
+ * ------------------------------------------------------------------------ */
+
+static const ChunkTrigger* vm_trigger_at(const Chunk* chunk, int offset) {
+    if (chunk == NULL || offset < 0) return NULL;
+    for (int i = 0; i < chunk->trigger_count; i++) {
+        if (chunk->triggers[i].offset == offset) return &chunk->triggers[i];
+    }
+    return NULL;
+}
+
+/* Returns 0 with a runtime error set when a trigger on `table` is running. */
+static int vm_check_table_not_firing(VM* vm, const char* table) {
+    for (VM* v = vm; v != NULL; v = v->parent) {
+        if (v->chunk == NULL || v->chunk->trigger_count == 0) continue;
+        for (int i = -1; i < v->frame_count; i++) {
+            int entry = i < 0 ? v->entry_offset : v->out_frames[i].entry_offset;
+            const ChunkTrigger* running = vm_trigger_at(v->chunk, entry);
+            if (running == NULL || !trigger_name_equals(running->table, table)) continue;
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                     "Cannot modify table '%s' while its trigger '%s' is running",
+                     table, running->name);
+            set_runtime_error(vm, msg);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Entering a trigger proc means its table is being modified, so it must not
+   already be firing. This is where static SQL inside a trigger body is
+   caught: its BEFORE triggers are called ahead of the statement itself. */
+static int vm_check_trigger_entry(VM* vm, int target) {
+    const ChunkTrigger* trigger = vm_trigger_at(vm->chunk, target);
+    return trigger == NULL || vm_check_table_not_firing(vm, trigger->table);
+}
+
+/* Returns 0 with a runtime error set when `sql` modifies a table whose
+   trigger is running. */
+static int vm_check_sql_not_firing(VM* vm, const char* sql) {
+    int event = -1;
+    char table[64];
+    if (!sql_trigger_info(sql, &event, table, sizeof(table))) return 1;
+    if (event != TRIGGER_INSERT && event != TRIGGER_UPDATE &&
+        event != TRIGGER_DELETE && event != TRIGGER_DROP) {
+        return 1;
+    }
+    return vm_check_table_not_firing(vm, table);
+}
+
 static int vm_fire_trigger(VM* vm, int offset) {
+    if (!vm_check_trigger_entry(vm, offset)) return 0;
     VM* child = vm_init();
     if (child == NULL) {
         set_runtime_error(vm, "Out of memory");
         return 0;
     }
     child->is_child = 1;
+    child->parent = vm;
+    child->entry_offset = offset;
     child->chunk = vm->chunk;
     child->ip = child->chunk->code + offset;
     child->frame_base = child->stack;
@@ -1421,12 +1491,15 @@ static int vm_chunk_has_row_triggers(VM* vm, int event, const char* table) {
 /* Fire one row-level trigger in a child VM (like vm_fire_trigger, but with
    the :new and :old row images pushed as the two implicit arguments). */
 static int vm_fire_row_trigger(VM* vm, int offset, Value new_row, Value old_row) {
+    if (!vm_check_trigger_entry(vm, offset)) return 0;
     VM* child = vm_init();
     if (child == NULL) {
         set_runtime_error(vm, "Out of memory");
         return 0;
     }
     child->is_child = 1;
+    child->parent = vm;
+    child->entry_offset = offset;
     child->chunk = vm->chunk;
     child->driver = vm->driver;
     child->context = vm->context;
@@ -1621,6 +1694,12 @@ static int vm_fire_row_trigger_pair(VM* vm, int event, const char* table,
              vm_fire_row_triggers(vm, TRIGGER_AFTER, event, table, new_row, old_row);
     value_release(new_row);
     value_release(old_row);
+    if (!ok && vm->driver != NULL) {
+        /* The statement's caller reports the driver's error, as it does for
+           the custom engine's row-trigger hook: carry the trigger's there. */
+        snprintf(vm->driver->error_message, sizeof(vm->driver->error_message), "%s",
+                 vm->error_message[0] != '\0' ? vm->error_message : "row trigger failed");
+    }
     return ok;
 }
 
@@ -1758,6 +1837,8 @@ int vm_dynamic_exec(VM* vm, const char* sql) {
         vm->sql_rowcount = 0;
         return 0;
     }
+
+    if (!vm_check_sql_not_firing(vm, sql)) return -1;
 
     int event = -1;
     char table[64];
@@ -2152,7 +2233,9 @@ dispatch:
                     set_runtime_error(vm, "Stack overflow");
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                if (!vm_check_trigger_entry(vm, target)) THROW(vm);
                 vm->out_frames[vm->frame_count].out_count = 0;
+                vm->out_frames[vm->frame_count].entry_offset = target;
                 vm->return_ips[vm->frame_count] = vm->ip;
                 vm->frames[vm->frame_count] = vm->frame_base;
                 vm->frame_count++;
@@ -2186,7 +2269,9 @@ dispatch:
                     set_runtime_error(vm, "Stack overflow");
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                    if (!vm_check_trigger_entry(vm, target)) THROW(vm);
                     vm->out_frames[vm->frame_count].out_count = 0;
+                    vm->out_frames[vm->frame_count].entry_offset = target;
                     vm->return_ips[vm->frame_count] = vm->ip;
                     vm->frames[vm->frame_count] = vm->frame_base;
                     vm->frame_count++;
@@ -2217,8 +2302,10 @@ dispatch:
                     set_runtime_error(vm, "Stack overflow");
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                if (!vm_check_trigger_entry(vm, target)) THROW(vm);
                 OutParamFrame* out_frame = &vm->out_frames[vm->frame_count];
                 out_frame->out_count = (int)out_count;
+                out_frame->entry_offset = target;
                 for (int i = 0; i < out_count; i++) {
                     out_frame->out_positions[i] = (int)read_u16(vm->ip);
                     vm->ip += 2;
@@ -2275,8 +2362,10 @@ dispatch:
                     set_runtime_error(vm, "Stack overflow");
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                    if (!vm_check_trigger_entry(vm, target)) THROW(vm);
                     OutParamFrame* out_frame = &vm->out_frames[vm->frame_count];
                     out_frame->out_count = (int)out_count;
+                    out_frame->entry_offset = target;
                     for (int i = 0; i < out_count; i++) {
                         out_frame->out_positions[i] = out_positions[i];
                         out_frame->out_slots[i] = out_slots[i];
@@ -2615,6 +2704,13 @@ dispatch:
                 }
                 if (vm->driver == NULL) {
                     set_runtime_error_sql(vm, "No database driver");
+                    THROW(vm);
+                }
+                if (!vm_check_sql_not_firing(vm, sql_value.as.as_string)) {
+                    for (int i = 0; i < vm->sql_param_count; i++) {
+                        value_release(vm->sql_params[i]);
+                    }
+                    vm->sql_param_count = 0;
                     THROW(vm);
                 }
                 int row_count = vm_exec_dml(vm, sql_value.as.as_string,
@@ -3265,6 +3361,8 @@ static int vm_call_autonomous(VM* parent, uint16_t target, uint8_t arg_count,
         return 0;
     }
     child->is_child = 1;
+    child->parent = parent;
+    child->entry_offset = target;
     DBDriver auto_driver;
     parent->driver->init(&auto_driver);
     if (!auto_driver.open(&auto_driver, parent->driver->connection_string)) {

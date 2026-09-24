@@ -217,6 +217,12 @@ trigger orders_check before insert on orders for each row {
 drop trigger orders_audit;
 ```
 
+A trigger may not modify the table it fires on, whether directly, through a
+proc it calls, through dynamic SQL, or through another table's trigger that
+writes back. The statement fails with a runtime error such as
+`Cannot modify table 'orders' while its trigger 'orders_check' is running`,
+which `try`/`catch` can handle.
+
 ### Sequences
 
 Persistent sequences work like Oracle's: `create_sequence`, `nextval`,
