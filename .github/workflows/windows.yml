@@ -35,10 +35,13 @@ jobs:
 
     - name: Prepare the test environment
       run: |
-        # The tests write to /tmp paths, which a native Windows program
-        # resolves against the root of the current drive.
-        drive=$(cygpath -m "$PWD" | cut -c1 | tr 'A-Z' 'a-z')
-        mkdir -p "/$drive/tmp"
+        # The tests use /tmp paths. A native Windows program resolves them
+        # against the root of the current drive, while MSYS2's bash (which
+        # runs the tests' shell commands) maps /tmp to its own directory.
+        # A junction from the drive's \tmp to bash's /tmp makes them one.
+        drive=$(cygpath -m "$PWD" | cut -c1)
+        cmd //c "mklink /J ${drive}:\\tmp $(cygpath -w /tmp)"
+        ls -ld "/$(echo "$drive" | tr 'A-Z' 'a-z')/tmp"
         # Some tests build shared libraries with cc.
         command -v cc || cp "$(command -v gcc)" "$(dirname "$(command -v gcc)")/cc.exe"
 
@@ -57,5 +60,5 @@ jobs:
         make -k test CC=gcc > /dev/null 2>&1 || true
         for t in bin/test_*.exe; do
           echo "=== $t"
-          timeout 300 "$t" 2>&1 | grep -E "FAIL|[0-9]+ run" | head -40 || true
+          timeout 300 "$t" 2>&1 | grep -E "FAIL|[0-9]+ run" | tail -25 || true
         done
