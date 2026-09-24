@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int run_repl(const char* input, char* output, size_t output_size) {
+/* `args` go on the mypl command line, e.g. "--db /tmp/x.db"; "" for none. */
+static int run_repl_with_args(const char* args, const char* input,
+                              char* output, size_t output_size) {
     FILE* in = fopen("/tmp/repl_in.txt", "w");
     if (in == NULL) {
         output[0] = '\0';
@@ -12,7 +14,10 @@ static int run_repl(const char* input, char* output, size_t output_size) {
     fprintf(in, "%s", input);
     fclose(in);
 
-    int rc = system("./bin/mypl < /tmp/repl_in.txt > /tmp/repl_out.txt 2>&1");
+    char command[512];
+    snprintf(command, sizeof(command),
+             "./bin/mypl %s < /tmp/repl_in.txt > /tmp/repl_out.txt 2>&1", args);
+    int rc = system(command);
     FILE* f = fopen("/tmp/repl_out.txt", "r");
     if (f == NULL) {
         output[0] = '\0';
@@ -22,6 +27,10 @@ static int run_repl(const char* input, char* output, size_t output_size) {
     output[n] = '\0';
     fclose(f);
     return rc;
+}
+
+static int run_repl(const char* input, char* output, size_t output_size) {
+    return run_repl_with_args("", input, output, output_size);
 }
 
 static int output_contains(const char* output, const char* needle) {
@@ -321,6 +330,80 @@ TEST(repl_load_failure_does_not_poison_session) {
     ASSERT_INT_EQ(1, output_contains(out, "> 4\n"));
 }
 
+/* Issue #85: each package input used to APPEND the whole procedures buffer
+   to the stored source, so a proc defined before two package inputs was
+   stored twice and the next session failed with "Duplicate procedure". */
+static const char* PERSIST_SESSION_1 =
+    "proc add(a int, b int) -> int { return a + b; }\n"
+    "package p1 is\n"
+    "    func one() -> int;\n"
+    "end p1;\n"
+    "package body p1 is\n"
+    "    func one() -> int { return 1; }\n"
+    "end p1;\n"
+    ".exit\n";
+static const char* PERSIST_SESSION_2 =
+    "add(2, 3)\n"
+    "proc add(a int, b int) -> int { return a * b; }\n"
+    "package p2 is\n"
+    "    func two() -> int;\n"
+    "end p2;\n"
+    "package body p2 is\n"
+    "    func two() -> int { return add(1, 2); }\n"
+    "end p2;\n"
+    ".exit\n";
+static const char* PERSIST_SESSION_3 =
+    "add(2, 3)\n"
+    "p1.one()\n"
+    "p2.two()\n"
+    ".exit\n";
+
+static void check_persisted_sessions(const char* args) {
+    char out[4096];
+    run_repl_with_args(args, PERSIST_SESSION_1, out, sizeof(out));
+    ASSERT_INT_EQ(0, output_contains(out, "error"));
+    run_repl_with_args(args, PERSIST_SESSION_2, out, sizeof(out));
+    ASSERT_INT_EQ(0, output_contains(out, "error"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 5\n"));
+    run_repl_with_args(args, PERSIST_SESSION_3, out, sizeof(out));
+    ASSERT_INT_EQ(0, output_contains(out, "error"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 6\n")); /* the redefined add */
+    ASSERT_INT_EQ(1, output_contains(out, "> 1\n"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 2\n"));
+}
+
+TEST(repl_persisted_packages_load_in_later_sessions) {
+    remove("mypl.db");
+    remove("mypl.db.packages");
+    check_persisted_sessions("");
+    if (current_test_failed) {
+        remove("mypl.db");
+        remove("mypl.db.packages");
+        return;
+    }
+    /* The stored source holds each definition once, under one marker. */
+    FILE* f = fopen("mypl.db.packages", "r");
+    ASSERT_PTR_NOT_NULL(f);
+    char stored[4096];
+    size_t n = fread(stored, 1, sizeof(stored) - 1, f);
+    stored[n] = '\0';
+    fclose(f);
+    ASSERT_INT_EQ(1, count_occurrences(stored, "proc add"));
+    ASSERT_INT_EQ(1, count_occurrences(stored, "return a * b;"));
+    ASSERT_INT_EQ(1, count_occurrences(stored, "package body p1"));
+    ASSERT_INT_EQ(1, count_occurrences(stored, "__MYPL_PACKAGE_SOURCE__"));
+    remove("mypl.db");
+    remove("mypl.db.packages");
+}
+
+#ifdef USE_SQLITE
+TEST(repl_persisted_packages_load_in_later_sessions_sqlite) {
+    remove("/tmp/repl_persist.db");
+    check_persisted_sessions("--db /tmp/repl_persist.db");
+    remove("/tmp/repl_persist.db");
+}
+#endif
+
 #ifdef USE_SQLITE
 TEST(repl_lists_indexes_and_foreign_keys_in_sqlite) {
     system("rm -f /tmp/repl_fk.db");
@@ -340,7 +423,9 @@ TEST(repl_lists_indexes_and_foreign_keys_in_sqlite) {
 #endif
 
 int main(void) {
-    system("rm -f mypl.db");
+    /* Stored package source from an earlier run would be loaded by every
+       session, so it goes too. */
+    system("rm -f mypl.db mypl.db.packages");
     RUN_TEST(repl_defines_and_calls_procedure);
     RUN_TEST(repl_persists_variables);
     RUN_TEST(repl_inspects_variables);
@@ -364,8 +449,10 @@ int main(void) {
     RUN_TEST(repl_redefinition_with_new_signature_is_refused);
     RUN_TEST(repl_vars_names_follow_their_slots);
     RUN_TEST(repl_load_failure_does_not_poison_session);
+    RUN_TEST(repl_persisted_packages_load_in_later_sessions);
 #ifdef USE_SQLITE
     RUN_TEST(repl_lists_indexes_and_foreign_keys_in_sqlite);
+    RUN_TEST(repl_persisted_packages_load_in_later_sessions_sqlite);
 #endif
     TEST_SUMMARY();
 }

@@ -491,6 +491,8 @@ static char* strip_main_procedure(const char* source) {
     return out;
 }
 
+#define PACKAGE_SOURCE_MARKER "// __MYPL_PACKAGE_SOURCE__"
+
 static int custom_save_source(Context* ctx, const char* source, int append) {
     char* path = sidecar_path(ctx);
     if (path == NULL) return 1;
@@ -507,7 +509,15 @@ static int custom_save_source(Context* ctx, const char* source, int append) {
         free(stripped);
         return 0;
     }
-    fprintf(f, "// __MYPL_PACKAGE_SOURCE__\n%s\n", stripped);
+    /* Source the REPL loaded from here and saves back already starts with
+       the marker and ends with a newline: add neither a second time. */
+    const char* body = stripped;
+    while (*body == ' ' || *body == '\t' || *body == '\n' || *body == '\r') body++;
+    int has_marker = strncmp(body, PACKAGE_SOURCE_MARKER, strlen(PACKAGE_SOURCE_MARKER)) == 0;
+    size_t len = strlen(stripped);
+    int ends_in_newline = len > 0 && stripped[len - 1] == '\n';
+    fprintf(f, "%s%s%s", has_marker ? "" : PACKAGE_SOURCE_MARKER "\n", stripped,
+            ends_in_newline ? "" : "\n");
     fclose(f);
     free(path);
     free(stripped);
