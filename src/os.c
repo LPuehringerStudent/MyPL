@@ -1,12 +1,28 @@
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 #include "os.h"
+
+/* Files are opened in binary mode: on Windows the default text mode would
+   rewrite the newline bytes in database pages. POSIX has no such mode. */
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 int os_file_exists(const char* path) {
     struct stat st;
@@ -14,7 +30,7 @@ int os_file_exists(const char* path) {
 }
 
 int os_write_file(const char* path, const char* contents, size_t len) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0) return 0;
 
     size_t total = 0;
@@ -31,7 +47,7 @@ int os_write_file(const char* path, const char* contents, size_t len) {
 }
 
 char* os_read_file(const char* path) {
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | O_BINARY);
     if (fd < 0) return NULL;
 
     off_t size = lseek(fd, 0, SEEK_END);
@@ -72,7 +88,11 @@ int os_is_dir(const char* path) {
 }
 
 int os_mkdir(const char* path) {
+#ifdef _WIN32
+    return _mkdir(path) == 0;
+#else
     return mkdir(path, 0755) == 0;
+#endif
 }
 
 int os_list_dir(const char* path, char*** out_names, int* out_count) {
@@ -122,13 +142,26 @@ int os_list_dir(const char* path, char*** out_names, int* out_count) {
 }
 
 int os_open(const char* path) {
-    return open(path, O_RDWR | O_CREAT, 0644);
+    return open(path, O_RDWR | O_CREAT | O_BINARY, 0644);
 }
 
 int os_close(int fd) {
     return close(fd);
 }
 
+#ifdef _WIN32
+/* No pread/pwrite: seek, then read or write. Each file descriptor is used
+   by one pager, so the seek cannot race another positioned access. */
+int os_read(int fd, void* buf, size_t count, off_t offset) {
+    if (_lseeki64(fd, (long long)offset, SEEK_SET) < 0) return -1;
+    return _read(fd, buf, (unsigned int)count);
+}
+
+int os_write(int fd, const void* buf, size_t count, off_t offset) {
+    if (_lseeki64(fd, (long long)offset, SEEK_SET) < 0) return -1;
+    return _write(fd, buf, (unsigned int)count);
+}
+#else
 int os_read(int fd, void* buf, size_t count, off_t offset) {
     return (int)pread(fd, buf, count, offset);
 }
@@ -136,7 +169,136 @@ int os_read(int fd, void* buf, size_t count, off_t offset) {
 int os_write(int fd, const void* buf, size_t count, off_t offset) {
     return (int)pwrite(fd, buf, count, offset);
 }
+#endif
 
 int os_ftruncate(int fd, off_t length) {
     return ftruncate(fd, length);
+}
+
+long os_getline(char** line, size_t* capacity, FILE* f) {
+#ifdef _WIN32
+    if (*line == NULL || *capacity == 0) {
+        *capacity = 128;
+        *line = malloc(*capacity);
+        if (*line == NULL) return -1;
+    }
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        if (len + 2 > *capacity) {
+            size_t grown = *capacity * 2;
+            char* bigger = realloc(*line, grown);
+            if (bigger == NULL) return -1;
+            *line = bigger;
+            *capacity = grown;
+        }
+        (*line)[len++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (len == 0) return -1;
+    (*line)[len] = '\0';
+    return (long)len;
+#else
+    return (long)getline(line, capacity, f);
+#endif
+}
+
+char* os_realpath(const char* path) {
+#ifdef _WIN32
+    char* full = _fullpath(NULL, path, 0);
+    if (full == NULL || !os_file_exists(full)) {
+        free(full);
+        return NULL;
+    }
+    return full;
+#else
+    return realpath(path, NULL);
+#endif
+}
+
+int os_path_is_absolute(const char* path) {
+    if (path == NULL || path[0] == '\0') return 0;
+#ifdef _WIN32
+    /* C:\x, C:/x, \\server\share and a rooted \x or /x */
+    if (path[0] == '/' || path[0] == '\\') return 1;
+    return ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+           path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+#else
+    return path[0] == '/';
+#endif
+}
+
+/* The last shared-library failure, for os_dl_error. */
+static char dl_error_message[256];
+
+#ifdef _WIN32
+void* os_dl_open(const char* path) {
+    HMODULE module = LoadLibraryA(path);
+    if (module == NULL) {
+        DWORD code = GetLastError();
+        int n = snprintf(dl_error_message, sizeof(dl_error_message), "%s: ", path);
+        if (n < 0 || (size_t)n >= sizeof(dl_error_message)) n = 0;
+        if (FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
+                           code, 0, dl_error_message + n,
+                           (DWORD)(sizeof(dl_error_message) - (size_t)n), NULL) == 0) {
+            snprintf(dl_error_message + n, sizeof(dl_error_message) - (size_t)n,
+                     "error %lu", (unsigned long)code);
+        }
+        /* FormatMessage ends its text with CR LF. */
+        size_t len = strlen(dl_error_message);
+        while (len > 0 && (dl_error_message[len - 1] == '\n' || dl_error_message[len - 1] == '\r')) {
+            dl_error_message[--len] = '\0';
+        }
+        return NULL;
+    }
+    return (void*)module;
+}
+
+void* os_dl_sym(void* handle, const char* name) {
+    FARPROC proc = GetProcAddress((HMODULE)handle, name);
+    if (proc == NULL) {
+        snprintf(dl_error_message, sizeof(dl_error_message), "undefined symbol: %s", name);
+        return NULL;
+    }
+    /* A function pointer: copied out rather than cast, as in natives.c. */
+    void* addr = NULL;
+    memcpy(&addr, &proc, sizeof(addr));
+    return addr;
+}
+
+void os_dl_close(void* handle) {
+    if (handle != NULL) FreeLibrary((HMODULE)handle);
+}
+#else
+void* os_dl_open(const char* path) {
+    void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (handle == NULL) {
+        const char* message = dlerror();
+        snprintf(dl_error_message, sizeof(dl_error_message), "%s",
+                 message != NULL ? message : "dlopen failed");
+    }
+    return handle;
+}
+
+void* os_dl_sym(void* handle, const char* name) {
+    dlerror();
+    void* addr = dlsym(handle, name);
+    const char* message = dlerror();
+    if (message != NULL) {
+        snprintf(dl_error_message, sizeof(dl_error_message), "%s", message);
+        return NULL;
+    }
+    if (addr == NULL) {
+        snprintf(dl_error_message, sizeof(dl_error_message), "symbol %s is NULL", name);
+    }
+    return addr;
+}
+
+void os_dl_close(void* handle) {
+    if (handle != NULL) dlclose(handle);
+}
+#endif
+
+const char* os_dl_error(void) {
+    return dl_error_message[0] != '\0' ? dl_error_message : "unknown error";
 }

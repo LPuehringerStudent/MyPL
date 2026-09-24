@@ -1,7 +1,6 @@
 #include "natives.h"
 
 #include <ctype.h>
-#include <dlfcn.h>
 #include <limits.h>
 #include <math.h>
 #include <regex.h>
@@ -1110,7 +1109,7 @@ static int native_join_paths(VM* vm, int argc, Value* argv, Value* out) {
     }
     const char* a = argv[0].as.as_string ? argv[0].as.as_string : "";
     const char* b = argv[1].as.as_string ? argv[1].as.as_string : "";
-    if (b[0] == '/') {
+    if (os_path_is_absolute(b)) {
         *out = value_string(strdup(b));
         return out->as.as_string ? 1 : 0;
     }
@@ -2259,21 +2258,18 @@ typedef enum { EXT_INT, EXT_FLOAT, EXT_STRING } ExtKind;
 
 /* Looks `sym` up in `lib`, reporting failures as `who`. */
 static int ext_resolve(VM* vm, const char* who, const char* lib, const char* sym, void** addr) {
-    dlerror();
-    void* handle = dlopen(lib != NULL ? lib : "", RTLD_NOW | RTLD_LOCAL);
+    void* handle = os_dl_open(lib != NULL ? lib : "");
     if (handle == NULL) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s: %s", who, dlerror());
+        char msg[320];
+        snprintf(msg, sizeof(msg), "%s: %s", who, os_dl_error());
         vm_set_error(vm, msg);
         return 0;
     }
-    dlerror();
-    *addr = dlsym(handle, sym != NULL ? sym : "");
-    const char* sym_err = dlerror();
-    if (sym_err != NULL) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s: %s", who, sym_err);
-        dlclose(handle);
+    *addr = os_dl_sym(handle, sym != NULL ? sym : "");
+    if (*addr == NULL) {
+        char msg[320];
+        snprintf(msg, sizeof(msg), "%s: %s", who, os_dl_error());
+        os_dl_close(handle);
         vm_set_error(vm, msg);
         return 0;
     }

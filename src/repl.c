@@ -2,8 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termios.h>
 #include <unistd.h>
+
+#ifndef _WIN32
+#include <termios.h>
+#endif
 
 #include "repl.h"
 #include "compiler.h"
@@ -347,6 +350,9 @@ static int read_line_simple(const char* prompt, char* buf, size_t size) {
     return 1;
 }
 
+/* Line editing with history needs a raw POSIX terminal; Windows reads
+   plain lines (repl_read_line). */
+#ifndef _WIN32
 static int read_line_tty(ReplSession* session, const char* prompt,
                          char* buf, size_t size) {
     printf("%s", prompt);
@@ -451,12 +457,17 @@ static int read_line_tty(ReplSession* session, const char* prompt,
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_tio);
     return 1;
 }
+#endif
 
 static int repl_read_line(ReplSession* session, const char* prompt,
                           char* buf, size_t size) {
+#ifndef _WIN32
     if (isatty(STDIN_FILENO)) {
         return read_line_tty(session, prompt, buf, size);
     }
+#else
+    (void)session;
+#endif
     return read_line_simple(prompt, buf, size);
 }
 

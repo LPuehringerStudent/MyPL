@@ -1772,8 +1772,8 @@ static char* path_directory(const char* path) {
 }
 
 static char* resolve_import_path(const char* base_dir, const char* import_path) {
-    if (import_path[0] == '/') {
-        return realpath(import_path, NULL);
+    if (os_path_is_absolute(import_path)) {
+        return os_realpath(import_path);
     }
 
     char combined[4096];
@@ -1784,7 +1784,7 @@ static char* resolve_import_path(const char* base_dir, const char* import_path) 
         size_t len = strlen(combined);
         snprintf(combined + len, sizeof(combined) - len, "/%s", import_path);
     }
-    return realpath(combined, NULL);
+    return os_realpath(combined);
 }
 
 static int compiler_load_module(Compiler* compiler, const char* import_path, char* error, size_t error_size) {
