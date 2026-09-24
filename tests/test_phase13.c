@@ -6,13 +6,13 @@
 #include <unistd.h>
 
 /* ==========================================================================
- * Phase 13 open issues #34-#38: failing acceptance tests (TDD).
+ * Phase 13 open issues #34-#38: acceptance tests (TDD).
  *
- * These tests pin what "done" looks like for each remaining Phase 13 item
- * from NEXT_STEPS.md. Tests for #34, #35, #36 and the #38 churn test FAIL
- * on current main and must be driven green by the respective issue's
- * implementation; the #37 test and the #38 expressibility test are
- * regression guards that already pass and must stay green.
+ * These tests pin what "done" looks like for each Phase 13 item. The #34,
+ * #35, #36 and #38 churn tests failed on the main that introduced them and
+ * were driven green by the respective issues' implementations; the #37 test
+ * and the #38 expressibility test are regression guards that must stay
+ * green.
  * ========================================================================== */
 
 static int run_mypl(const char* source, char* out, size_t out_size) {
