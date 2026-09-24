@@ -428,6 +428,127 @@ TEST(phase12_row_trigger_requires_dml_event) {
     clean_trigger_db();
 }
 
+/* --- Trigger self-modification guard (#59) ---
+   A trigger may not modify the table it fires on, directly or indirectly.
+   Before the guard these overflowed the stack, crashed, or rewrote the row
+   chain mid-trigger. */
+
+#define SELF_MOD_ERROR "Cannot modify table"
+
+TEST(phase12_trigger_static_dml_on_own_table_errors) {
+    clean_trigger_db();
+    char out[1024];
+    int rc = run_mypl(
+        "trigger trg_sm before insert on trg_sm_t {\n"
+        "    insert into trg_sm_t values (99);\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_sm_t (id int);\n"
+        "    insert into trg_sm_t values (1);\n"
+        "    print \"unreachable\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out,
+        "Cannot modify table 'trg_sm_t' while its trigger 'trg_sm' is running"));
+    ASSERT_INT_EQ(0, output_contains(out, "Stack overflow"));
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+    clean_trigger_db();
+}
+
+TEST(phase12_row_trigger_dynamic_dml_on_own_table_errors) {
+    clean_trigger_db();
+    char out[1024];
+    int rc = run_mypl(
+        "trigger trg_rd after insert on trg_rd_t for each row {\n"
+        "    execute_immediate(\"insert into trg_rd_t values (99)\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_rd_t (id int);\n"
+        "    insert into trg_rd_t values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out,
+        "Cannot modify table 'trg_rd_t' while its trigger 'trg_rd' is running"));
+    clean_trigger_db();
+}
+
+TEST(phase12_trigger_dml_through_a_proc_errors) {
+    /* No trigger fires for the UPDATE itself; the DML check catches it. */
+    clean_trigger_db();
+    char out[1024];
+    int rc = run_mypl(
+        "proc bump() -> int {\n"
+        "    update trg_pr_t set id = 5;\n"
+        "    return 0;\n"
+        "}\n"
+        "trigger trg_pr after insert on trg_pr_t {\n"
+        "    bump();\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_pr_t (id int);\n"
+        "    insert into trg_pr_t values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out,
+        "Cannot modify table 'trg_pr_t' while its trigger 'trg_pr' is running"));
+    clean_trigger_db();
+}
+
+TEST(phase12_trigger_cycle_through_another_table_errors) {
+    clean_trigger_db();
+    char out[1024];
+    int rc = run_mypl(
+        "trigger trg_cy_a after insert on trg_cy_a_t {\n"
+        "    insert into trg_cy_b_t values (1);\n"
+        "}\n"
+        "trigger trg_cy_b after insert on trg_cy_b_t {\n"
+        "    insert into trg_cy_a_t values (2);\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_cy_a_t (id int);\n"
+        "    create table trg_cy_b_t (id int);\n"
+        "    insert into trg_cy_a_t values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out,
+        "Cannot modify table 'trg_cy_a_t' while its trigger 'trg_cy_a' is running"));
+    ASSERT_INT_EQ(0, output_contains(out, "Stack overflow"));
+    clean_trigger_db();
+}
+
+TEST(phase12_trigger_self_modification_error_is_catchable) {
+    clean_trigger_db();
+    char out[1024];
+    int rc = run_mypl(
+        "trigger trg_ca after insert on trg_ca_t {\n"
+        "    delete from trg_ca_t;\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_ca_t (id int);\n"
+        "    try {\n"
+        "        insert into trg_ca_t values (1);\n"
+        "    } catch (err) {\n"
+        "        print concat(\"caught: \", err);\n"
+        "    }\n"
+        "    print \"continues\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "caught: "));
+    ASSERT_INT_EQ(1, output_contains(out, SELF_MOD_ERROR));
+    ASSERT_INT_EQ(1, output_contains(out, "continues"));
+    clean_trigger_db();
+}
+
 /* --- dbms_sql cursor API (Phase 12 Task 4) --- */
 
 static void clean_dbms_sql_db(void) {
@@ -769,6 +890,26 @@ TEST(phase12_drop_trigger_stops_and_persists) {
     ASSERT_INT_EQ(0, rc);
     ASSERT_INT_EQ(0, count_occurrences(out, "drop-fired"));
     clean_trigger_db();
+}
+
+/* The SQLite driver fires row triggers through its own snapshot path. */
+TEST(phase12_sqlite_row_trigger_dml_on_own_table_errors) {
+    remove("/tmp/test_phase12.db");
+    char out[1024];
+    int rc = run_mypl_sqlite(
+        "trigger trg_sq after insert on trg_sq_t for each row {\n"
+        "    execute_immediate(\"delete from trg_sq_t\");\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    create table trg_sq_t (id int);\n"
+        "    insert into trg_sq_t values (1);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(1, output_contains(out,
+        "Cannot modify table 'trg_sq_t' while its trigger 'trg_sq' is running"));
+    remove("/tmp/test_phase12.db");
 }
 
 TEST(phase12_trigger_fires_on_execute_immediate) {
@@ -1457,6 +1598,11 @@ int main(void) {
     RUN_TEST(phase12_row_trigger_fires_on_dynamic_sql);
     RUN_TEST(phase12_row_trigger_wrong_context_errors);
     RUN_TEST(phase12_row_trigger_requires_dml_event);
+    RUN_TEST(phase12_trigger_static_dml_on_own_table_errors);
+    RUN_TEST(phase12_row_trigger_dynamic_dml_on_own_table_errors);
+    RUN_TEST(phase12_trigger_dml_through_a_proc_errors);
+    RUN_TEST(phase12_trigger_cycle_through_another_table_errors);
+    RUN_TEST(phase12_trigger_self_modification_error_is_catchable);
     RUN_TEST(phase12_dbms_sql_open_parse_execute_dml);
     RUN_TEST(phase12_dbms_sql_fetch_rows);
     RUN_TEST(phase12_dbms_sql_column_value);
@@ -1475,6 +1621,7 @@ int main(void) {
     RUN_TEST(phase12_sqlite_nextval_persists_across_restarts);
     RUN_TEST(phase12_sqlite_drop_sequence_persists);
     RUN_TEST(phase12_trigger_static_fires);
+    RUN_TEST(phase12_sqlite_row_trigger_dml_on_own_table_errors);
     RUN_TEST(phase12_trigger_persists_across_restarts);
     RUN_TEST(phase12_drop_trigger_stops_and_persists);
     RUN_TEST(phase12_trigger_fires_on_execute_immediate);
