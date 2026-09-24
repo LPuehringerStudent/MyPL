@@ -795,6 +795,15 @@ static int native_mkdir(VM* vm, int argc, Value* argv, Value* out) {
     return 1;
 }
 
+/* Appends a value the caller has just created. array_append takes its own
+   reference, so the caller's is dropped here, whether or not the append
+   succeeded. */
+static int array_append_new(ArrayObj* array, Value value) {
+    int ok = array_append(array, value);
+    value_release(value);
+    return ok;
+}
+
 static int native_list_dir(VM* vm, int argc, Value* argv, Value* out) {
     (void)vm;
     (void)argc;
@@ -817,7 +826,7 @@ static int native_list_dir(VM* vm, int argc, Value* argv, Value* out) {
         return 0;
     }
     for (int i = 0; i < count; i++) {
-        if (!array_append(arr, value_string(strdup(names[i])))) {
+        if (!array_append_new(arr, value_string(strdup(names[i])))) {
             for (int j = i; j < count; j++) free(names[j]);
             free(names);
             array_free(arr);
@@ -876,13 +885,15 @@ static int native_split(VM* vm, int argc, Value* argv, Value* out) {
     }
     char* copy = strdup(s);
     if (copy == NULL) {
+        array_free(arr);
         vm_set_error(vm, "Out of memory");
         return 0;
     }
     char* token = strtok(copy, delim);
     while (token != NULL) {
-        if (!array_append(arr, value_string(strdup(token)))) {
+        if (!array_append_new(arr, value_string(strdup(token)))) {
             free(copy);
+            array_free(arr);
             vm_set_error(vm, "Out of memory");
             return 0;
         }
@@ -1063,8 +1074,7 @@ static int native_split_lines(VM* vm, int argc, Value* argv, Value* out) {
             }
             memcpy(part, line_start, len);
             part[len] = '\0';
-            if (!array_append(arr, value_string(part))) {
-                free(part);
+            if (!array_append_new(arr, value_string(part))) {
                 array_free(arr);
                 vm_set_error(vm, "Out of memory");
                 return 0;
@@ -1082,8 +1092,7 @@ static int native_split_lines(VM* vm, int argc, Value* argv, Value* out) {
     }
     memcpy(part, line_start, len);
     part[len] = '\0';
-    if (!array_append(arr, value_string(part))) {
-        free(part);
+    if (!array_append_new(arr, value_string(part))) {
         array_free(arr);
         vm_set_error(vm, "Out of memory");
         return 0;
@@ -1291,9 +1300,7 @@ static int native_slice(VM* vm, int argc, Value* argv, Value* out) {
     }
     for (int i = start; i < end; i++) {
         Value v = array_get(arr, i);
-        value_retain(v);
         if (!array_append(result, v)) {
-            value_release(v);
             array_free(result);
             vm_set_error(vm, "Out of memory");
             return 0;
@@ -1325,9 +1332,7 @@ static int native_remove_at(VM* vm, int argc, Value* argv, Value* out) {
     for (int i = 0; i < len; i++) {
         if (i == idx) continue;
         Value v = array_get(arr, i);
-        value_retain(v);
         if (!array_append(result, v)) {
-            value_release(v);
             array_free(result);
             vm_set_error(vm, "Out of memory");
             return 0;
@@ -1358,27 +1363,21 @@ static int native_insert(VM* vm, int argc, Value* argv, Value* out) {
     }
     for (int i = 0; i < len; i++) {
         if (i == idx) {
-            value_retain(argv[2]);
             if (!array_append(result, argv[2])) {
-                value_release(argv[2]);
                 array_free(result);
                 vm_set_error(vm, "Out of memory");
                 return 0;
             }
         }
         Value v = array_get(arr, i);
-        value_retain(v);
         if (!array_append(result, v)) {
-            value_release(v);
             array_free(result);
             vm_set_error(vm, "Out of memory");
             return 0;
         }
     }
     if (idx == len) {
-        value_retain(argv[2]);
         if (!array_append(result, argv[2])) {
-            value_release(argv[2]);
             array_free(result);
             vm_set_error(vm, "Out of memory");
             return 0;
@@ -1512,9 +1511,7 @@ static int native_array_fill(VM* vm, int argc, Value* argv, Value* out) {
         return 0;
     }
     for (int i = 0; i < count; i++) {
-        value_retain(argv[1]);
         if (!array_append(result, argv[1])) {
-            value_release(argv[1]);
             array_free(result);
             vm_set_error(vm, "Out of memory");
             return 0;
