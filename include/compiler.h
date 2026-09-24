@@ -16,6 +16,14 @@ typedef struct DBDriver DBDriver;
 typedef struct {
     const char* const* conditional_flags;
     int conditional_flag_count;
+    /* Number of lines that precede the user's own source in the buffer handed
+       to the compiler (built-in and stored declarations the driver prepends).
+       The compiler numbers lines so the user's first line is 1: everything in
+       that preamble gets a non-positive line, and is reported as coming from
+       built-in or stored declarations rather than at a shifted line of the
+       user's file. 0 (the default) means no preamble. Applies to the main
+       source only, never to imported modules. */
+    int line_offset;
 } CompileOptions;
 
 typedef enum {

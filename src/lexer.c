@@ -2,11 +2,17 @@
 
 #include "lexer.h"
 
-void lexer_init(Lexer* lexer, const char* source) {
+void lexer_init_at_line(Lexer* lexer, const char* source, int first_line) {
     lexer->start = source;
     lexer->current = source;
     lexer->line_start = source;
-    lexer->line = 1;
+    lexer->line = first_line;
+    lexer->start_line = first_line;
+    lexer->start_column = 1;
+}
+
+void lexer_init(Lexer* lexer, const char* source) {
+    lexer_init_at_line(lexer, source, 1);
 }
 
 static int is_at_end(Lexer* lexer) {
@@ -63,9 +69,16 @@ static Token number(Lexer* lexer) {
 
 static Token string(Lexer* lexer) {
     while (peek(lexer) != '"' && !is_at_end(lexer)) {
-        if (peek(lexer) == '\n') lexer->line++;
+        if (peek(lexer) == '\n') {
+            lexer->line++;
+            lexer->line_start = lexer->current + 1;
+        }
         if (peek(lexer) == '\\' && peek_next(lexer) != '\0') {
             advance(lexer); /* consume backslash */
+            if (peek(lexer) == '\n') {
+                lexer->line++;
+                lexer->line_start = lexer->current + 1;
+            }
             advance(lexer); /* consume escaped character */
             continue;
         }
@@ -96,7 +109,10 @@ static Token identifier(Lexer* lexer) {
 
 static Token sql_query(Lexer* lexer) {
     while (peek(lexer) != '{' && peek(lexer) != ';' && !is_at_end(lexer)) {
-        if (peek(lexer) == '\n') lexer->line++;
+        if (peek(lexer) == '\n') {
+            lexer->line++;
+            lexer->line_start = lexer->current + 1;
+        }
         advance(lexer);
     }
     return make_token(lexer, TOKEN_SQL_QUERY);
@@ -215,8 +231,8 @@ static Token make_token(Lexer* lexer, TokenType type) {
     token.type = type;
     token.start = lexer->start;
     token.length = (int)(lexer->current - lexer->start);
-    token.line = lexer->line;
-    token.column = (int)(lexer->start - lexer->line_start) + 1;
+    token.line = lexer->start_line;
+    token.column = lexer->start_column;
     return token;
 }
 
@@ -225,8 +241,8 @@ static Token error_token(Lexer* lexer, const char* message) {
     token.type = TOKEN_ERROR;
     token.start = message;
     token.length = 0;
-    token.line = lexer->line;
-    token.column = (int)(lexer->start - lexer->line_start) + 1;
+    token.line = lexer->start_line;
+    token.column = lexer->start_column;
     return token;
 }
 
@@ -276,6 +292,8 @@ static void skip_whitespace(Lexer* lexer) {
 Token lexer_next_token(Lexer* lexer) {
     skip_whitespace(lexer);
     lexer->start = lexer->current;
+    lexer->start_line = lexer->line;
+    lexer->start_column = (int)(lexer->start - lexer->line_start) + 1;
 
     if (is_at_end(lexer)) {
         return make_token(lexer, TOKEN_EOF);

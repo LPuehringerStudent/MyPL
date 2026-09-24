@@ -20,7 +20,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     for (int i = 0; i < 4; i++) {
         if (mask & (1u << i)) flags[flag_count++] = fuzz_flag_names[i];
     }
-    CompileOptions options = {flags, flag_count};
+    CompileOptions options = {flags, flag_count, 0};
 
     char error[256];
     error[0] = '\0';

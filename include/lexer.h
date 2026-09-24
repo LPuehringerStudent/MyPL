@@ -126,9 +126,19 @@ typedef struct {
     const char* current;
     const char* line_start;
     int line;
+    /* Where the token being scanned began. A token can span lines (a SQL
+       query, a string with an embedded newline), and it is located at its
+       start, not at the line the scan ended on. */
+    int start_line;
+    int start_column;
 } Lexer;
 
 void lexer_init(Lexer* lexer, const char* source);
+/* Like lexer_init, but the first line of `source` is numbered `first_line`
+   rather than 1. Used when `source` is preceded by text that is not the
+   user's (built-in and stored declarations): giving that text non-positive
+   line numbers makes the user's own text start at line 1. */
+void lexer_init_at_line(Lexer* lexer, const char* source, int first_line);
 Token lexer_next_token(Lexer* lexer);
 
 #endif
