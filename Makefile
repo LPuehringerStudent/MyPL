@@ -9,6 +9,14 @@ CFLAGS  += -DUSE_SQLITE
 LDFLAGS += -lsqlite3
 endif
 
+# Windows (MinGW-w64, e.g. MSYS2's MINGW64 shell): executables get .exe, and
+# the POSIX regex API the regexp_* natives use comes from a separate library,
+# linked as libgnurx (MSYS2's libsystre package provides it under that name).
+ifeq ($(OS),Windows_NT)
+EXE      = .exe
+LDFLAGS += -lgnurx
+endif
+
 SRCDIR  = src
 OBJDIR  = build
 BINDIR  = bin
@@ -22,7 +30,7 @@ endif
 OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES))
 LIB_OBJECTS = $(filter-out $(OBJDIR)/main.o,$(OBJECTS))
 
-TARGET      = $(BINDIR)/mypl
+TARGET      = $(BINDIR)/mypl$(EXE)
 
 .PHONY: all clean test examples-test fuzz fuzz-run fuzz-replay install uninstall
 

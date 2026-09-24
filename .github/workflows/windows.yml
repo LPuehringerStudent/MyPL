@@ -1,0 +1,43 @@
+name: Windows
+
+# Stage 1 of the Windows port (#90): MyPL builds with MinGW-w64 and runs the
+# example programs. The C unit tests are still POSIX-bound (/tmp paths,
+# shell commands, cc -shared) and do not run here yet.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  windows-mingw:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up MSYS2 (MINGW64)
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          make
+          mingw-w64-x86_64-gcc
+          mingw-w64-x86_64-libsystre
+          mingw-w64-x86_64-sqlite3
+
+    - name: Build project
+      run: make clean && make all CC=gcc
+
+    - name: Show version
+      run: ./bin/mypl.exe --version
+
+    - name: Run examples
+      run: make examples-test CC=gcc

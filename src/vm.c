@@ -10,6 +10,7 @@
 #include "sql_engine.h"
 #include "stored_programs.h"
 #include "trigger.h"
+#include "os.h"
 
 #define TRY_MAX 64
 #define MAX_OUT_PARAMS 16
@@ -412,7 +413,7 @@ int vm_utl_file_get_line(VM* vm, int handle, Value* out) {
     FILE* f = vm->utl_file_handles[handle];
     char* line = NULL;
     size_t capacity = 0;
-    ssize_t len = getline(&line, &capacity, f);
+    long len = os_getline(&line, &capacity, f);
     if (len < 0) {
         int failed = ferror(f);
         free(line);
@@ -473,7 +474,7 @@ int vm_utl_file_fclose(VM* vm, int handle) {
 
 int vm_utl_file_mkdir(const char* path) {
     if (path == NULL) return -1;
-    return mkdir(path, 0777);
+    return os_mkdir(path) ? 0 : -1;
 }
 
 int vm_utl_file_remove(const char* path) {
