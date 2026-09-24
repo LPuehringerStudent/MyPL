@@ -1760,6 +1760,52 @@ TEST(phase11_named_sql_loop_variable_reads_fields) {
     remove("mypl.db");
 }
 
+/* Issue #51: a row loop over a table the same program creates. The table is
+   not in the catalog at compile time, so its columns resolve at runtime. */
+TEST(phase11_row_loop_over_table_created_in_same_program) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table same_t (id int, name string);\n"
+        "    insert into same_t values (1, 'alpha');\n"
+        "    insert into same_t values (2, 'beta');\n"
+        "    int total = 0;\n"
+        "    for item in select id, name from same_t order by id {\n"
+        "        total = total + item.id;\n"
+        "        print concat(\"name=\", item.name);\n"
+        "    }\n"
+        "    print concat(\"total=\", int_to_string(total));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "name=alpha\nname=beta\ntotal=3"));
+    remove("mypl.db");
+}
+
+TEST(phase11_row_loop_over_table_created_by_proc_defined_after_main) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    setup();\n"
+        "    for item in select id from later_t {\n"
+        "        print item.id;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+        "proc setup() -> int {\n"
+        "    create table later_t (id int);\n"
+        "    insert into later_t values (7);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "7"));
+    remove("mypl.db");
+}
+
 int main(void) {
     RUN_TEST(phase11_null_literal_assign_and_print);
     RUN_TEST(phase11_null_arithmetic_yields_null);
@@ -1839,5 +1885,7 @@ int main(void) {
     RUN_TEST(phase11_create_view_on_table_name_errors);
     RUN_TEST(phase11_view_over_view);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
+    RUN_TEST(phase11_row_loop_over_table_created_in_same_program);
+    RUN_TEST(phase11_row_loop_over_table_created_by_proc_defined_after_main);
     TEST_SUMMARY();
 }
