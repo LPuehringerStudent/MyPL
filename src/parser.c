@@ -1352,7 +1352,10 @@ static Stmt* subtype_decl_statement(Parser* parser) {
     }
     Type* base_type = parse_type(parser);
     if (parser->had_error) {
+        /* parse_type can report an error and still hand back the part of
+           the type it built. */
         free(name);
+        type_free(base_type);
         return NULL;
     }
     if (!match(parser, TOKEN_SEMICOLON)) {

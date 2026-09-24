@@ -1,0 +1,5 @@
+// A subtype whose map type fails to parse must still free the type.
+proc main() -> int {
+    subtype score is map<bool, int>;
+    return 0;
+}
