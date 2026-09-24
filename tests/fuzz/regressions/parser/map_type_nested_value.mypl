@@ -1,0 +1,4 @@
+proc main() -> int {
+    map<string, array<int>> nested;
+    return 0;
+}

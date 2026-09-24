@@ -77,7 +77,7 @@ preprocessor keeping the source length and every newline in place.
 
 ```bash
 make fuzz                 # build bin/fuzz_* with clang (FUZZ_CC=...)
-make fuzz-run FUZZ_TIME=300 FUZZ_LEAKS=0  # leaks off: see NEXT_STEPS.md
+make fuzz-run FUZZ_TIME=300   # add FUZZ_LEAKS=0 to silence leak reports
 ```
 
 New corpus entries and crash inputs land in `build/fuzz/`. To keep a crash
