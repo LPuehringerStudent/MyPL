@@ -386,6 +386,25 @@ static void emit_constant(Compiler* compiler, Value value) {
     emit_u16(compiler, (uint16_t)idx);
 }
 
+/* Adds a copy of `text` to the constant pool and returns its index, or reports
+   an error and returns -1. add_constant retains what it stores, so the
+   reference value_string hands back is dropped here; the pool's is the only
+   one left, and free_chunk releases it. */
+static int add_string_constant(Compiler* compiler, const char* text) {
+    Value value = value_string(strdup(text));
+    if (value.as.as_string == NULL) {
+        error(compiler, "out of memory");
+        return -1;
+    }
+    int idx = add_constant(compiler->chunk, value);
+    value_release(value);
+    if (idx < 0) {
+        error(compiler, "too many constants");
+        return -1;
+    }
+    return idx;
+}
+
 static int resolve_local(Compiler* compiler, const char* name, int length) {
     for (int i = compiler->local_count - 1; i >= 0; i--) {
         Local* local = &compiler->locals[i];
@@ -638,18 +657,8 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                     error(compiler, "Undefined variable 'self'");
                     return;
                 }
-                char* field_name = malloc((size_t)length + 1);
-                if (field_name == NULL) {
-                    error(compiler, "out of memory");
-                    return;
-                }
-                strcpy(field_name, name);
-                int field_idx = add_constant(compiler->chunk, value_string(field_name));
-                if (field_idx < 0) {
-                    free(field_name);
-                    error(compiler, "too many constants");
-                    return;
-                }
+                int field_idx = add_string_constant(compiler, name);
+                if (field_idx < 0) return;
                 emit_get_local(compiler, self_slot);
                 emit_byte(compiler, OP_ROW_GET);
                 emit_u16(compiler, (uint16_t)field_idx);
@@ -827,18 +836,8 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
         }
         case EXPR_FIELD: {
             FieldExpr* f = &expr->as.field;
-            char* field_name = malloc((size_t)strlen(f->field) + 1);
-            if (field_name == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(field_name, f->field);
-            int field_idx = add_constant(compiler->chunk, value_string(field_name));
-            if (field_idx < 0) {
-                free(field_name);
-                error(compiler, "too many constants");
-                return;
-            }
+            int field_idx = add_string_constant(compiler, f->field);
+            if (field_idx < 0) return;
             emit_byte(compiler, OP_GET_FIELD);
             emit_u16(compiler, (uint16_t)field_idx);
             break;
@@ -875,18 +874,8 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 error(compiler, msg);
                 return;
             }
-            char* attr_name = malloc((size_t)strlen(expr->as.cursor_attr.attr_name) + 1);
-            if (attr_name == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(attr_name, expr->as.cursor_attr.attr_name);
-            int attr_idx = add_constant(compiler->chunk, value_string(attr_name));
-            if (attr_idx < 0) {
-                free(attr_name);
-                error(compiler, "too many constants");
-                return;
-            }
+            int attr_idx = add_string_constant(compiler, expr->as.cursor_attr.attr_name);
+            if (attr_idx < 0) return;
             emit_get_local(compiler, slot);
             emit_byte(compiler, OP_CURSOR_ATTR);
             emit_u16(compiler, (uint16_t)attr_idx);
@@ -905,18 +894,8 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 compile_expr(compiler, rf->row);
                 if (compiler->had_error) return;
             }
-            char* field_name = malloc((size_t)strlen(rf->field) + 1);
-            if (field_name == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(field_name, rf->field);
-            int field_idx = add_constant(compiler->chunk, value_string(field_name));
-            if (field_idx < 0) {
-                free(field_name);
-                error(compiler, "too many constants");
-                return;
-            }
+            int field_idx = add_string_constant(compiler, rf->field);
+            if (field_idx < 0) return;
             emit_byte(compiler, sql_row ? OP_GET_FIELD : OP_ROW_GET);
             emit_u16(compiler, (uint16_t)field_idx);
             break;
@@ -942,12 +921,9 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 if (i > 0) strcat(schema, ",");
                 strcat(schema, sl->field_names[i]);
             }
-            int schema_idx = add_constant(compiler->chunk, value_string(schema));
-            if (schema_idx < 0) {
-                free(schema);
-                error(compiler, "too many constants");
-                return;
-            }
+            int schema_idx = add_string_constant(compiler, schema);
+            free(schema);
+            if (schema_idx < 0) return;
             emit_byte(compiler, OP_STRUCT_BUILD);
             emit_u16(compiler, (uint16_t)schema_idx);
             break;
@@ -979,11 +955,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                            (d->type->kind == TYPE_STRUCT ||
                             d->type->kind == TYPE_ROW ||
                             d->type->kind == TYPE_PERCENT_ROWTYPE)) {
-                    int schema_idx = add_constant(compiler->chunk, value_string(strdup("")));
-                    if (schema_idx < 0) {
-                        error(compiler, "too many constants");
-                        return;
-                    }
+                    int schema_idx = add_string_constant(compiler, "");
+                    if (schema_idx < 0) return;
                     emit_byte(compiler, OP_CONST);
                     emit_u16(compiler, (uint16_t)schema_idx);
                     emit_byte(compiler, OP_STRUCT_BUILD);
@@ -1025,18 +998,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     error(compiler, "Undefined variable 'self'");
                     return;
                 }
-                char* field_name = malloc(strlen(a->name) + 1);
-                if (field_name == NULL) {
-                    error(compiler, "out of memory");
-                    return;
-                }
-                strcpy(field_name, a->name);
-                int field_idx = add_constant(compiler->chunk, value_string(field_name));
-                if (field_idx < 0) {
-                    free(field_name);
-                    error(compiler, "too many constants");
-                    return;
-                }
+                int field_idx = add_string_constant(compiler, a->name);
+                if (field_idx < 0) return;
                 emit_get_local(compiler, self_slot);
                 emit_byte(compiler, OP_CONST);
                 emit_u16(compiler, (uint16_t)field_idx);
@@ -1072,18 +1035,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             FieldAssignStmt* fa = &stmt->as.field_assign;
             compile_expr(compiler, fa->object);
             if (compiler->had_error) return;
-            char* field_name = malloc((size_t)strlen(fa->field) + 1);
-            if (field_name == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(field_name, fa->field);
-            int field_idx = add_constant(compiler->chunk, value_string(field_name));
-            if (field_idx < 0) {
-                free(field_name);
-                error(compiler, "too many constants");
-                return;
-            }
+            int field_idx = add_string_constant(compiler, fa->field);
+            if (field_idx < 0) return;
             emit_byte(compiler, OP_CONST);
             emit_u16(compiler, (uint16_t)field_idx);
             compile_expr(compiler, fa->value);
@@ -1301,18 +1254,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 }
             }
 
-            char* query = malloc((size_t)strlen(f->sql_query) + 1);
-            if (query == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(query, f->sql_query);
-            int query_idx = add_constant(compiler->chunk, value_string(query));
-            if (query_idx < 0) {
-                free(query);
-                error(compiler, "too many constants");
-                return;
-            }
+            int query_idx = add_string_constant(compiler, f->sql_query);
+            if (query_idx < 0) return;
             emit_byte(compiler, OP_SQL);
             emit_u16(compiler, (uint16_t)query_idx);
             emit_u16(compiler, (uint16_t)stmt->loc.line);
@@ -1389,18 +1332,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     emit_byte(compiler, OP_SQL_BIND_INT);
                 }
             }
-            char* sql_copy = malloc((size_t)strlen(s->sql) + 1);
-            if (sql_copy == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(sql_copy, s->sql);
-            int sql_idx = add_constant(compiler->chunk, value_string(sql_copy));
-            if (sql_idx < 0) {
-                free(sql_copy);
-                error(compiler, "too many constants");
-                return;
-            }
+            int sql_idx = add_string_constant(compiler, s->sql);
+            if (sql_idx < 0) return;
             int trig_event = -1;
             char trig_table[64];
             int has_trig = sql_trigger_info(s->sql, &trig_event, trig_table, sizeof(trig_table));
@@ -1431,18 +1364,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             }
             /* Runtime drop: disables the registry entry and removes the
                persisted definition (see OP_DROP_TRIGGER in vm.c). */
-            char* name_copy = malloc(strlen(name) + 1);
-            if (name_copy == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(name_copy, name);
-            int name_idx = add_constant(compiler->chunk, value_string(name_copy));
-            if (name_idx < 0) {
-                free(name_copy);
-                error(compiler, "too many constants");
-                return;
-            }
+            int name_idx = add_string_constant(compiler, name);
+            if (name_idx < 0) return;
             emit_byte(compiler, OP_DROP_TRIGGER);
             emit_u16(compiler, (uint16_t)name_idx);
             break;
@@ -1456,18 +1379,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
             } else if (kind == 2) {
                 emit_byte(compiler, OP_SQL_ROLLBACK);
             } else {
-                char* name = malloc(strlen(stmt->as.sql_transaction.name) + 1);
-                if (name == NULL) {
-                    error(compiler, "out of memory");
-                    return;
-                }
-                strcpy(name, stmt->as.sql_transaction.name);
-                int idx = add_constant(compiler->chunk, value_string(name));
-                if (idx < 0) {
-                    free(name);
-                    error(compiler, "too many constants");
-                    return;
-                }
+                int idx = add_string_constant(compiler, stmt->as.sql_transaction.name);
+                if (idx < 0) return;
                 if (kind == 3) {
                     emit_byte(compiler, OP_SQL_SAVEPOINT);
                 } else if (kind == 4) {
@@ -1534,18 +1447,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
         case STMT_RAISE: {
             const char* name = stmt->as.raise_stmt.name;
             int code = find_exception_code(compiler, name);
-            char* msg_copy = malloc(strlen(name) + 1);
-            if (msg_copy == NULL) {
-                error(compiler, "out of memory");
-                break;
-            }
-            strcpy(msg_copy, name);
-            int msg_idx = add_constant(compiler->chunk, value_string(msg_copy));
-            if (msg_idx < 0) {
-                free(msg_copy);
-                error(compiler, "too many constants");
-                break;
-            }
+            int msg_idx = add_string_constant(compiler, name);
+            if (msg_idx < 0) break;
             emit_byte(compiler, OP_RAISE);
             emit_u16(compiler, (uint16_t)msg_idx);
             emit_u16(compiler, (uint16_t)(int16_t)code);
@@ -1606,18 +1509,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     emit_byte(compiler, OP_SQL_BIND_INT);
                 }
             }
-            char* query_copy = malloc((size_t)strlen(query) + 1);
-            if (query_copy == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(query_copy, query);
-            int query_idx = add_constant(compiler->chunk, value_string(query_copy));
-            if (query_idx < 0) {
-                free(query_copy);
-                error(compiler, "too many constants");
-                return;
-            }
+            int query_idx = add_string_constant(compiler, query);
+            if (query_idx < 0) return;
             emit_get_local(compiler, slot);
             emit_byte(compiler, OP_CURSOR_OPEN);
             emit_u16(compiler, (uint16_t)query_idx);
@@ -1754,18 +1647,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                     emit_byte(compiler, OP_SQL_BIND_INT);
                 }
             }
-            char* sql_copy = malloc((size_t)strlen(s->sql) + 1);
-            if (sql_copy == NULL) {
-                error(compiler, "out of memory");
-                return;
-            }
-            strcpy(sql_copy, s->sql);
-            int sql_idx = add_constant(compiler->chunk, value_string(sql_copy));
-            if (sql_idx < 0) {
-                free(sql_copy);
-                error(compiler, "too many constants");
-                return;
-            }
+            int sql_idx = add_string_constant(compiler, s->sql);
+            if (sql_idx < 0) return;
             emit_byte(compiler, OP_SQL);
             emit_u16(compiler, (uint16_t)sql_idx);
             emit_u16(compiler, (uint16_t)stmt->loc.line);
@@ -1790,18 +1673,8 @@ static void compile_stmt(Compiler* compiler, Stmt* stmt) {
                 patch_jump(compiler, exit_jump);
 
                 const char* msg = "SELECT INTO found no matching row";
-                char* msg_copy = malloc(strlen(msg) + 1);
-                if (msg_copy == NULL) {
-                    error(compiler, "out of memory");
-                    return;
-                }
-                strcpy(msg_copy, msg);
-                int msg_idx = add_constant(compiler->chunk, value_string(msg_copy));
-                if (msg_idx < 0) {
-                    free(msg_copy);
-                    error(compiler, "too many constants");
-                    return;
-                }
+                int msg_idx = add_string_constant(compiler, msg);
+                if (msg_idx < 0) return;
                 emit_byte(compiler, OP_RAISE);
                 emit_u16(compiler, (uint16_t)msg_idx);
                 emit_u16(compiler, (uint16_t)(int16_t)100);  /* no_data_found */
