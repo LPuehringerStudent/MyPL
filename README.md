@@ -291,6 +291,23 @@ int n = external_call("libc.so.6", "strlen", "hello");
 string home = external_call_string("libc.so.6", "getenv", "HOME");
 ```
 
+For more than one argument, `external_call_sig` takes a signature that reads
+like the C prototype: the return type, then the argument types in
+parentheses, with `i` for int, `d` for float (C `double`) and `s` for string
+(`const char*`), and up to four arguments. The signature must be a string
+literal; the compiler checks the arguments against it and gives the call its
+return type. It has to match the C prototype exactly: `i` is a C `int`, so a
+`long` or `size_t` parameter is not one.
+
+```mypl
+// double pow(double, double)
+float p = external_call_sig("libm.so.6", "pow", "d(dd)", 2.0, 10.0);
+// double ldexp(double, int)
+float x = external_call_sig("libm.so.6", "ldexp", "d(di)", 1.5, 3);
+// int strcmp(const char*, const char*)
+int order = external_call_sig("libc.so.6", "strcmp", "i(ss)", "apple", "banana");
+```
+
 ### Collections
 
 ```mypl
@@ -483,7 +500,8 @@ Useful commands:
 - Packages with spec/body, state, and sidecar/catalog persistence — a user
   package of the same name overrides a built-in one.
 - The `dbms_output`, `dbms_sql` (full cursor API), and `utl_file` packages.
-- `external_call` FFI marshalling for int, float, and string signatures.
+- `external_call` FFI marshalling for int, float, and string signatures, and
+  `external_call_sig` for up to four arguments.
 - User-defined subtypes (`subtype name is base;`).
 - `%TYPE` and `%ROWTYPE` type attributes.
 - Import system for splitting code across files.
