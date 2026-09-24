@@ -1,0 +1,79 @@
+/* Capabilities demo: bool columns in the custom SQL engine.
+ *
+ * - BOOL / BOOLEAN name a column type, alongside int, float and string
+ * - TRUE and FALSE are SQL literals, in VALUES, WHERE and DEFAULT
+ * - a bool column reads back into a bool variable, not an int
+ * - NOT NULL, DEFAULT, ORDER BY and CREATE INDEX all work on one
+ * - false orders before true, and an index serves equality on a bool
+ *
+ * Tables live in the catalog as format V6; a V5 database from an older build
+ * still loads and is rewritten as V6 on the next save.
+ */
+
+proc describe(label string, flag bool) -> int {
+    if flag {
+        print concat(label, "true");
+        return 0;
+    }
+    print concat(label, "false");
+    return 0;
+}
+
+proc main() -> int {
+    print "=== bool columns ===";
+    drop table if exists accounts;
+    create table accounts (
+        id int primary key,
+        name string,
+        active bool not null,
+        verified bool default false
+    );
+
+    insert into accounts values (1, "alice", true, true);
+    insert into accounts values (2, "bob", false, false);
+    insert into accounts values (3, "carol", true, false);
+
+    int active_count = -1;
+    select count(*) into active_count from accounts where active = true;
+    print active_count;       /* 2 */
+
+    int inactive_count = -1;
+    select count(*) into inactive_count from accounts where active = false;
+    print inactive_count;     /* 1 */
+
+    print "=== reading into a bool variable ===";
+    bool is_active = true;
+    select active into is_active from accounts where id = 2;
+    int ignored = describe("bob active: ", is_active);   /* false */
+
+    bool is_verified = false;
+    select verified into is_verified from accounts where id = 1;
+    ignored = describe("alice verified: ", is_verified); /* true */
+
+    print "=== update and default ===";
+    update accounts set active = false where id = 3;
+    int still_active = -1;
+    select count(*) into still_active from accounts where active = true;
+    print still_active;       /* 1 */
+
+    int unverified = -1;
+    select count(*) into unverified from accounts where verified = false;
+    print unverified;         /* 2 */
+
+    print "=== index on a bool column ===";
+    create index accounts_active on accounts (active);
+    /* false and true are two distinct keys, so equality reads through the
+     * index; the answer is the one a full scan would give. */
+    int indexed = -1;
+    select count(*) into indexed from accounts where active = false;
+    print indexed;            /* 2 */
+
+    print "=== not null is enforced ===";
+    /* Errors, not exercised here:
+     *   insert into accounts values (4, "dan", null, true);  -- active NOT NULL
+     */
+
+    drop index accounts_active;
+    drop table accounts;
+    return 0;
+}

@@ -1,0 +1,72 @@
+/* Capabilities demo: date and timestamp columns in the custom SQL engine.
+ *
+ * - DATE and TIMESTAMP name column types, alongside int, float, string, bool
+ * - values are written as string literals; the column type is what makes them
+ *   a date, the way an int literal lands in a float column
+ * - the text must be canonical - "YYYY-MM-DD", or that plus " HH:MM:SS" -
+ *   which is exactly what to_date, current_date and current_timestamp produce
+ * - a date column reads back into a date variable, so to_char accepts it
+ * - canonical text is fixed width and sorts chronologically, so ORDER BY,
+ *   range comparisons and indexes all behave as dates rather than as text
+ */
+
+proc main() -> int {
+    print "=== date and timestamp columns ===";
+    drop table if exists releases;
+    create table releases (
+        id int primary key,
+        name string,
+        shipped date not null,
+        recorded timestamp default "2000-01-01 00:00:00"
+    );
+
+    insert into releases values (1, "alpha", "2024-03-01", "2024-03-01 09:30:00");
+    insert into releases values (2, "beta", "2023-12-25", "2023-12-25 23:59:59");
+    insert into releases values (3, "gamma", "2024-07-04", "2024-07-04 12:00:00");
+
+    int shipped_2024 = -1;
+    select count(*) into shipped_2024 from releases where shipped > "2024-01-01";
+    print shipped_2024;       /* 2 */
+
+    string which = "?";
+    select name into which from releases where shipped = "2023-12-25";
+    print which;              /* beta */
+
+    print "=== reading into a date variable ===";
+    /* to_char only accepts a date or a timestamp, so this would fail if the
+     * column came back as plain text. */
+    date shipped_on = current_date();
+    select shipped into shipped_on from releases where id = 3;
+    print to_char(shipped_on, "YYYY");        /* 2024 */
+
+    timestamp at = current_timestamp();
+    select recorded into at from releases where id = 1;
+    print to_char(at, "YYYY-MM-DD");    /* 2024-03-01 */
+
+    print "=== chronological order, not text order ===";
+    string earliest = "?";
+    select name into earliest from releases order by shipped limit 1;
+    print earliest;           /* beta, shipped in 2023 */
+
+    print "=== default and index ===";
+    insert into releases values (4, "delta", "2025-01-15", null);
+    timestamp filled = current_timestamp();
+    select recorded into filled from releases where id = 4;
+    print to_char(filled, "YYYY-MM-DD");  /* 2000-01-01, from the DEFAULT */
+
+    create index releases_shipped on releases (shipped);
+    int on_that_day = -1;
+    select count(*) into on_that_day from releases where shipped = "2024-07-04";
+    print on_that_day;        /* 1 */
+
+    /* Errors, not exercised here:
+     *   insert into releases values (5, "eps", "tomorrow", null);
+     *       -- 'shipped' expects a date written as 'YYYY-MM-DD'
+     *   insert into releases values (5, "eps", "2024-01-01", "2024-01-01");
+     *       -- 'recorded' expects a timestamp written as 'YYYY-MM-DD HH:MM:SS'
+     */
+
+    drop index releases_shipped;
+    drop table releases;
+    return 0;
+}

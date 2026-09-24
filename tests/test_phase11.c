@@ -1911,9 +1911,7 @@ TEST(phase11_view_over_view) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Views as JOIN sources                                                      */
 /* -------------------------------------------------------------------------- */
-
 /* Views as JOIN sources                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -2160,6 +2158,192 @@ TEST(phase11_join_with_dropped_view_matches_missing_table) {
         out, sizeof(out));
     ASSERT_INT_EQ(0, rc);
     ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+}
+
+/* -------------------------------------------------------------------------- */
+/* BOOL columns                                                               */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_bool_column_end_to_end) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bc_t (id int, active bool, label string);\n"
+        "    insert into bc_t values (1, true, \"alice\");\n"
+        "    insert into bc_t values (2, false, \"bob\");\n"
+        "    insert into bc_t values (3, true, \"carol\");\n"
+        "    int t = -1;\n"
+        "    select count(*) into t from bc_t where active = true;\n"
+        "    print concat(\"true=\", int_to_string(t));\n"
+        "    int f = -1;\n"
+        "    select count(*) into f from bc_t where active = false;\n"
+        "    print concat(\"false=\", int_to_string(f));\n"
+        "    string who = \"?\";\n"
+        "    select label into who from bc_t where active = false;\n"
+        "    print concat(\"who=\", who);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "true=2"));
+    ASSERT_INT_EQ(1, output_contains(out, "false=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "who=bob"));
+}
+
+/* The runtime reaches the custom engine through its driver, so a bool has to
+   survive both a typed SELECT INTO and a row field read. */
+TEST(phase11_bool_column_reads_into_bool_variables) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bv_t (id int, active bool, seen bool default false);\n"
+        "    insert into bv_t values (1, true, true);\n"
+        "    insert into bv_t values (2, false, false);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* Second process: the table is in the catalog, so a row loop compiles. */
+    rc = run_mypl(
+        "proc bstr(b bool) -> string {\n"
+        "    if b {\n"
+        "        return \"t\";\n"
+        "    }\n"
+        "    return \"f\";\n"
+        "}\n"
+        "proc main() -> int {\n"
+        "    bool flag = true;\n"
+        "    select active into flag from bv_t where id = 2;\n"
+        "    print concat(\"into=\", bstr(flag));\n"
+        "    for row in select id, active, seen from bv_t order by id {\n"
+        "        print concat(concat(int_to_string(row.id), \":\"),\n"
+        "                     concat(bstr(row.active), bstr(row.seen)));\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    /* A bool variable assigned from a bool column, and bool row fields. */
+    ASSERT_INT_EQ(1, output_contains(out, "into=f"));
+    ASSERT_INT_EQ(1, output_contains(out, "1:tt"));
+    ASSERT_INT_EQ(1, output_contains(out, "2:ff"));
+}
+
+/* A bool column rides the int key space in the index, so false and true stay
+   distinct keys and an indexed lookup agrees with the scan it replaces. */
+TEST(phase11_bool_column_index_and_persistence) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table bi_t (id int, active bool not null);\n"
+        "    insert into bi_t values (1, true);\n"
+        "    insert into bi_t values (2, false);\n"
+        "    insert into bi_t values (3, true);\n"
+        "    create index bi_active on bi_t (active);\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    /* A new process reloads the catalog, so this also covers the V6 page. */
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    int t = -1;\n"
+        "    select count(*) into t from bi_t where active = true;\n"
+        "    print concat(\"true=\", int_to_string(t));\n"
+        "    int f = -1;\n"
+        "    select count(*) into f from bi_t where active = false;\n"
+        "    print concat(\"false=\", int_to_string(f));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "true=2"));
+    ASSERT_INT_EQ(1, output_contains(out, "false=1"));
+}
+
+/* -------------------------------------------------------------------------- */
+/* DATE and TIMESTAMP columns                                                 */
+/* -------------------------------------------------------------------------- */
+
+TEST(phase11_date_and_timestamp_columns_end_to_end) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dt_t (id int, day date, at timestamp);\n"
+        "    insert into dt_t values (1, \"2024-03-01\", \"2024-03-01 09:30:00\");\n"
+        "    insert into dt_t values (2, \"2023-12-25\", \"2023-12-25 23:59:59\");\n"
+        "    int eq = -1;\n"
+        "    select count(*) into eq from dt_t where day = \"2023-12-25\";\n"
+        "    print concat(\"eq=\", int_to_string(eq));\n"
+        "    int later = -1;\n"
+        "    select count(*) into later from dt_t where day > \"2024-01-01\";\n"
+        "    print concat(\"later=\", int_to_string(later));\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "eq=1"));
+    ASSERT_INT_EQ(1, output_contains(out, "later=1"));
+}
+
+/* A date column has to read back as a date, not as text that looks like one:
+   to_char only accepts a date or timestamp, so it is the assertion. */
+TEST(phase11_date_columns_read_into_date_variables) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dv_t (id int, day date, at timestamp);\n"
+        "    insert into dv_t values (1, \"2024-03-01\", \"2024-03-01 09:30:00\");\n"
+        "    insert into dv_t values (2, \"2023-12-25\", \"2023-12-25 23:59:59\");\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+
+    rc = run_mypl(
+        "proc main() -> int {\n"
+        "    date d = current_date();\n"
+        "    select day into d from dv_t where id = 2;\n"
+        "    print concat(\"year=\", to_char(d, \"YYYY\"));\n"
+        "    timestamp t = current_timestamp();\n"
+        "    select at into t from dv_t where id = 1;\n"
+        "    print concat(\"stamp=\", to_char(t, \"YYYY-MM-DD\"));\n"
+        "    for row in select id, day from dv_t order by day {\n"
+        "        print concat(concat(int_to_string(row.id), \":\"),\n"
+        "                     to_char(row.day, \"YYYY-MM-DD\"));\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(0, rc);
+    ASSERT_INT_EQ(1, output_contains(out, "year=2023"));
+    ASSERT_INT_EQ(1, output_contains(out, "stamp=2024-03-01"));
+    /* ORDER BY on a date is chronological, so the 2023 row comes first. */
+    ASSERT_INT_EQ(1, output_contains(out, "2:2023-12-25"));
+    ASSERT_INT_EQ(1, output_contains(out, "1:2024-03-01"));
+}
+
+TEST(phase11_date_column_rejects_text_that_is_not_a_date) {
+    remove("mypl.db");
+    char out[512];
+    int rc = run_mypl(
+        "proc main() -> int {\n"
+        "    create table dr_t (id int, day date);\n"
+        "    insert into dr_t values (1, \"tomorrow\");\n"
+        "    print \"unreachable\";\n"
+        "    return 0;\n"
+        "}\n",
+        out, sizeof(out));
+    ASSERT_INT_EQ(1, rc);
+    ASSERT_INT_EQ(0, output_contains(out, "unreachable"));
+    ASSERT_INT_EQ(1, output_contains(out, "YYYY-MM-DD"));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2479,6 +2663,12 @@ int main(void) {
     RUN_TEST(phase11_sql_loop_over_empty_result_is_a_no_op);
     RUN_TEST(phase11_sql_loop_leaves_surrounding_locals_intact);
     RUN_TEST(phase11_sql_loop_break_and_continue_stay_balanced);
+    RUN_TEST(phase11_bool_column_end_to_end);
+    RUN_TEST(phase11_bool_column_reads_into_bool_variables);
+    RUN_TEST(phase11_bool_column_index_and_persistence);
+    RUN_TEST(phase11_date_and_timestamp_columns_end_to_end);
+    RUN_TEST(phase11_date_columns_read_into_date_variables);
+    RUN_TEST(phase11_date_column_rejects_text_that_is_not_a_date);
     RUN_TEST(phase11_named_sql_loop_variable_reads_fields);
     RUN_TEST(phase11_row_loop_over_table_created_in_same_program);
     RUN_TEST(phase11_row_loop_over_table_created_by_proc_defined_after_main);

@@ -141,15 +141,26 @@ for n in range(1, 5) {
 create table users (
     id int primary key,
     name string,
-    age int
+    age int,
+    active bool not null default true
 );
 
-insert into users values (1, "alice", 30);
+insert into users values (1, "alice", 30, true);
 
-for user in select id, name from users where age > 25 {
+for user in select id, name from users where age > 25 and active = true {
     print concat(int_to_string(user.id), concat(" ", user.name));
 }
 ```
+
+Column types are `int`, `float`, `string`, `bool`, `date` and `timestamp`. A
+`bool` column takes the `true` and `false` literals and reads back into a `bool`
+variable; see `examples/bool_columns.mypl`. A `date` or `timestamp` column is
+written as a string literal in canonical form — `"YYYY-MM-DD"`, or that plus
+`" HH:MM:SS"`, which is what `to_date`, `current_date` and `current_timestamp`
+produce — and reads back into a `date` or `timestamp` variable, so `to_char`
+accepts it. Anything else is refused at write time. Because the text is fixed
+width, `ORDER BY`, range comparisons and indexes are chronological; see
+`examples/date_columns.mypl`.
 
 ### SELECT INTO
 

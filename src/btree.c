@@ -14,7 +14,8 @@
 /*                                                                            */
 /* Keys are encoded to a fixed-width order-preserving byte string:             */
 /*   byte 0: tag (0 NULL, 1 int, 2 float, 3 string)                            */
-/*   int:    4-byte big-endian of value ^ 0x80000000                           */
+/*   int:    4-byte big-endian of value ^ 0x80000000 (bools share this space,  */
+/*           encoded as 0 or 1)                                                */
 /*   float:  8-byte big-endian IEEE-754 with the standard sign transform       */
 /*   string: first BTREE_STRING_KEY_BYTES bytes, zero-padded (longer strings   */
 /*           share a truncated key, so scans may yield extra candidates,       */
@@ -81,7 +82,10 @@ static void encode_key(const Cell* cell, uint8_t* out) {
         out[0] = 0;
         return;
     }
-    if (cell->type == VAL_INT) {
+    if (cell->type == VAL_INT || cell->type == VAL_BOOL) {
+        /* A bool rides in the int key space as 0 or 1: false orders before
+           true, and no new tag is needed. A column is one type, so the spaces
+           never mix in a single index. */
         uint32_t u = ((uint32_t)(int32_t)cell->as.as_int) ^ 0x80000000u;
         out[0] = 1;
         out[1] = (uint8_t)(u >> 24);
@@ -106,8 +110,14 @@ static void encode_key(const Cell* cell, uint8_t* out) {
         }
         return;
     }
+    /* Dates and timestamps are canonical fixed-width text, well inside the
+       significant prefix, so they share the string key space and order
+       chronologically there. A string literal written for a date column
+       therefore encodes to the same key as the stored date. */
     out[0] = 3;
-    const char* s = (cell->type == VAL_STRING && cell->as.as_string != NULL)
+    int is_text = cell->type == VAL_STRING || cell->type == VAL_DATE ||
+                  cell->type == VAL_TIMESTAMP;
+    const char* s = (is_text && cell->as.as_string != NULL)
         ? cell->as.as_string : "";
     size_t n = strlen(s);
     if (n > BTREE_STRING_KEY_BYTES) n = BTREE_STRING_KEY_BYTES;

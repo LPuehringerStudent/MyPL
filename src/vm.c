@@ -228,6 +228,14 @@ static void error_location(VM* vm, int* line, int* column) {
     }
 }
 
+/* Converts a row cell from the custom engine into a runtime value. Cells with
+   no runtime scalar - NULL today - become `fallback`, which differs by call
+   site: most paths substitute int 0, dbms_sql.column_value reports NULL. */
+static Value value_from_cell(Cell cell, Value fallback) {
+    Value out;
+    return sql_cell_to_value(&cell, &out) ? out : fallback;
+}
+
 static void set_runtime_error_ex(VM* vm, const char* message, int code) {
     int line, column;
     error_location(vm, &line, &column);
@@ -503,14 +511,7 @@ Value vm_dbms_sql_query(VM* vm, const char* sql) {
             RowObj* row_obj = row_obj_new(col_count);
             if (row_obj == NULL) break;
             for (int c = 0; c < col_count; c++) {
-                Value cell;
-                Cell cell_data = row->fields[c].value;
-                switch (cell_data.type) {
-                    case VAL_INT:    cell = value_int(cell_data.as.as_int); break;
-                    case VAL_FLOAT:  cell = value_float(cell_data.as.as_float); break;
-                    case VAL_STRING: cell = value_string(strdup(cell_data.as.as_string)); break;
-                    default:         cell = value_int(0); break;
-                }
+                Value cell = value_from_cell(row->fields[c].value, value_int(0));
                 row_obj_set_column(row_obj, c, row->fields[c].name, cell);
                 value_release(cell);
             }
@@ -842,14 +843,7 @@ Value vm_dbms_sql_fetch_rows(VM* vm, int handle, int count) {
             RowObj* row_obj = row_obj_new(col_count);
             if (row_obj == NULL) break;
             for (int c = 0; c < col_count; c++) {
-                Value cell;
-                Cell cell_data = row->fields[c].value;
-                switch (cell_data.type) {
-                    case VAL_INT:    cell = value_int(cell_data.as.as_int); break;
-                    case VAL_FLOAT:  cell = value_float(cell_data.as.as_float); break;
-                    case VAL_STRING: cell = value_string(strdup(cell_data.as.as_string)); break;
-                    default:         cell = value_int(0); break;
-                }
+                Value cell = value_from_cell(row->fields[c].value, value_int(0));
                 row_obj_set_column(row_obj, c, row->fields[c].name, cell);
                 value_release(cell);
             }
@@ -892,13 +886,7 @@ Value vm_dbms_sql_column_value(VM* vm, int handle, int column) {
         if (column >= row->field_count) {
             return value_null();
         }
-        Cell cell_data = row->fields[column].value;
-        switch (cell_data.type) {
-            case VAL_INT:    return value_int(cell_data.as.as_int);
-            case VAL_FLOAT:  return value_float(cell_data.as.as_float);
-            case VAL_STRING: return value_string(strdup(cell_data.as.as_string));
-            default:         return value_null();
-        }
+        return value_from_cell(row->fields[column].value, value_null());
     }
 }
 
@@ -2861,13 +2849,7 @@ dispatch:
                                 set_runtime_error_sql(vm, "Invalid column index");
                                 THROW(vm);
                             }
-                            Cell cell = row->fields[i].value;
-                            switch (cell.type) {
-                                case VAL_INT:    col_value = value_int(cell.as.as_int);       break;
-                                case VAL_FLOAT:  col_value = value_float(cell.as.as_float);   break;
-                                case VAL_STRING: col_value = value_string(strdup(cell.as.as_string)); break;
-                                default:         col_value = value_int(0);                    break;
-                            }
+                            col_value = value_from_cell(row->fields[i].value, value_int(0));
                         }
                         int slot = into_slots[i];
                         int depth = (int)(vm->stack_top - vm->frame_base);
@@ -2999,13 +2981,7 @@ dispatch:
                         set_runtime_error_sql(vm, "Invalid column index");
                         THROW(vm);
                     }
-                    Cell cell = row->fields[idx].value;
-                    switch (cell.type) {
-                        case VAL_INT:    value = value_int(cell.as.as_int);       break;
-                        case VAL_FLOAT:  value = value_float(cell.as.as_float);   break;
-                        case VAL_STRING: value = value_string(strdup(cell.as.as_string)); break;
-                        default:         value = value_int(0);                    break;
-                    }
+                    value = value_from_cell(row->fields[idx].value, value_int(0));
                 }
                 if (!push(vm, value)) return INTERPRET_RUNTIME_ERROR;
                 break;
@@ -3068,14 +3044,8 @@ dispatch:
                             return INTERPRET_RUNTIME_ERROR;
                         }
                         for (int i = 0; i < row->field_count; i++) {
-                            Cell cell = row->fields[i].value;
-                            Value col_value;
-                            switch (cell.type) {
-                                case VAL_INT:    col_value = value_int(cell.as.as_int);       break;
-                                case VAL_FLOAT:  col_value = value_float(cell.as.as_float);   break;
-                                case VAL_STRING: col_value = value_string(strdup(cell.as.as_string)); break;
-                                default:         col_value = value_int(0);                    break;
-                            }
+                            Value col_value =
+                                value_from_cell(row->fields[i].value, value_int(0));
                             row_obj_set_column(row_obj, i, row->fields[i].name, col_value);
                             value_release(col_value);
                         }

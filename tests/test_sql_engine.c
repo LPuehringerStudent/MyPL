@@ -1381,6 +1381,287 @@ TEST(sql_indexed_string_predicates_match_full_scans) {
     cleanup(path);
 }
 
+/* -------------------------------------------------------------------------- */
+/* BOOL columns                                                               */
+/* -------------------------------------------------------------------------- */
+
+TEST(sql_bool_column_roundtrips_through_the_catalog) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE flags (id INT, active BOOL, label STRING)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO flags VALUES (1, TRUE, 'alice')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO flags VALUES (2, FALSE, 'bob')", &ctx));
+    catalog_close(&ctx);
+
+    /* New process: the column type and both values survive the page. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, active FROM flags", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(2, res->row_count);
+
+    Row* row = result_next(res);
+    ASSERT_PTR_NOT_NULL(row);
+    ASSERT_INT_EQ(VAL_BOOL, row->fields[1].value.type);
+    ASSERT_INT_EQ(1, row->fields[1].value.as.as_int);
+
+    row = result_next(res);
+    ASSERT_PTR_NOT_NULL(row);
+    ASSERT_INT_EQ(VAL_BOOL, row->fields[1].value.type);
+    ASSERT_INT_EQ(0, row->fields[1].value.as.as_int);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bool_column_filters_and_orders) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE b (id INT, on_ BOOL)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO b VALUES (1, TRUE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO b VALUES (2, FALSE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO b VALUES (3, TRUE)", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM b WHERE on_ = TRUE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(2, res->row_count);
+    result_free(res);
+
+    res = sql_exec("SELECT id FROM b WHERE on_ = FALSE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    /* false sorts before true. */
+    res = sql_exec("SELECT id, on_ FROM b ORDER BY on_", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(3, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(0, row->fields[1].value.as.as_int);
+    row = result_next(res);
+    ASSERT_INT_EQ(1, row->fields[1].value.as.as_int);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* A bool DEFAULT is stored as a catalog cell, which is the path that failed
+   first: an unknown tag there takes the whole catalog page down, not just the
+   column. */
+TEST(sql_bool_default_and_not_null_survive_reopen) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE d (id INT, active BOOL NOT NULL, seen BOOL DEFAULT FALSE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (1, TRUE, TRUE)", &ctx));
+    catalog_close(&ctx);
+
+    /* The reopen is the assertion: a catalog it cannot parse fails here. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, active, seen FROM d", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(VAL_BOOL, row->fields[2].value.type);
+    result_free(res);
+
+    /* NOT NULL still applies to a bool column. */
+    ASSERT_INT_EQ(0, sql_exec_ddl("INSERT INTO d VALUES (2, NULL, TRUE)", &ctx));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_bool_column_updates_and_indexes) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE u (id INT, active BOOL)", &ctx));
+    for (int i = 0; i < 20; i++) {
+        char query[128];
+        snprintf(query, sizeof(query), "INSERT INTO u VALUES (%d, %s)",
+                 i, i % 2 == 0 ? "TRUE" : "FALSE");
+        ASSERT_INT_EQ(1, sql_exec_ddl(query, &ctx));
+    }
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE INDEX u_active ON u (active)", &ctx));
+
+    /* The index must agree with the full scan it replaces. */
+    Result* res = sql_exec("SELECT id FROM u WHERE active = TRUE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(10, res->row_count);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE u SET active = FALSE WHERE id = 0", &ctx));
+    res = sql_exec("SELECT id FROM u WHERE active = TRUE", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(9, res->row_count);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("DELETE FROM u WHERE active = FALSE", &ctx));
+    res = sql_exec("SELECT id FROM u", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(9, res->row_count);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* -------------------------------------------------------------------------- */
+/* DATE and TIMESTAMP columns                                                 */
+/* -------------------------------------------------------------------------- */
+
+TEST(sql_date_and_timestamp_columns_roundtrip) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE ev (id INT, day DATE, at TIMESTAMP)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "INSERT INTO ev VALUES (1, '2024-03-01', '2024-03-01 09:30:00')", &ctx));
+    catalog_close(&ctx);
+
+    /* New process: the column types and the text both survive the page. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT id, day, at FROM ev", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_PTR_NOT_NULL(row);
+    /* A string literal written into a date column is stored as a date. */
+    ASSERT_INT_EQ(VAL_DATE, row->fields[1].value.type);
+    ASSERT_STRING_EQ("2024-03-01", row->fields[1].value.as.as_string);
+    ASSERT_INT_EQ(VAL_TIMESTAMP, row->fields[2].value.type);
+    ASSERT_STRING_EQ("2024-03-01 09:30:00", row->fields[2].value.as.as_string);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* Canonical text is fixed width and orders chronologically byte by byte, which
+   is what lets dates share the string key space and compare with strcmp. */
+TEST(sql_date_columns_compare_chronologically) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE d (id INT, day DATE)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (1, '2024-03-01')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (2, '2023-12-25')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO d VALUES (3, '2024-07-04')", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM d WHERE day = '2023-12-25'", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    res = sql_exec("SELECT id FROM d WHERE day > '2024-01-01'", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(2, res->row_count);
+    result_free(res);
+
+    res = sql_exec("SELECT id, day FROM d ORDER BY day", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(3, res->row_count);
+    Row* row = result_next(res);
+    ASSERT_STRING_EQ("2023-12-25", row->fields[1].value.as.as_string);
+    row = result_next(res);
+    ASSERT_STRING_EQ("2024-03-01", row->fields[1].value.as.as_string);
+    row = result_next(res);
+    ASSERT_STRING_EQ("2024-07-04", row->fields[1].value.as.as_string);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+/* A date column that accepted arbitrary text would read back as something that
+   is not a date, so the write is refused instead. */
+TEST(sql_date_columns_reject_text_that_is_not_a_date) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE r (id INT, day DATE, at TIMESTAMP)", &ctx));
+
+    ASSERT_INT_EQ(0, sql_exec_ddl(
+        "INSERT INTO r VALUES (1, 'not-a-date', '2024-01-01 00:00:00')", &ctx));
+    ASSERT_INT_EQ(0, sql_exec_ddl(
+        "INSERT INTO r VALUES (2, '2024-1-1', '2024-01-01 00:00:00')", &ctx));
+    /* A date is not a timestamp: the widths differ. */
+    ASSERT_INT_EQ(0, sql_exec_ddl(
+        "INSERT INTO r VALUES (3, '2024-01-01', '2024-01-01')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "INSERT INTO r VALUES (4, '2024-01-01', '2024-01-01 00:00:00')", &ctx));
+
+    Result* res = sql_exec("SELECT id FROM r", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    /* UPDATE is held to the same rule. */
+    ASSERT_INT_EQ(0, sql_exec_ddl("UPDATE r SET day = 'nope' WHERE id = 4", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("UPDATE r SET day = '2025-02-02' WHERE id = 4", &ctx));
+
+    res = sql_exec("SELECT day FROM r WHERE id = 4", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    Row* row = result_next(res);
+    ASSERT_STRING_EQ("2025-02-02", row->fields[0].value.as.as_string);
+    ASSERT_INT_EQ(VAL_DATE, row->fields[0].value.type);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_date_default_and_index_and_delete) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl(
+        "CREATE TABLE dd (id INT, day DATE DEFAULT '2000-01-01')", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO dd VALUES (1, NULL)", &ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("INSERT INTO dd VALUES (2, '2024-06-01')", &ctx));
+    catalog_close(&ctx);
+
+    /* The DEFAULT is a catalog cell, so this reopen exercises its encoding. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Result* res = sql_exec("SELECT day FROM dd WHERE id = 1", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    Row* row = result_next(res);
+    ASSERT_INT_EQ(VAL_DATE, row->fields[0].value.type);
+    ASSERT_STRING_EQ("2000-01-01", row->fields[0].value.as.as_string);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE INDEX dd_day ON dd (day)", &ctx));
+    res = sql_exec("SELECT id FROM dd WHERE day = '2024-06-01'", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    ASSERT_INT_EQ(1, sql_exec_ddl("DELETE FROM dd WHERE day = '2000-01-01'", &ctx));
+    res = sql_exec("SELECT id FROM dd", &ctx);
+    ASSERT_PTR_NOT_NULL(res);
+    ASSERT_INT_EQ(1, res->row_count);
+    result_free(res);
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
 int main(void) {
     RUN_TEST(sql_scan_returns_rows_from_full_middle_pages);
     RUN_TEST(sql_index_build_sees_rows_on_full_middle_pages);
@@ -1433,5 +1714,13 @@ int main(void) {
     RUN_TEST(custom_driver_reports_placeholder_count_mismatch);
     RUN_TEST(custom_engine_cursors_bind_placeholders);
     RUN_TEST(sql_indexed_string_predicates_match_full_scans);
+    RUN_TEST(sql_bool_column_roundtrips_through_the_catalog);
+    RUN_TEST(sql_bool_column_filters_and_orders);
+    RUN_TEST(sql_bool_default_and_not_null_survive_reopen);
+    RUN_TEST(sql_bool_column_updates_and_indexes);
+    RUN_TEST(sql_date_and_timestamp_columns_roundtrip);
+    RUN_TEST(sql_date_columns_compare_chronologically);
+    RUN_TEST(sql_date_columns_reject_text_that_is_not_a_date);
+    RUN_TEST(sql_date_default_and_index_and_delete);
     TEST_SUMMARY();
 }

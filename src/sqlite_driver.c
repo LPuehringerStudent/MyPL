@@ -256,6 +256,22 @@ static int sqlite_row_get_field(DBDriver* driver, void* row_handle, const char* 
     return 0;
 }
 
+static int column_is_declared_bool(sqlite3_stmt* stmt, int index) {
+    const char* decl = sqlite3_column_decltype(stmt, index);
+    if (decl == NULL) return 0;
+    return strcasecmp(decl, "BOOL") == 0 || strcasecmp(decl, "BOOLEAN") == 0;
+}
+
+/* SQLite stores a date or timestamp as text, so as with BOOL the declared type
+   is the only thing that distinguishes one from an ordinary string. */
+static int column_declared_datetime(sqlite3_stmt* stmt, int index) {
+    const char* decl = sqlite3_column_decltype(stmt, index);
+    if (decl == NULL) return 0;
+    if (strcasecmp(decl, "DATE") == 0) return VAL_DATE;
+    if (strcasecmp(decl, "TIMESTAMP") == 0) return VAL_TIMESTAMP;
+    return 0;
+}
+
 static int sqlite_row_get_column(DBDriver* driver, void* row_handle, int index, Value* out) {
     sqlite3_stmt* stmt = (sqlite3_stmt*)row_handle;
     int count = sqlite3_column_count(stmt);
@@ -269,14 +285,34 @@ static int sqlite_row_get_column(DBDriver* driver, void* row_handle, int index, 
     int type = sqlite3_column_type(stmt, index);
     switch (type) {
         case SQLITE_INTEGER:
+            /* SQLite has no boolean storage class - a bool column is declared
+               BOOL and stored as 0 or 1 - so the declared type is the only
+               thing that tells this apart from an int. Without it the same
+               column reads back as bool from the custom engine and as int
+               from here. decltype is NULL for expressions such as count(*),
+               which are ints anyway. */
+            if (column_is_declared_bool(stmt, index)) {
+                *out = value_bool(sqlite3_column_int(stmt, index) != 0);
+                return 1;
+            }
             *out = value_int(sqlite3_column_int(stmt, index));
             return 1;
         case SQLITE_FLOAT:
             *out = value_float(sqlite3_column_double(stmt, index));
             return 1;
-        case SQLITE_TEXT:
-            *out = value_string(strdup((const char*)sqlite3_column_text(stmt, index)));
+        case SQLITE_TEXT: {
+            const char* text = (const char*)sqlite3_column_text(stmt, index);
+            if (text == NULL) text = "";
+            int declared = column_declared_datetime(stmt, index);
+            if (declared == VAL_DATE) {
+                *out = value_date(strdup(text));
+            } else if (declared == VAL_TIMESTAMP) {
+                *out = value_timestamp(strdup(text));
+            } else {
+                *out = value_string(strdup(text));
+            }
             return 1;
+        }
         case SQLITE_NULL:
             *out = value_null();
             return 1;

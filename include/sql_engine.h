@@ -110,6 +110,12 @@ int         catalog_table_column_count(Context* ctx, int index);
 const char* catalog_table_column_name(Context* ctx, int index, int col);
 int         catalog_table_column_type(Context* ctx, int index, int col);
 
+/* Converts a cell holding a scalar - int, float, string or bool - into a
+   runtime Value. Returns 0 for anything else, NULL included, because callers
+   disagree about what a non-scalar should become: the driver reports NULL as
+   a value, while the VM's inline column reads substitute int 0. */
+int         sql_cell_to_value(const Cell* cell, Value* out);
+
 /* SQL execution */
 Result* sql_exec(const char* query, Context* ctx);
 int     sql_exec_ddl(const char* query, Context* ctx);
