@@ -17,7 +17,6 @@
 
 #define LINE_SIZE 1024
 #define DEFAULT_DB_PATH "mypl.db"
-#define MAX_REPL_VARS 256
 #define REPL_HISTORY_SIZE 100
 
 typedef struct {
@@ -29,8 +28,6 @@ typedef struct {
 typedef struct {
     StringBuffer procedures;
     StringBuffer main_body;
-    char* var_names[MAX_REPL_VARS];
-    int var_count;
     char* history[REPL_HISTORY_SIZE];
     int history_count;
     int history_index;
@@ -41,12 +38,13 @@ typedef struct {
     int driver_open;
     /* Incremental compilation engine (Phase 13 #37): one persistent chunk and
        one persistent compiler across inputs; each input compiles only its own
-       fragment. The stuck states reproduce the old engine's poison
-       semantics: a failed statement/proc input stayed in the accumulated
-       source, so every later input re-failed with the same error. */
+       fragment. An input that fails to compile is dropped (#58). The stuck
+       states reproduce the old engine's poison semantics where they remain:
+       after a runtime error, or when the persisted definitions loaded at
+       startup do not compile. */
     ReplCompiler* compiler;
     int pending_init_offset;      /* queued persisted-package init run, -1 none */
-    int compile_stuck;            /* session poisoned by a compile error */
+    int compile_stuck;            /* persisted definitions failed to compile */
     char compile_stuck_error[256];
     int runtime_stuck;            /* session poisoned by a runtime error */
     char runtime_stuck_error[256];
@@ -82,6 +80,181 @@ static int string_buffer_append(StringBuffer* buf, const char* text) {
     memcpy(buf->data + buf->len, text, text_len + 1);
     buf->len += text_len;
     return 1;
+}
+
+static void string_buffer_truncate(StringBuffer* buf, size_t len) {
+    if (buf->data == NULL || len > buf->len) return;
+    buf->len = len;
+    buf->data[len] = '\0';
+}
+
+/* ----- Top-level proc definitions in REPL source -----
+   The procedures buffer is plain source text. When an input redefines a
+   proc, the old definition's text has to leave it: .defs prints the buffer,
+   and it is persisted and recompiled as one fragment at the next startup,
+   where two definitions of one name are a duplicate. */
+
+typedef struct {
+    size_t start;
+    size_t end;   /* past the closing '}' and one trailing newline */
+    char name[128];
+} ProcSpan;
+
+#define MAX_PROC_SPANS 64
+
+static int is_ident_char(char c) {
+    return isalnum((unsigned char)c) || c == '_';
+}
+
+static int word_at(const char* t, size_t i, size_t n, const char* word) {
+    size_t len = strlen(word);
+    if (i + len > n || strncmp(t + i, word, len) != 0) return 0;
+    if (i > 0 && is_ident_char(t[i - 1])) return 0;
+    return i + len == n || !is_ident_char(t[i + len]);
+}
+
+/* Index past a string literal or comment starting at i, or i if none does. */
+static size_t skip_literal(const char* t, size_t i, size_t n) {
+    if (t[i] == '"' || t[i] == '\'') {
+        char quote = t[i++];
+        while (i < n && t[i] != quote) {
+            if (t[i] == '\\' && i + 1 < n) i++;
+            i++;
+        }
+        return i < n ? i + 1 : n;
+    }
+    if (t[i] == '/' && i + 1 < n && t[i + 1] == '/') {
+        while (i < n && t[i] != '\n') i++;
+        return i;
+    }
+    if (t[i] == '/' && i + 1 < n && t[i + 1] == '*') {
+        i += 2;
+        while (i + 1 < n && !(t[i] == '*' && t[i + 1] == '/')) i++;
+        return i + 1 < n ? i + 2 : n;
+    }
+    return i;
+}
+
+static size_t skip_space(const char* t, size_t i, size_t n) {
+    while (i < n && isspace((unsigned char)t[i])) i++;
+    return i;
+}
+
+/* Index past a package spec or body starting at i ("package [body] NAME
+   ... end NAME;"). Its members are package procs, not top-level ones. */
+static size_t skip_package(const char* t, size_t i, size_t n) {
+    i = skip_space(t, i + strlen("package"), n);
+    if (word_at(t, i, n, "body")) i = skip_space(t, i + strlen("body"), n);
+    size_t name_start = i;
+    while (i < n && is_ident_char(t[i])) i++;
+    size_t name_len = i - name_start;
+    if (name_len == 0) return i;
+    while (i < n) {
+        size_t j = skip_literal(t, i, n);
+        if (j != i) {
+            i = j;
+            continue;
+        }
+        if (word_at(t, i, n, "end")) {
+            size_t k = skip_space(t, i + 3, n);
+            if (k + name_len <= n && strncmp(t + k, t + name_start, name_len) == 0 &&
+                (k + name_len == n || !is_ident_char(t[k + name_len]))) {
+                k = skip_space(t, k + name_len, n);
+                if (k < n && t[k] == ';') return k + 1;
+            }
+        }
+        i++;
+    }
+    return n;
+}
+
+/* Fills `out` with the top-level `proc NAME(...) ... { ... }` definitions in
+   t[0, n) and returns how many there are. */
+static int find_top_level_procs(const char* t, size_t n, ProcSpan* out, int max) {
+    int count = 0;
+    int depth = 0;
+    size_t i = 0;
+    while (i < n) {
+        size_t j = skip_literal(t, i, n);
+        if (j != i) {
+            i = j;
+            continue;
+        }
+        if (t[i] == '{') {
+            depth++;
+        } else if (t[i] == '}') {
+            if (depth > 0) depth--;
+        } else if (depth == 0 && word_at(t, i, n, "package")) {
+            i = skip_package(t, i, n);
+            continue;
+        } else if (depth == 0 && word_at(t, i, n, "proc")) {
+            size_t start = i;
+            size_t k = skip_space(t, i + strlen("proc"), n);
+            size_t name_start = k;
+            while (k < n && is_ident_char(t[k])) k++;
+            size_t name_len = k - name_start;
+            k = skip_space(t, k, n);
+            if (name_len == 0 || name_len >= sizeof(out[0].name) || k >= n || t[k] != '(') {
+                i = k > i ? k : i + 1;
+                continue;
+            }
+            /* The body is the first brace block after the header. */
+            int body_depth = 0;
+            int in_body = 0;
+            while (k < n) {
+                size_t m = skip_literal(t, k, n);
+                if (m != k) {
+                    k = m;
+                    continue;
+                }
+                if (t[k] == '{') {
+                    body_depth++;
+                    in_body = 1;
+                } else if (t[k] == '}' && in_body && --body_depth == 0) {
+                    k++;
+                    break;
+                }
+                k++;
+            }
+            if (!in_body || body_depth != 0) return count;
+            if (k < n && t[k] == '\n') k++;
+            if (count < max) {
+                out[count].start = start;
+                out[count].end = k;
+                memcpy(out[count].name, t + name_start, name_len);
+                out[count].name[name_len] = '\0';
+                count++;
+            }
+            i = k;
+            continue;
+        }
+        i++;
+    }
+    return count;
+}
+
+/* After `new_text` compiled, which the procedures buffer holds from
+   `new_start` on, drop the text of every earlier top-level definition of a
+   proc it defines. */
+static void remove_replaced_definitions(StringBuffer* procedures, size_t new_start) {
+    ProcSpan fresh[MAX_PROC_SPANS];
+    int fresh_count = find_top_level_procs(procedures->data + new_start,
+                                           procedures->len - new_start,
+                                           fresh, MAX_PROC_SPANS);
+    for (int f = 0; f < fresh_count; f++) {
+        ProcSpan old[MAX_PROC_SPANS];
+        int old_count = find_top_level_procs(procedures->data, new_start,
+                                             old, MAX_PROC_SPANS);
+        /* Back to front, so earlier spans stay valid as later ones go. */
+        for (int o = old_count - 1; o >= 0; o--) {
+            if (strcmp(old[o].name, fresh[f].name) != 0) continue;
+            size_t len = old[o].end - old[o].start;
+            memmove(procedures->data + old[o].start, procedures->data + old[o].end,
+                    procedures->len - old[o].end + 1);
+            procedures->len -= len;
+            new_start -= len;
+        }
+    }
 }
 
 static int brace_depth(const char* s) {
@@ -290,7 +463,6 @@ static int repl_read_line(ReplSession* session, const char* prompt,
 static void repl_session_init(ReplSession* session, const char* db_path) {
     string_buffer_init(&session->procedures);
     string_buffer_init(&session->main_body);
-    session->var_count = 0;
     session->history_count = 0;
     session->history_index = 0;
     init_chunk(&session->chunk);
@@ -363,10 +535,6 @@ static void repl_session_init(ReplSession* session, const char* db_path) {
 static void repl_session_free(ReplSession* session) {
     string_buffer_free(&session->procedures);
     string_buffer_free(&session->main_body);
-    for (int i = 0; i < session->var_count; i++) {
-        free(session->var_names[i]);
-    }
-    session->var_count = 0;
     history_free(session);
     if (session->compiler != NULL) {
         repl_compiler_free(session->compiler);
@@ -426,42 +594,6 @@ static int is_statement(const char* line) {
     while (end > line && isspace((unsigned char)*end)) end--;
     char last = *end;
     return last == ';' || last == '}';
-}
-
-static char* extract_var_name(const char* line) {
-    const char* p = line;
-    while (*p != '\0' && isspace((unsigned char)*p)) p++;
-
-    /* Skip type keyword (e.g. int, float, string, bool, array<int>). */
-    if (!isalpha((unsigned char)*p)) return NULL;
-    while (*p != '\0' && (isalnum((unsigned char)*p) || *p == '<' || *p == '>' || *p == ' ')) {
-        if (*p == ' ') {
-            p++;
-            break;
-        }
-        p++;
-    }
-    while (*p != '\0' && isspace((unsigned char)*p)) p++;
-
-    const char* start = p;
-    while (*p != '\0' && !isspace((unsigned char)*p) && *p != ':' && *p != '=' && *p != ';') p++;
-    if (p == start) return NULL;
-    size_t len = (size_t)(p - start);
-    char* name = malloc(len + 1);
-    if (name == NULL) return NULL;
-    memcpy(name, start, len);
-    name[len] = '\0';
-    return name;
-}
-
-static void record_var_name(ReplSession* session, const char* line) {
-    char* name = extract_var_name(line);
-    if (name == NULL) return;
-    if (session->var_count >= MAX_REPL_VARS) {
-        free(name);
-        return;
-    }
-    session->var_names[session->var_count++] = name;
 }
 
 /* Number of lines the procedures buffer contributes before the wrapper main
@@ -530,12 +662,11 @@ oom:
     return NULL;
 }
 
-/* Fallback for poisoned sessions: recompose the ENTIRE accumulated source
+/* Fallback for poisoned sessions (a runtime error, or persisted definitions
+   that failed to compile at startup): recompose the ENTIRE accumulated source
    (procedures + wrapper main) and compile+run it in a throwaway chunk, which
-   is exactly what the pre-#37 engine did on every input. A session is
-   poisoned once a failed statement/procedure stays accumulated (the old
-   engine validated after committing, so the broken text never leaves); the
-   recomposed compile then re-fails, and any later input that introduces an
+   is exactly what the pre-#37 engine did on every input. The recomposed
+   compile or run then re-fails, and any later input that introduces an
    earlier error (e.g. a parse error) changes the reported error exactly like
    before. A runtime-poisoned session converts to a compile-poisoned one when
    a later input fails to compile. */
@@ -668,50 +799,65 @@ static int session_compile(ReplSession* session, const char* source, int is_def,
                                  &session->chunk, error, error_size, ctx);
 }
 
-/* Handle a proc/package definition input. The definition text has already
-   been appended to the procedures buffer (and persisted for packages), like
-   the old engine, which validated the accumulated source AFTER committing
-   the new definition. `prefix` is the procedures-buffer line count before
-   the append, so fragment diagnostics land on the same source lines as the
-   old whole-program compose. */
-static void run_input_definition(ReplSession* session, const char* complete,
-                                 int prefix) {
+/* Handle a proc/package definition input: append it to the procedures
+   buffer, compile it as a fragment and run its package initializers. A
+   definition that fails to compile is dropped again, so the session carries
+   on as it was. One that redefines a proc from an earlier input replaces it,
+   text included. Returns 0 only when out of memory. */
+static int run_input_definition(ReplSession* session, const char* complete,
+                                int is_package) {
+    size_t mark = session->procedures.len;
+    int prefix = procedures_line_count(session); /* before the append */
+    if (!string_buffer_append(&session->procedures, complete) ||
+        !string_buffer_append(&session->procedures, "\n")) {
+        fprintf(stderr, "Out of memory\n");
+        return 0;
+    }
+    DBDriver* driver = session->driver_open ? &session->driver : NULL;
+    Context* ctx = session->driver_open ? NULL : &session->ctx;
+
+    if (session->compile_stuck || session->runtime_stuck) {
+        if (is_package) packages_save_source(driver, ctx, session->procedures.data, 1);
+        run_stuck_input(session, "0", 0);
+        return 1;
+    }
+
     char* source = build_fragment_source(complete, prefix);
     if (source == NULL) {
         fprintf(stderr, "Out of memory\n");
-        return;
+        return 0;
     }
-
-    if (session->compile_stuck || session->runtime_stuck) {
-        free(source);
-        run_stuck_input(session, "0", 0);
-        return;
-    }
-
     char error[256];
-    if (!session_compile(session, source, 1, error, sizeof(error))) {
-        session->compile_stuck = 1;
-        snprintf(session->compile_stuck_error,
-                 sizeof(session->compile_stuck_error), "%s",
-                 error[0] != '\0' ? error : "unknown error");
-        fprintf(stderr, "Compile error: %s\n", session->compile_stuck_error);
-        free(source);
-        return;
-    }
+    int ok = session_compile(session, source, 1, error, sizeof(error));
     free(source);
+    if (!ok) {
+        fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
+        string_buffer_truncate(&session->procedures, mark);
+        return 1;
+    }
+    remove_replaced_definitions(&session->procedures, mark);
+    if (is_package) packages_save_source(driver, ctx, session->procedures.data, 1);
     session_execute(session, 0);
+    return 1;
 }
 
-/* Handle a statement or expression input. Statements were already recorded
-   (var name + main body append), matching the old engine's commit-before-
-   validate order; the failed statement therefore stays accumulated and
-   poisons the session (compile_stuck). Expression inputs are never committed
-   and never poison. */
-static void run_input_statement(ReplSession* session, const char* complete,
-                                int is_expr) {
+/* Handle a statement or expression input. A statement is appended to the
+   main body the wrapper recompiles; if it fails to compile it is taken out
+   again, so later inputs are unaffected. Expression inputs are never
+   appended. Returns 0 only when out of memory. */
+static int run_input_statement(ReplSession* session, const char* complete,
+                               int is_expr) {
+    size_t mark = session->main_body.len;
+    if (!is_expr) {
+        if (!string_buffer_append(&session->main_body, complete) ||
+            !string_buffer_append(&session->main_body, " ")) {
+            fprintf(stderr, "Out of memory\n");
+            return 0;
+        }
+    }
     if (session->compile_stuck || session->runtime_stuck) {
         run_stuck_input(session, complete, is_expr);
-        return;
+        return 1;
     }
 
     /* Old compose: procedures, a blank line (only when any exist), then the
@@ -721,23 +867,18 @@ static void run_input_statement(ReplSession* session, const char* complete,
     char* source = build_wrapper_source(session, complete, is_expr, prefix);
     if (source == NULL) {
         fprintf(stderr, "Out of memory\n");
-        return;
+        return 0;
     }
     char error[256];
-    if (!session_compile(session, source, 0, error, sizeof(error))) {
-        fprintf(stderr, "Compile error: %s\n",
-                error[0] != '\0' ? error : "unknown error");
-        if (!is_expr) {
-            session->compile_stuck = 1;
-            snprintf(session->compile_stuck_error,
-                     sizeof(session->compile_stuck_error), "%s",
-                     error[0] != '\0' ? error : "unknown error");
-        }
-        free(source);
-        return;
-    }
+    int ok = session_compile(session, source, 0, error, sizeof(error));
     free(source);
+    if (!ok) {
+        fprintf(stderr, "Compile error: %s\n", error[0] != '\0' ? error : "unknown error");
+        string_buffer_truncate(&session->main_body, mark);
+        return 1;
+    }
     session_execute(session, 0);
+    return 1;
 }
 
 /* Compile+run a standalone source (used by .load) in a throwaway chunk so
@@ -786,8 +927,10 @@ static int cmd_load(ReplSession* session, const char* path) {
     /* Append any procedure definitions found in the file so they remain
        available for later REPL input. The crude '}'-delimited scan is
        intentionally unchanged from the old engine (including its breakage on
-       nested braces). */
+       nested braces). The file's own main is not one of them: it only runs,
+       below. */
     int prefix_before = procedures_line_count(session);
+    size_t mark = session->procedures.len;
     StringBuffer new_defs;
     string_buffer_init(&new_defs);
     const char* p = source;
@@ -796,8 +939,12 @@ static int cmd_load(ReplSession* session, const char* path) {
         if (*p == '\0') break;
         if (strncmp(p, "proc ", 5) == 0) {
             const char* start = p;
+            const char* name = p + 5;
+            while (isspace((unsigned char)*name)) name++;
+            int is_main = strncmp(name, "main", 4) == 0 && !is_ident_char(name[4]);
             while (*p != '\0' && *p != '}') p++;
             if (*p == '}') p++;
+            if (is_main) continue;
             size_t len = (size_t)(p - start);
             char* def = malloc(len + 1);
             if (def != NULL) {
@@ -841,38 +988,23 @@ static int cmd_load(ReplSession* session, const char* path) {
     }
 
     /* Make the newly loaded definitions callable from later inputs (the old
-       engine got them for free by recompiling the procedures buffer). A
-       loaded `proc main` poisons the session: the old engine's next compose
-       built a synthetic main over the procedures buffer and rejected the
-       duplicate. For files WITH a main the old engine printed that error
-       only at the next code input (no validation run), so defer printing. */
+       engine got them for free by recompiling the procedures buffer). If they
+       fail to compile they are dropped again, like a failed definition
+       input. */
+    int defs_failed = 0;
     if (new_defs.data != NULL && new_defs.len > 0) {
-        if (strstr(new_defs.data, "proc main") != NULL) {
-            session->compile_stuck = 1;
-            snprintf(session->compile_stuck_error,
-                     sizeof(session->compile_stuck_error), "%s",
-                     "error: Duplicate procedure 'main'");
-            if (!has_main) {
+        char* frag = build_fragment_source(new_defs.data, prefix_before);
+        if (frag != NULL) {
+            char error[256];
+            if (session_compile(session, frag, 1, error, sizeof(error))) {
+                remove_replaced_definitions(&session->procedures, mark);
+            } else {
                 fprintf(stderr, "Compile error: %s\n",
-                        session->compile_stuck_error);
+                        error[0] != '\0' ? error : "unknown error");
+                string_buffer_truncate(&session->procedures, mark);
+                defs_failed = 1;
             }
-        } else {
-            char* frag = build_fragment_source(new_defs.data, prefix_before);
-            if (frag != NULL) {
-                char error[256];
-                if (!session_compile(session, frag, 1, error, sizeof(error))) {
-                    fprintf(stderr, "Compile error: %s\n",
-                            error[0] != '\0' ? error : "unknown error");
-                    /* The broken text stays in the procedures buffer,
-                       poisoning later compiles, exactly like the old
-                       engine. */
-                    session->compile_stuck = 1;
-                    snprintf(session->compile_stuck_error,
-                             sizeof(session->compile_stuck_error), "%s",
-                             error[0] != '\0' ? error : "unknown error");
-                }
-                free(frag);
-            }
+            free(frag);
         }
     }
     string_buffer_free(&new_defs);
@@ -890,10 +1022,7 @@ static int cmd_load(ReplSession* session, const char* path) {
         free(source);
         return 0;
     }
-    session_execute(session, 0);
-    /* The old validation run reset the mirror and its synthetic empty main
-       re-captured nothing, leaving .vars empty after a no-main .load. */
-    vm_repl_locals_clear(session->vm);
+    if (!defs_failed) session_execute(session, 0);
     free(source);
     return 0;
 }
@@ -1355,15 +1484,20 @@ static void cmd_schema(ReplSession* session, const char* table_name) {
     }
 }
 
+/* Names come from the compiler's table of top-level locals, whose index is
+   the slot the VM mirrors, so they cannot drift from the values. */
 static void cmd_vars(ReplSession* session) {
-    if (session->vm == NULL || session->var_count == 0) {
+    int count = repl_compiler_local_count(session->compiler);
+    int locals = session->vm != NULL ? vm_local_count(session->vm) : 0;
+    if (count > locals) count = locals;
+    if (count == 0) {
         printf("(no variables)\n");
         return;
     }
-    int locals = vm_local_count(session->vm);
-    for (int i = 0; i < session->var_count && i < locals; i++) {
+    for (int i = 0; i < count; i++) {
         Value v = vm_local_get(session->vm, i);
-        printf("%s = ", session->var_names[i] != NULL ? session->var_names[i] : "?");
+        const char* name = repl_compiler_local_name(session->compiler, i);
+        printf("%s = ", name != NULL ? name : "?");
         value_print(v);
         printf("\n");
     }
@@ -1520,37 +1654,14 @@ void repl_run(const char* db_path) {
         char* complete = accumulated.data;
         history_add(&session, complete);
 
-        if (is_procedure_definition(complete)) {
-            int prefix = procedures_line_count(&session); /* before the append */
-            if (!string_buffer_append(&session.procedures, complete) ||
-                !string_buffer_append(&session.procedures, "\n")) {
-                fprintf(stderr, "Out of memory\n");
-                break;
-            }
-            run_input_definition(&session, complete, prefix);
-        } else if (is_package_definition(complete)) {
-            int prefix = procedures_line_count(&session); /* before the append */
-            if (!string_buffer_append(&session.procedures, complete) ||
-                !string_buffer_append(&session.procedures, "\n")) {
-                fprintf(stderr, "Out of memory\n");
-                break;
-            }
-            DBDriver* driver = session.driver_open ? &session.driver : NULL;
-            Context* ctx = session.driver_open ? NULL : &session.ctx;
-            packages_save_source(driver, ctx, session.procedures.data, 1);
-            run_input_definition(&session, complete, prefix);
+        int is_package = is_package_definition(complete);
+        int ok;
+        if (is_procedure_definition(complete) || is_package) {
+            ok = run_input_definition(&session, complete, is_package);
         } else {
-            int is_expr = !is_statement(complete);
-            if (!is_expr) {
-                record_var_name(&session, complete);
-                if (!string_buffer_append(&session.main_body, complete) ||
-                    !string_buffer_append(&session.main_body, " ")) {
-                    fprintf(stderr, "Out of memory\n");
-                    break;
-                }
-            }
-            run_input_statement(&session, complete, is_expr);
+            ok = run_input_statement(&session, complete, !is_statement(complete));
         }
+        if (!ok) break;
 
         string_buffer_free(&accumulated);
         string_buffer_init(&accumulated);

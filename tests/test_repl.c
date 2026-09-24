@@ -203,23 +203,122 @@ TEST(repl_vars_accumulate_without_rerunning) {
     ASSERT_INT_EQ(0, output_contains(out, "x = 1"));
 }
 
-TEST(repl_statement_failure_poisons_session) {
-    /* A failing statement stays accumulated (old quirk, preserved): the
-       same error repeats for later inputs. */
+static int count_occurrences(const char* output, const char* needle) {
+    int count = 0;
+    for (const char* p = output; (p = strstr(p, needle)) != NULL; p++) count++;
+    return count;
+}
+
+/* Issue #58: an input that fails to compile is dropped, so it is reported
+   once and later inputs run against the session as it was. */
+TEST(repl_statement_failure_does_not_poison_session) {
     char out[4096];
     run_repl("int x = 1;\n"
              "var bad = ;\n"
              "x + 1\n"
              ".exit\n",
              out, sizeof(out));
-    ASSERT_INT_EQ(1, output_contains(out, "Compile error"));
-    int error_count = 0;
-    const char* p = out;
-    while ((p = strstr(p, ": error:")) != NULL) {
-        error_count++;
-        p++;
-    }
-    ASSERT_INT_EQ(2, error_count);
+    ASSERT_INT_EQ(1, count_occurrences(out, "Compile error"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 2\n"));
+}
+
+TEST(repl_failed_declaration_frees_its_name) {
+    char out[4096];
+    run_repl("int y = \"text\";\n"
+             "int y = 5;\n"
+             "y + 1\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, count_occurrences(out, "Compile error"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 6\n"));
+}
+
+TEST(repl_failed_definition_does_not_poison_session) {
+    char out[4096];
+    run_repl("proc broken( -> int { return 1; }\n"
+             "proc fine() -> int { return 7; }\n"
+             "fine()\n"
+             ".defs\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, count_occurrences(out, "Compile error"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 7\n"));
+    ASSERT_INT_EQ(0, output_contains(out, "broken"));
+}
+
+TEST(repl_redefined_proc_replaces_the_old_one) {
+    /* Callers compiled earlier, like twice(), reach the new body too. */
+    char out[4096];
+    run_repl("proc add(a int, b int) -> int { return a + b; }\n"
+             "proc twice(a int) -> int { return add(a, a); }\n"
+             "twice(5)\n"
+             "proc add(a int, b int) -> int { return a * b; }\n"
+             "twice(5)\n"
+             "add(2, 3)\n"
+             ".defs\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(0, output_contains(out, "error"));
+    const char* first = strstr(out, "> 10\n");
+    ASSERT_PTR_NOT_NULL(first);
+    const char* second = strstr(first, "> 25\n");
+    ASSERT_PTR_NOT_NULL(second);
+    ASSERT_INT_EQ(1, output_contains(second, "> 6\n"));
+    /* .defs lists add once, with the new body. */
+    ASSERT_INT_EQ(1, count_occurrences(out, "proc add"));
+    ASSERT_INT_EQ(1, output_contains(out, "return a * b;"));
+}
+
+TEST(repl_redefinition_with_new_signature_is_refused) {
+    char out[4096];
+    run_repl("proc add(a int, b int) -> int { return a + b; }\n"
+             "proc add(a int) -> int { return a; }\n"
+             "add(2, 3)\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out,
+        "Cannot redefine procedure 'add' with a different signature"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 5\n"));
+}
+
+TEST(repl_vars_names_follow_their_slots) {
+    /* print base; used to be recorded as a second variable named base,
+       shifting every later name by one. */
+    char out[4096];
+    run_repl("int base = 10;\n"
+             "print base;\n"
+             "int extra = 32;\n"
+             "for i in range(0, 2) { print i; }\n"
+             "string s = \"hi\";\n"
+             ".vars\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, output_contains(out, "base = 10\nextra = 32\ns = hi\n"));
+}
+
+TEST(repl_load_failure_does_not_poison_session) {
+    FILE* f = fopen("/tmp/repl_load_bad.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "proc bad(n int) -> int { return missing_name; }\n");
+    fclose(f);
+    f = fopen("/tmp/repl_load_main.mypl", "w");
+    ASSERT_PTR_NOT_NULL(f);
+    fprintf(f, "proc helper(n int) -> int { return n + 100; }\n"
+               "proc main() -> int { print \"file main\"; return 0; }\n");
+    fclose(f);
+
+    char out[4096];
+    run_repl(".load /tmp/repl_load_bad.mypl\n"
+             ".load /tmp/repl_load_main.mypl\n"
+             "helper(1)\n"
+             "int after = 3;\n"
+             "after + 1\n"
+             ".exit\n",
+             out, sizeof(out));
+    ASSERT_INT_EQ(1, count_occurrences(out, "Compile error"));
+    ASSERT_INT_EQ(1, output_contains(out, "file main"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 101\n"));
+    ASSERT_INT_EQ(1, output_contains(out, "> 4\n"));
 }
 
 #ifdef USE_SQLITE
@@ -258,7 +357,13 @@ int main(void) {
     RUN_TEST(repl_no_indexes_or_foreign_keys_in_custom_engine);
     RUN_TEST(repl_runs_each_statement_once);
     RUN_TEST(repl_vars_accumulate_without_rerunning);
-    RUN_TEST(repl_statement_failure_poisons_session);
+    RUN_TEST(repl_statement_failure_does_not_poison_session);
+    RUN_TEST(repl_failed_declaration_frees_its_name);
+    RUN_TEST(repl_failed_definition_does_not_poison_session);
+    RUN_TEST(repl_redefined_proc_replaces_the_old_one);
+    RUN_TEST(repl_redefinition_with_new_signature_is_refused);
+    RUN_TEST(repl_vars_names_follow_their_slots);
+    RUN_TEST(repl_load_failure_does_not_poison_session);
 #ifdef USE_SQLITE
     RUN_TEST(repl_lists_indexes_and_foreign_keys_in_sqlite);
 #endif

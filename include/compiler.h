@@ -327,5 +327,9 @@ int           repl_compiler_compile(ReplCompiler* rc, const char* source,
                                     char* error, size_t error_size,
                                     struct Context* ctx);
 int           repl_compiler_exec_offset(const ReplCompiler* rc);
+/* The session's persistent top-level variables, by slot: the names .vars
+   pairs with the VM's REPL locals. */
+int           repl_compiler_local_count(const ReplCompiler* rc);
+const char*   repl_compiler_local_name(const ReplCompiler* rc, int slot);
 
 #endif

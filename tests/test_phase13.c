@@ -211,9 +211,8 @@ TEST(phase13_issue36_recursion_beyond_fixed_stack) {
  * meta commands (.vars/.defs/.history) reflect the session.
  *
  * This test PASSES on current main and must stay green across the refactor.
- * (Note: redefining an already-defined proc is rejected today with
- * "Duplicate procedure" and poisons the session; that pre-existing
- * limitation is intentionally not part of this guard.) */
+ * (Redefining a proc and inputs that fail to compile are covered in
+ * tests/test_repl.c since #58.) */
 
 TEST(phase13_issue37_repl_accumulation_guard) {
     clean_default_db();

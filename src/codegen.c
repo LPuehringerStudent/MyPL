@@ -139,6 +139,13 @@ typedef struct {
        across the persistent procedure table. */
     int module_init_base;
     const CompileOptions* options;
+    /* REPL only (record_call_sites set): the operand offset of every call
+       emitted this session, so redefining a proc can re-point the callers
+       already bound to its old body. Unused by whole-program compiles. */
+    int record_call_sites;
+    int* call_sites;
+    int call_site_count;
+    int call_site_capacity;
 } Compiler;
 
 static int add_proc_entry(Compiler* compiler, const char* name, int offset,
@@ -553,10 +560,26 @@ static void patch_call(Chunk* chunk, int offset, int target) {
     chunk->code[offset + 1] = (uint8_t)(target & 0xFF);
 }
 
+static void record_call_site(Compiler* compiler) {
+    if (!compiler->record_call_sites) return;
+    if (compiler->call_site_count == compiler->call_site_capacity) {
+        int new_capacity = compiler->call_site_capacity == 0 ? 64 : compiler->call_site_capacity * 2;
+        int* new_sites = realloc(compiler->call_sites, sizeof(int) * (size_t)new_capacity);
+        if (new_sites == NULL) {
+            error(compiler, "out of memory");
+            return;
+        }
+        compiler->call_sites = new_sites;
+        compiler->call_site_capacity = new_capacity;
+    }
+    compiler->call_sites[compiler->call_site_count++] = compiler->chunk->count;
+}
+
 static void emit_call(Compiler* compiler, const char* name, int arg_count) {
     int idx = find_proc(compiler, name);
     int autonomous = (idx >= 0 && compiler->procs[idx].autonomous_transaction);
     emit_byte(compiler, autonomous ? OP_CALL_AUTONOMOUS : OP_CALL);
+    record_call_site(compiler);
     if (idx >= 0 && compiler->procs[idx].offset >= 0) {
         emit_u16(compiler, (uint16_t)compiler->procs[idx].offset);
     } else {
@@ -811,6 +834,7 @@ static void compile_expr(Compiler* compiler, Expr* expr) {
                 if (out_count > 0) {
                     int autonomous = (proc_idx >= 0 && compiler->procs[proc_idx].autonomous_transaction);
                     emit_byte(compiler, autonomous ? OP_CALL_OUT_AUTONOMOUS : OP_CALL_OUT);
+                    record_call_site(compiler);
                     if (proc_idx >= 0 && compiler->procs[proc_idx].offset >= 0) {
                         emit_u16(compiler, (uint16_t)compiler->procs[proc_idx].offset);
                     } else {
@@ -2696,6 +2720,10 @@ int compile_with_options(const char* source, Chunk* chunk, const char* path,
     compiler.module_init_count = 0;
     compiler.module_init_base = 0;
     compiler.options = options;
+    compiler.record_call_sites = 0;
+    compiler.call_sites = NULL;
+    compiler.call_site_count = 0;
+    compiler.call_site_capacity = 0;
     add_exception(&compiler, "no_data_found", 100);
     add_exception(&compiler, "too_many_rows", -1422);
     for (int i = 0; i < MAX_GLOBALS; i++) compiler.global_names[i] = NULL;
@@ -2854,10 +2882,31 @@ struct ReplCompiler {
     int      mark_lines_count;
     int      mark_columns_count;
     int      mark_constants_count;
+    int      mark_call_site_count;
+    int      mark_stmt_watermark;
+    /* Procs from earlier inputs that this fragment redefines, with what the
+       table held before, so a rollback can put it back. */
+    struct {
+        int idx;
+        int old_offset;
+        int old_autonomous;
+    } redefs[MAX_PROCS];
+    int      redef_count;
 };
 
 static void repl_compiler_rollback(ReplCompiler* rc) {
     Compiler* c = &rc->compiler;
+    for (int i = 0; i < rc->redef_count; i++) {
+        c->procs[rc->redefs[i].idx].offset = rc->redefs[i].old_offset;
+        c->procs[rc->redefs[i].idx].autonomous_transaction = rc->redefs[i].old_autonomous;
+    }
+    rc->redef_count = 0;
+    c->call_site_count = rc->mark_call_site_count;
+    rc->stmt_watermark = rc->mark_stmt_watermark;
+    /* repl_reset_fragment registered this fragment's built-in exceptions;
+       the success path frees them after publishing, so do it here too. */
+    free_exception_entries(c);
+    c->exception_count = 0;
     for (int i = rc->mark_proc_count; i < c->proc_count; i++) {
         free((void*)c->procs[i].name);
         type_free(c->procs[i].return_type);
@@ -2916,6 +2965,7 @@ static void repl_reset_fragment(ReplCompiler* rc) {
     c->current_struct = NULL;
     c->module_init_count = 0;
     c->module_init_base = rc->module_init_total;
+    rc->redef_count = 0;
     c->cursor_query_count = 0;
     c->exception_count = 0;
     add_exception(c, "no_data_found", 100);
@@ -3093,6 +3143,73 @@ static int repl_compile_stmt_fragment(ReplCompiler* rc, Program* program,
     return repl_patch_calls(c, error, error_size);
 }
 
+/* A REPL input may redefine a plain proc from an earlier input, keeping its
+   signature: everything compiled so far was type-checked against it. */
+static int repl_same_signature(const ProcEntry* entry, const ProcDecl* proc) {
+    if (entry->param_count != proc->param_count) return 0;
+    if (!type_equals(entry->return_type, proc->return_type)) return 0;
+    for (int p = 0; p < proc->param_count; p++) {
+        if (entry->param_modes[p] != proc->params[p].mode) return 0;
+        if (!type_equals(entry->param_types[p], proc->params[p].type)) return 0;
+    }
+    return 1;
+}
+
+/* Returns 1 when `proc` redefines a proc from an earlier input and records
+   it, 0 when it is new, -1 (error set) when the redefinition is refused. */
+static int repl_register_redefinition(ReplCompiler* rc, const ProcDecl* proc,
+                                      char* error, size_t error_size) {
+    Compiler* c = &rc->compiler;
+    int idx = find_proc(c, proc->name);
+    if (idx < 0 || idx >= rc->mark_proc_count) return 0;
+    char msg[256];
+    msg[0] = '\0';
+    for (int i = 0; i < rc->redef_count; i++) {
+        if (rc->redefs[i].idx == idx) {
+            snprintf(msg, sizeof(msg), "Duplicate procedure '%s'", proc->name);
+        }
+    }
+    if (msg[0] == '\0' && !repl_same_signature(&c->procs[idx], proc)) {
+        snprintf(msg, sizeof(msg),
+                 "Cannot redefine procedure '%s' with a different signature",
+                 proc->name);
+    }
+    if (msg[0] != '\0') {
+        if (error != NULL && error_size > 0) {
+            format_error(error, error_size, c->source_path, 0, 0, msg);
+        }
+        return -1;
+    }
+    rc->redefs[rc->redef_count].idx = idx;
+    rc->redefs[rc->redef_count].old_offset = c->procs[idx].offset;
+    rc->redefs[rc->redef_count].old_autonomous = c->procs[idx].autonomous_transaction;
+    rc->redef_count++;
+    return 1;
+}
+
+/* Point every recorded call of a redefined proc's old body at its new one,
+   switching the opcode if the new body's autonomous_transaction differs. */
+static void repl_repoint_redefined_calls(ReplCompiler* rc) {
+    Compiler* c = &rc->compiler;
+    Chunk* chunk = c->chunk;
+    for (int r = 0; r < rc->redef_count; r++) {
+        const ProcEntry* entry = &c->procs[rc->redefs[r].idx];
+        int old_offset = rc->redefs[r].old_offset;
+        for (int i = 0; i < c->call_site_count; i++) {
+            int site = c->call_sites[i];
+            if (read_u16(chunk->code + site) != (uint16_t)old_offset) continue;
+            patch_call(chunk, site, entry->offset);
+            uint8_t* op = &chunk->code[site - 1];
+            if (*op == OP_CALL || *op == OP_CALL_AUTONOMOUS) {
+                *op = entry->autonomous_transaction ? OP_CALL_AUTONOMOUS : OP_CALL;
+            } else if (*op == OP_CALL_OUT || *op == OP_CALL_OUT_AUTONOMOUS) {
+                *op = entry->autonomous_transaction ? OP_CALL_OUT_AUTONOMOUS : OP_CALL_OUT;
+            }
+        }
+    }
+    rc->redef_count = 0;
+}
+
 static int repl_compile_def_fragment(ReplCompiler* rc, Program* program,
                                      char* error, size_t error_size) {
     Compiler* c = &rc->compiler;
@@ -3107,6 +3224,9 @@ static int repl_compile_def_fragment(ReplCompiler* rc, Program* program,
 
     for (int i = 0; i < program->proc_count; i++) {
         ProcDecl* proc = &program->procs[i];
+        int redefined = repl_register_redefinition(rc, proc, error, error_size);
+        if (redefined < 0) return 0;
+        if (redefined) continue;
         Type** pts = NULL;
         ParamMode* pms = NULL;
         if (proc->param_count > 0) {
@@ -3260,6 +3380,7 @@ ReplCompiler* repl_compiler_create(void) {
     rc->seed_types = NULL;
     rc->seed_count = 0;
     rc->seed_capacity = 0;
+    c->record_call_sites = 1;
     return rc;
 }
 
@@ -3283,6 +3404,7 @@ void repl_compiler_free(ReplCompiler* rc) {
     free(c->cursor_queries);
     free(rc->seed_names);
     free(rc->seed_types);
+    free(c->call_sites);
     free(rc);
 }
 
@@ -3311,6 +3433,8 @@ int repl_compiler_compile(ReplCompiler* rc, const char* source, int is_def_fragm
     rc->mark_lines_count = chunk->lines_count;
     rc->mark_columns_count = chunk->columns_count;
     rc->mark_constants_count = chunk->constants_count;
+    rc->mark_call_site_count = c->call_site_count;
+    rc->mark_stmt_watermark = rc->stmt_watermark;
 
     repl_reset_fragment(rc);
 
@@ -3329,6 +3453,7 @@ int repl_compiler_compile(ReplCompiler* rc, const char* source, int is_def_fragm
                     error_size - 1);
             error[error_size - 1] = '\0';
         }
+        repl_compiler_rollback(rc);
         return 0;
     }
     char parse_error[256] = {0};
@@ -3340,6 +3465,7 @@ int repl_compiler_compile(ReplCompiler* rc, const char* source, int is_def_fragm
             strncpy(error, parse_error, error_size - 1);
             error[error_size - 1] = '\0';
         }
+        repl_compiler_rollback(rc);
         return 0;
     }
 
@@ -3360,6 +3486,10 @@ int repl_compiler_compile(ReplCompiler* rc, const char* source, int is_def_fragm
         return 0;
     }
     free_program(program);
+
+    /* Nothing can fail past this point, so a redefinition may now re-point
+       the callers bound to the old body, from any earlier input. */
+    repl_repoint_redefined_calls(rc);
 
     /* Publish this fragment's trigger entries to the runtime registry. */
     for (int i = rc->published_triggers; i < c->trigger_count; i++) {
@@ -3385,4 +3515,13 @@ int repl_compiler_compile(ReplCompiler* rc, const char* source, int is_def_fragm
 
 int repl_compiler_exec_offset(const ReplCompiler* rc) {
     return rc != NULL ? rc->exec_offset : -1;
+}
+
+int repl_compiler_local_count(const ReplCompiler* rc) {
+    return rc != NULL ? rc->compiler.local_count : 0;
+}
+
+const char* repl_compiler_local_name(const ReplCompiler* rc, int slot) {
+    if (rc == NULL || slot < 0 || slot >= rc->compiler.local_count) return NULL;
+    return rc->compiler.locals[slot].name;
 }
