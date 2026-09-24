@@ -1353,6 +1353,7 @@ static Stmt* subtype_decl_statement(Parser* parser) {
     Type* base_type = parse_type(parser);
     if (parser->had_error) {
         free(name);
+        type_free(base_type);
         return NULL;
     }
     if (!match(parser, TOKEN_SEMICOLON)) {
