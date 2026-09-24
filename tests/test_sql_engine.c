@@ -833,7 +833,167 @@ TEST(sql_insert_into_select_with_where) {
     cleanup(path);
 }
 
+/* Row-page chain (issue #50): a page's next_page link shares header bytes
+ * with the old record-count field, so a full page that has a successor used
+ * to read back as empty. These tables are sized to span many pages: each row
+ * is ~112 bytes, ~36 rows per 4 KB page. */
+#define BIG_ROWS 300
+
+static int insert_big_rows(Context* ctx, int first_id, int last_id) {
+    char pad[101];
+    memset(pad, 'x', 100);
+    pad[100] = '\0';
+    for (int id = first_id; id <= last_id; id++) {
+        char sql[256];
+        snprintf(sql, sizeof(sql), "INSERT INTO big VALUES (%d, '%s')", id, pad);
+        if (!sql_exec_ddl(sql, ctx)) return 0;
+    }
+    return 1;
+}
+
+static int select_count(Context* ctx, const char* sql) {
+    Result* res = sql_exec(sql, ctx);
+    if (res == NULL) return -1;
+    int n = res->row_count;
+    result_free(res);
+    return n;
+}
+
+static int select_single_int(Context* ctx, const char* sql, const char* field) {
+    Result* res = sql_exec(sql, ctx);
+    if (res == NULL || res->row_count != 1) {
+        if (res != NULL) result_free(res);
+        return -1;
+    }
+    int v = row_get_field(&res->rows[0], field).as.as_int;
+    result_free(res);
+    return v;
+}
+
+static double select_single_float(Context* ctx, const char* sql, const char* field) {
+    Result* res = sql_exec(sql, ctx);
+    if (res == NULL || res->row_count != 1) {
+        if (res != NULL) result_free(res);
+        return -1.0;
+    }
+    double v = row_get_field(&res->rows[0], field).as.as_float;
+    result_free(res);
+    return v;
+}
+
+TEST(sql_scan_returns_rows_from_full_middle_pages) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE big (id INT, pad STRING)", &ctx));
+    ASSERT_INT_EQ(1, insert_big_rows(&ctx, 1, BIG_ROWS));
+
+    ASSERT_INT_EQ(BIG_ROWS, select_count(&ctx, "SELECT * FROM big"));
+    ASSERT_INT_EQ(BIG_ROWS, select_single_int(&ctx, "SELECT COUNT(*) FROM big", "count"));
+    ASSERT_FLOAT_EQ((double)(BIG_ROWS * (BIG_ROWS + 1) / 2),
+                    select_single_float(&ctx, "SELECT SUM(id) FROM big", "sum"));
+    /* A row that lives on a full middle page. */
+    ASSERT_INT_EQ(1, select_count(&ctx, "SELECT id FROM big WHERE id = 100"));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_index_build_sees_rows_on_full_middle_pages) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE big (id INT, pad STRING)", &ctx));
+    ASSERT_INT_EQ(1, insert_big_rows(&ctx, 1, BIG_ROWS));
+    /* Built after the rows exist, so it has to walk the whole chain. */
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE INDEX big_id ON big (id)", &ctx));
+
+    for (int id = 1; id <= BIG_ROWS; id += 37) {
+        char sql[128];
+        snprintf(sql, sizeof(sql), "SELECT id FROM big WHERE id = %d", id);
+        ASSERT_INT_EQ(1, select_count(&ctx, sql));
+    }
+    ASSERT_INT_EQ(1, select_count(&ctx, "SELECT id FROM big WHERE id = 300"));
+    ASSERT_INT_EQ(BIG_ROWS, select_count(&ctx, "SELECT * FROM big"));
+
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_reads_and_appends_to_legacy_last_page_with_record_count) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE big (id INT, pad STRING)", &ctx));
+    ASSERT_INT_EQ(1, insert_big_rows(&ctx, 1, BIG_ROWS));
+    catalog_close(&ctx);
+
+    /* Databases written before the fix kept a record count at header offset
+       2 on the last page, which is the high half of its next_page field: the
+       last page therefore "linked" to page count<<16, far past the end of the
+       file. Recreate that state and require scans and appends to cope. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    Table* t = catalog_find_table(&ctx, "big");
+    ASSERT_PTR_NOT_NULL(t);
+    int page_num = t->first_row_page;
+    int pages = 0;
+    for (;;) {
+        uint8_t page[PAGE_SIZE];
+        pager_read_page(ctx.pager, page_num, page);
+        int32_t next;
+        memcpy(&next, page, sizeof(next));
+        pages++;
+        if (next == 0) {
+            int16_t legacy_count = 5;
+            memcpy(page + 2, &legacy_count, sizeof(legacy_count));
+            pager_write_page(ctx.pager, page_num, page);
+            break;
+        }
+        page_num = (int)next;
+    }
+    ASSERT(pages > 2);
+    catalog_close(&ctx);
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(BIG_ROWS, select_count(&ctx, "SELECT * FROM big"));
+    ASSERT_INT_EQ(1, insert_big_rows(&ctx, BIG_ROWS + 1, BIG_ROWS + 1));
+    ASSERT_INT_EQ(BIG_ROWS + 1, select_count(&ctx, "SELECT * FROM big"));
+    ASSERT_INT_EQ(1, sql_exec_ddl("DROP TABLE big", &ctx));
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
+TEST(sql_insert_after_reopen_keeps_multi_page_chain) {
+    char* path = make_temp_path();
+    Context ctx = {path, NULL};
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, sql_exec_ddl("CREATE TABLE big (id INT, pad STRING)", &ctx));
+    ASSERT_INT_EQ(1, insert_big_rows(&ctx, 1, BIG_ROWS));
+    catalog_close(&ctx);
+
+    /* New process equivalent: last_row_page is not persisted, so appends must
+       find the real tail instead of treating the first page as the tail. */
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(1, insert_big_rows(&ctx, BIG_ROWS + 1, 2 * BIG_ROWS));
+    ASSERT_INT_EQ(2 * BIG_ROWS, select_count(&ctx, "SELECT * FROM big"));
+    catalog_close(&ctx);
+
+    ASSERT_INT_EQ(1, catalog_open(&ctx));
+    ASSERT_INT_EQ(2 * BIG_ROWS, select_count(&ctx, "SELECT * FROM big"));
+    ASSERT_INT_EQ(1, select_count(&ctx, "SELECT id FROM big WHERE id = 450"));
+    catalog_close(&ctx);
+    cleanup(path);
+}
+
 int main(void) {
+    RUN_TEST(sql_scan_returns_rows_from_full_middle_pages);
+    RUN_TEST(sql_index_build_sees_rows_on_full_middle_pages);
+    RUN_TEST(sql_reads_and_appends_to_legacy_last_page_with_record_count);
+    RUN_TEST(sql_insert_after_reopen_keeps_multi_page_chain);
     RUN_TEST(sql_create_table_persists_schema);
     RUN_TEST(sql_insert_and_select_persists_rows);
     RUN_TEST(sql_select_specific_columns);
