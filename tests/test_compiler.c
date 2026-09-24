@@ -1347,6 +1347,29 @@ TEST(compiler_compiles_clamp_native) {
     free_chunk(&chunk);
 }
 
+TEST(compiler_runs_call_as_cfor_step) {
+    Chunk chunk;
+    init_chunk(&chunk);
+    /* The step is a call, not an assignment: bump() advances the counter the
+       condition tests, so the loop only ends if the step runs every pass. */
+    ASSERT_INT_EQ(1, compile(
+        "proc bump(c array<int>, by int) -> int { c[0] = c[0] + by; return 0; }\n"
+        "proc main() -> int {\n"
+        "    array<int> counter;\n"
+        "    counter.extend(1);\n"
+        "    counter[0] = 0;\n"
+        "    int passes = 0;\n"
+        "    for (int i = 0; counter[0] < 6; bump(counter, 2)) { passes = passes + 1; }\n"
+        "    return passes * 10 + counter[0];\n"
+        "}\n", &chunk, NULL, 0));
+
+    VM* vm = vm_init();
+    ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+    ASSERT_INT_EQ(36, vm_pop(vm).as.as_int);
+    vm_free(vm);
+    free_chunk(&chunk);
+}
+
 int main(void) {
     RUN_TEST(compiler_compiles_integer_return);
     RUN_TEST(compiler_compiles_local_variables);
@@ -1365,6 +1388,7 @@ int main(void) {
     RUN_TEST(compiler_compiles_cfor_break);
     RUN_TEST(compiler_compiles_cfor_continue);
     RUN_TEST(compiler_compiles_cfor_existing_var);
+    RUN_TEST(compiler_runs_call_as_cfor_step);
     RUN_TEST(compiler_compiles_foreach_range);
     RUN_TEST(compiler_compiles_foreach_array);
     RUN_TEST(compiler_compiles_parse_int_native);

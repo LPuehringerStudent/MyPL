@@ -1,0 +1,11 @@
+proc bump(a int, b int) -> int {
+    return a + b;
+}
+
+proc main() -> int {
+    int n = 0;
+    for (n = 0; n < 3; bump(n, 1)) {
+        return n;
+    }
+    return 0;
+}

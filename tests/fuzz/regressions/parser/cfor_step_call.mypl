@@ -1,0 +1,10 @@
+proc tick() -> int {
+    return 0;
+}
+
+proc main() -> int {
+    for (int i = 0; i < 3; tick()) {
+        return i;
+    }
+    return 0;
+}

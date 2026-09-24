@@ -1618,6 +1618,7 @@ static Stmt* for_step(Parser* parser) {
             return stmt;
         }
         if (check(parser, TOKEN_LPAREN)) {
+            advance(parser); /* ( : call() parses from the first argument */
             char* name = copy_token_lexeme(&ident);
             Expr* callee = create_variable_expr(name);
             free(name);
