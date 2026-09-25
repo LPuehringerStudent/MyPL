@@ -1,8 +1,7 @@
 name: Windows
 
-# Stage 1 of the Windows port (#90): MyPL builds with MinGW-w64 and runs the
-# example programs. The C unit tests are still POSIX-bound (/tmp paths,
-# shell commands, cc -shared) and do not run here yet.
+# MyPL built with MinGW-w64 under MSYS2, running the same test suites and
+# examples as Linux and macOS (#90, #96).
 
 on:
   push:
@@ -51,14 +50,6 @@ jobs:
     - name: Show version
       run: ./bin/mypl.exe --version
 
-    - name: Run examples
-      run: make examples-test CC=gcc
-
-    - name: Run each test suite (diagnostic)
-      continue-on-error: true
-      run: |
-        make -k test CC=gcc > /dev/null 2>&1 || true
-        for t in bin/test_*.exe; do
-          echo "=== $t"
-          timeout 300 "$t" 2>&1 | grep -E "FAIL|[0-9]+ run" | tail -25 || true
-        done
+    - name: Run tests
+      # Every suite, the fuzz corpus replay and the examples, as on Linux.
+      run: make test CC=gcc

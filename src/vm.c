@@ -479,7 +479,7 @@ int vm_utl_file_mkdir(const char* path) {
 
 int vm_utl_file_remove(const char* path) {
     if (path == NULL) return -1;
-    return remove(path);
+    return os_remove(path);
 }
 
 int vm_dbms_sql_execute(VM* vm, const char* sql) {

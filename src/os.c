@@ -95,6 +95,14 @@ int os_mkdir(const char* path) {
 #endif
 }
 
+int os_remove(const char* path) {
+#ifdef _WIN32
+    /* The Windows C runtime's remove() deletes files only. */
+    if (os_is_dir(path)) return _rmdir(path) == 0 ? 0 : -1;
+#endif
+    return remove(path) == 0 ? 0 : -1;
+}
+
 int os_list_dir(const char* path, char*** out_names, int* out_count) {
     if (out_names == NULL || out_count == NULL) return 0;
     *out_names = NULL;
