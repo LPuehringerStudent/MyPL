@@ -24,8 +24,8 @@ graphify-out/
 # OS
 .DS_Store
 
-# Project docs (kept out of repo)
-docs/
+# Planning notes (kept out of repo)
+plans/
 ARCHITECTURE.md
 AGENTS.md
 
