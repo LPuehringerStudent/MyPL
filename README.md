@@ -73,6 +73,18 @@ On macOS:
 brew install sqlite3
 ```
 
+On Windows, build in an [MSYS2](https://www.msys2.org/) MINGW64 shell, which
+provides MinGW-w64, SQLite and a POSIX regex library for the `regexp_*`
+functions:
+
+```bash
+pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3 mingw-w64-x86_64-libsystre
+make clean && make && make test
+```
+
+The REPL on Windows reads plain lines; history and arrow-key editing need a
+POSIX terminal.
+
 ### Standalone build (no SQLite)
 
 MyPL can be built without SQLite. In that mode the custom SQL engine is the only
@@ -283,7 +295,7 @@ PL/SQL's `UTL_FILE` does, so a reader can loop until that is caught.
 ### Calling native libraries (external_call)
 
 `external_call` invokes a C function from a shared library via
-`dlopen`/`dlsym`. The native name selects the C return type; the argument's
+`dlopen`/`dlsym` (`LoadLibrary`/`GetProcAddress` on Windows). The native name selects the C return type; the argument's
 C type follows its MyPL runtime type (`int`, `float`, or `string`):
 
 ```mypl
@@ -399,6 +411,21 @@ $end
 Command-line flags are boolean, may be repeated, and apply to the input file
 and its imported modules. Use `$undefine NAME` within a source file to disable
 a flag for the rest of that compilation unit.
+
+One flag names the platform MyPL runs on: `PLATFORM_LINUX`, `PLATFORM_MACOS`
+or `PLATFORM_WINDOWS`, plus `PLATFORM_POSIX` on Linux and macOS. They are
+always defined, which lets a program choose, for instance, the library
+`external_call` loads:
+
+```mypl
+$if PLATFORM_WINDOWS $then
+    string libc = "msvcrt.dll";
+$elsif PLATFORM_MACOS $then
+    string libc = "/usr/lib/libSystem.B.dylib";
+$else
+    string libc = "libc.so.6";
+$end
+```
 
 ## Examples
 
