@@ -11,7 +11,7 @@
 
 MyPL is a small scripting language with C-like syntax and SQL in its veins.
 It compiles to bytecode for a custom stack VM and runs against either its
-built-in SQL engine or SQLite — stored-procedure scripting without the weight
+built-in SQL engine or SQLite. Stored-procedure scripting without the weight
 of an Oracle installation.
 
 ```mypl
@@ -51,8 +51,8 @@ make
 - **Batteries included**: `dbms_output`, the `dbms_sql` dynamic-SQL cursor
   API (`dbms_sql.open_cursor`), `utl_file` for host files
   (`utl_file.fopen`), ~90 standard-library natives, regex support, and FFI
-  to C libraries via `external_call`/`external_call_sig` — on all three
-  platforms.
+  to C libraries via `external_call`/`external_call_sig`.
+  On all three platforms.
 - **Two SQL engines**: the SQLite backend (`--db <path>`, `.connect`,
   `:memory:`) or the built-in Custom SQL engine with zero dependencies.
 - **Hacker-friendly tooling**: a REPL with history and line editing on
