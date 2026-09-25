@@ -2263,6 +2263,8 @@ static void compile_package_members(Compiler* compiler, Program* program) {
 /* -------------------------------------------------------------------------- */
 
 #define CC_MAX_FLAGS MYPL_CC_MAX_FLAGS
+/* Room for the built-in PLATFORM_* flags on top of the command line's. */
+#define CC_FLAG_CAPACITY (CC_MAX_FLAGS + 2)
 #define CC_NAME_MAX MYPL_CC_FLAG_NAME_MAX
 #define CC_MAX_DEPTH 16
 
@@ -2285,9 +2287,28 @@ static int cc_flag_defined(char flags[][CC_NAME_MAX], int flag_count, const char
     return 0;
 }
 
+/* Defined in every compilation, so a program can choose, say, which C
+   library external_call loads on the platform it runs on. */
+static const char* const cc_platform_flags[] = {
+#if defined(_WIN32)
+    "PLATFORM_WINDOWS",
+#elif defined(__APPLE__)
+    "PLATFORM_MACOS", "PLATFORM_POSIX",
+#elif defined(__linux__)
+    "PLATFORM_LINUX", "PLATFORM_POSIX",
+#else
+    "PLATFORM_POSIX",
+#endif
+};
+
 static int cc_seed_flags(char flags[][CC_NAME_MAX], int* flag_count,
                          const CompileOptions* options, const char* source_path,
                          char* error_buf, size_t error_size) {
+    for (size_t i = 0; i < sizeof(cc_platform_flags) / sizeof(cc_platform_flags[0]); i++) {
+        if (!cc_flag_defined(flags, *flag_count, cc_platform_flags[i])) {
+            strcpy(flags[(*flag_count)++], cc_platform_flags[i]);
+        }
+    }
     if (options == NULL) return 1;
     if (options->conditional_flag_count < 0 ||
         options->conditional_flag_count > CC_MAX_FLAGS ||
@@ -2330,7 +2351,7 @@ char* cc_preprocess(const char* source, const char* source_path,
     if (out == NULL) return NULL;
     memcpy(out, source, len + 1);
 
-    char flags[CC_MAX_FLAGS][CC_NAME_MAX];
+    char flags[CC_FLAG_CAPACITY][CC_NAME_MAX];
     int flag_count = 0;
     if (!cc_seed_flags(flags, &flag_count, options, source_path, error_buf, error_size)) {
         free(out);
@@ -2370,7 +2391,7 @@ char* cc_preprocess(const char* source, const char* source_path,
 
             if (strcmp(kw, "define") == 0) {
                 if (active && arg[0] != '\0' && !cc_flag_defined(flags, flag_count, arg)) {
-                    if (flag_count < CC_MAX_FLAGS) {
+                    if (flag_count < CC_FLAG_CAPACITY) {
                         strcpy(flags[flag_count++], arg);
                     }
                 }

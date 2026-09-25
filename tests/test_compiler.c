@@ -1383,6 +1383,37 @@ TEST(compiler_do_while_continue_checks_the_condition) {
     ASSERT_INT_EQ(23, result);
 }
 
+/* Every compilation defines the flag of the platform it runs on (#96), so a
+   program can pick, for example, the C library external_call should load. */
+TEST(compiler_defines_the_platform_flag) {
+    int result = -1;
+    ASSERT_INT_EQ(1, run_main_int(
+        "proc main() -> int {\n"
+        "    int p = 0;\n"
+        "$if PLATFORM_WINDOWS $then\n"
+        "    p = 1;\n"
+        "$elsif PLATFORM_MACOS $then\n"
+        "    p = 2;\n"
+        "$elsif PLATFORM_LINUX $then\n"
+        "    p = 3;\n"
+        "$end\n"
+        "$if PLATFORM_POSIX $then\n"
+        "    p = p + 10;\n"
+        "$end\n"
+        "    return p;\n"
+        "}",
+        &result));
+#if defined(_WIN32)
+    ASSERT_INT_EQ(1, result);
+#elif defined(__APPLE__)
+    ASSERT_INT_EQ(12, result);
+#elif defined(__linux__)
+    ASSERT_INT_EQ(13, result);
+#else
+    ASSERT_INT_EQ(10, result);
+#endif
+}
+
 TEST(compiler_reports_source_line_on_native_error) {
     Chunk chunk;
     init_chunk(&chunk);
@@ -1577,6 +1608,7 @@ int main(void) {
     RUN_TEST(compiler_nested_cfor_does_not_grow_the_stack);
     RUN_TEST(compiler_break_and_continue_pop_the_right_locals);
     RUN_TEST(compiler_do_while_continue_checks_the_condition);
+    RUN_TEST(compiler_defines_the_platform_flag);
     RUN_TEST(compiler_reports_source_line_on_native_error);
     RUN_TEST(compiler_compiles_format_native);
     RUN_TEST(compiler_compiles_sort_native);
