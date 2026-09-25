@@ -4,7 +4,7 @@
 //   ./bin/mypl examples/phase12_import_packages.mypl
 // Expected output: 41 then 42 — the initializer runs before main() exactly
 // as if the package were declared in the main file.
-import "phase12_counter_pkg.mypl";
+import "modules/phase12_counter_pkg.mypl";
 
 proc main() -> int {
     print int_to_string(counter.get());
