@@ -1,8 +1,16 @@
 // Phase 10: external procedure linkage example.
-// Calls abs() from the C standard library via dlopen/dlsym (Linux).
-// smoke: requires linux
+// Calls abs() from the C standard library, loaded with dlopen/dlsym
+// (LoadLibrary/GetProcAddress on Windows). The built-in PLATFORM_* flags
+// pick the library that holds it on each system.
 proc main() -> int {
-    int r = external_call("libc.so.6", "abs", -42);
+$if PLATFORM_WINDOWS $then
+    string libc = "msvcrt.dll";
+$elsif PLATFORM_MACOS $then
+    string libc = "/usr/lib/libSystem.B.dylib";
+$else
+    string libc = "libc.so.6";
+$end
+    int r = external_call(libc, "abs", -42);
     print int_to_string(r);
     return 0;
 }

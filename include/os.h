@@ -10,6 +10,9 @@ int os_file_exists(const char* path);
 int os_write_file(const char* path, const char* contents, size_t len);
 int os_is_dir(const char* path);
 int os_mkdir(const char* path);
+/* Removes a file or an empty directory, as POSIX remove() does; 0 on
+   success, -1 on failure. */
+int os_remove(const char* path);
 int os_list_dir(const char* path, char*** out_names, int* out_count);
 
 int os_open(const char* path);

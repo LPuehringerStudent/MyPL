@@ -1,7 +1,6 @@
 #include "test_harness.h"
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 
 static int run_mypl_with_setup(const char* source, const char* setup, const char* args, char* out, size_t out_size) {
     const char* db_arg = args != NULL ? args : "";

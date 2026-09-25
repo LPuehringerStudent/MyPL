@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "natives.h"
 #include "vm.h"
@@ -928,12 +929,17 @@ TEST(natives_pad_start_rejects_non_string) {
 }
 
 TEST(natives_read_line_reads_from_stdin) {
-    FILE* saved_stdin = stdin;
+    /* Point file descriptor 0 at a temporary file for the duration: stdin
+       itself cannot be assigned everywhere (it is a macro on Windows). */
     FILE* fp = tmpfile();
     ASSERT_PTR_NOT_NULL(fp);
     fputs("hello\n", fp);
+    fflush(fp);
     rewind(fp);
-    stdin = fp;
+    int saved_stdin = dup(fileno(stdin));
+    ASSERT_INT_EQ(1, saved_stdin >= 0);
+    dup2(fileno(fp), fileno(stdin));
+    clearerr(stdin);
 
     VM* vm = vm_init();
     Value result;
@@ -943,8 +949,10 @@ TEST(natives_read_line_reads_from_stdin) {
     value_release(result);
     vm_free(vm);
 
+    dup2(saved_stdin, fileno(stdin));
+    close(saved_stdin);
+    clearerr(stdin);
     fclose(fp);
-    stdin = saved_stdin;
 }
 
 TEST(natives_is_dir_detects_directory) {

@@ -102,8 +102,9 @@ graphify output. Check `.gitignore` before `git add -A`.
 2. **Branch per issue.** `git checkout -b issue-<number>-short-title`.
 3. **One logical change per PR.** Keep diffs focused; no drive-by
    reformatting.
-4. **PRs** run CI on Ubuntu and macOS, gcc and clang. Wait for green before
-   merging; prefer squash merge for feature branches.
+4. **PRs** run CI on Ubuntu and macOS (gcc and clang) and on Windows
+   (MinGW-w64 under MSYS2). Wait for green before merging; prefer squash
+   merge for feature branches.
 
 ## Code of conduct
 

@@ -1,8 +1,7 @@
 name: Windows
 
-# Stage 1 of the Windows port (#90): MyPL builds with MinGW-w64 and runs the
-# example programs. The C unit tests are still POSIX-bound (/tmp paths,
-# shell commands, cc -shared) and do not run here yet.
+# MyPL built with MinGW-w64 under MSYS2, running the same test suites and
+# examples as Linux and macOS (#90, #96).
 
 on:
   push:
@@ -33,11 +32,24 @@ jobs:
           mingw-w64-x86_64-libsystre
           mingw-w64-x86_64-sqlite3
 
+    - name: Prepare the test environment
+      run: |
+        # The tests use /tmp paths. A native Windows program resolves them
+        # against the root of the current drive, while MSYS2's bash (which
+        # runs the tests' shell commands) maps /tmp to its own directory.
+        # A junction from the drive's \tmp to bash's /tmp makes them one.
+        drive=$(cygpath -m "$PWD" | cut -c1)
+        cmd //c "mklink /J ${drive}:\\tmp $(cygpath -w /tmp)"
+        ls -ld "/$(echo "$drive" | tr 'A-Z' 'a-z')/tmp"
+        # Some tests build shared libraries with cc.
+        command -v cc || cp "$(command -v gcc)" "$(dirname "$(command -v gcc)")/cc.exe"
+
     - name: Build project
       run: make clean && make all CC=gcc
 
     - name: Show version
       run: ./bin/mypl.exe --version
 
-    - name: Run examples
-      run: make examples-test CC=gcc
+    - name: Run tests
+      # Every suite, the fuzz corpus replay and the examples, as on Linux.
+      run: make test CC=gcc
