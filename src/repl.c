@@ -4,7 +4,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <termios.h>
 #endif
 
@@ -350,8 +353,7 @@ static int read_line_simple(const char* prompt, char* buf, size_t size) {
     return 1;
 }
 
-/* Line editing with history needs a raw POSIX terminal; Windows reads
-   plain lines (repl_read_line). */
+/* Line editing with history needs raw terminal input. */
 #ifndef _WIN32
 static int read_line_tty(ReplSession* session, const char* prompt,
                          char* buf, size_t size) {
@@ -457,6 +459,197 @@ static int read_line_tty(ReplSession* session, const char* prompt,
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_tio);
     return 1;
 }
+#else
+static COORD console_position_after(COORD start, size_t offset, SHORT width) {
+    COORD result = start;
+    if (width <= 0) return result;
+    size_t absolute = (size_t)start.X + offset;
+    result.X = (SHORT)(absolute % (size_t)width);
+    result.Y = (SHORT)(start.Y + absolute / (size_t)width);
+    return result;
+}
+
+static void redraw_windows_line(HANDLE output, COORD start, SHORT width,
+                                const WCHAR* line, size_t len,
+                                size_t cursor, size_t* displayed_len) {
+    DWORD written = 0;
+    SetConsoleCursorPosition(output, start);
+    if (len > 0) {
+        WriteConsoleW(output, line, (DWORD)len, &written, NULL);
+    }
+    for (size_t i = len; i < *displayed_len; i++) {
+        WriteConsoleW(output, L" ", 1, &written, NULL);
+    }
+    *displayed_len = len;
+    SetConsoleCursorPosition(output,
+                             console_position_after(start, cursor, width));
+}
+
+static size_t history_to_wide(const char* entry, WCHAR* line, size_t capacity) {
+    if (entry == NULL || capacity == 0) return 0;
+    int converted = MultiByteToWideChar(CP_UTF8, 0, entry, -1,
+                                        line, (int)capacity);
+    if (converted <= 0) {
+        line[0] = L'\0';
+        return 0;
+    }
+    return (size_t)converted - 1;
+}
+
+static void wide_line_to_utf8(const WCHAR* line, size_t len,
+                              char* buf, size_t size) {
+    if (size == 0) return;
+    while (len > 0) {
+        int needed = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                         line, (int)len, NULL, 0,
+                                         NULL, NULL);
+        if (needed > 0 && (size_t)needed < size) {
+            int converted = WideCharToMultiByte(
+                CP_UTF8, WC_ERR_INVALID_CHARS, line, (int)len,
+                buf, needed, NULL, NULL);
+            if (converted > 0) {
+                buf[converted] = '\0';
+                return;
+            }
+        }
+        len--;
+        if (len > 0 && line[len - 1] >= 0xD800 &&
+            line[len - 1] <= 0xDBFF) {
+            len--;
+        }
+    }
+    buf[0] = '\0';
+}
+
+static int read_line_windows(ReplSession* session, const char* prompt,
+                             char* buf, size_t size) {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD old_mode;
+    CONSOLE_SCREEN_BUFFER_INFO screen;
+    if (input == INVALID_HANDLE_VALUE || output == INVALID_HANDLE_VALUE ||
+        !GetConsoleMode(input, &old_mode) ||
+        !GetConsoleScreenBufferInfo(output, &screen)) {
+        return read_line_simple(prompt, buf, size);
+    }
+
+    DWORD raw_mode = old_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT |
+                                  ENABLE_PROCESSED_INPUT);
+    if (!SetConsoleMode(input, raw_mode)) {
+        return read_line_simple(prompt, buf, size);
+    }
+
+    printf("%s", prompt);
+    fflush(stdout);
+    if (!GetConsoleScreenBufferInfo(output, &screen)) {
+        SetConsoleMode(input, old_mode);
+        return 0;
+    }
+
+    WCHAR* line = calloc(size, sizeof(WCHAR));
+    if (line == NULL) {
+        SetConsoleMode(input, old_mode);
+        return 0;
+    }
+    size_t len = 0;
+    size_t cursor = 0;
+    size_t displayed_len = 0;
+    COORD start = screen.dwCursorPosition;
+    SHORT width = screen.dwSize.X;
+    session->history_index = session->history_count;
+    int result = 1;
+
+    for (;;) {
+        INPUT_RECORD record;
+        DWORD count = 0;
+        if (!ReadConsoleInputW(input, &record, 1, &count) || count == 0) {
+            result = 0;
+            break;
+        }
+        if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) {
+            continue;
+        }
+
+        KEY_EVENT_RECORD key = record.Event.KeyEvent;
+        WORD code = key.wVirtualKeyCode;
+        WCHAR ch = key.uChar.UnicodeChar;
+        if (code == VK_RETURN) {
+            DWORD written = 0;
+            WriteConsoleW(output, L"\r\n", 2, &written, NULL);
+            break;
+        }
+        if (ch == 4 || ch == 26) { /* Ctrl-D / Ctrl-Z */
+            result = 0;
+            break;
+        }
+        if (ch == 3) { /* Ctrl-C when processed input is disabled upstream */
+            DWORD written = 0;
+            WriteConsoleW(output, L"\r\n", 2, &written, NULL);
+            len = 0;
+            cursor = 0;
+            line[0] = L'\0';
+            break;
+        }
+        if (code == VK_LEFT) {
+            if (cursor > 0) cursor--;
+        } else if (code == VK_RIGHT) {
+            if (cursor < len) cursor++;
+        } else if (code == VK_HOME) {
+            cursor = 0;
+        } else if (code == VK_END) {
+            cursor = len;
+        } else if (code == VK_BACK) {
+            if (cursor > 0) {
+                memmove(line + cursor - 1, line + cursor,
+                        (len - cursor + 1) * sizeof(WCHAR));
+                cursor--;
+                len--;
+            }
+        } else if (code == VK_DELETE) {
+            if (cursor < len) {
+                memmove(line + cursor, line + cursor + 1,
+                        (len - cursor) * sizeof(WCHAR));
+                len--;
+            }
+        } else if (code == VK_UP && session->history_count > 0) {
+            if (session->history_index > 0) session->history_index--;
+            len = history_to_wide(session->history[session->history_index],
+                                  line, size);
+            cursor = len;
+        } else if (code == VK_DOWN && session->history_count > 0) {
+            if (session->history_index < session->history_count) {
+                session->history_index++;
+            }
+            if (session->history_index < session->history_count) {
+                len = history_to_wide(
+                    session->history[session->history_index], line, size);
+            } else {
+                len = 0;
+                line[0] = L'\0';
+            }
+            cursor = len;
+        } else if (ch >= L' ' && len + 1 < size) {
+            memmove(line + cursor + 1, line + cursor,
+                    (len - cursor + 1) * sizeof(WCHAR));
+            line[cursor++] = ch;
+            len++;
+        } else {
+            continue;
+        }
+
+        redraw_windows_line(output, start, width, line, len, cursor,
+                            &displayed_len);
+    }
+
+    if (result) {
+        wide_line_to_utf8(line, len, buf, size);
+    } else {
+        buf[0] = '\0';
+    }
+    free(line);
+    SetConsoleMode(input, old_mode);
+    return result;
+}
 #endif
 
 static int repl_read_line(ReplSession* session, const char* prompt,
@@ -466,7 +659,7 @@ static int repl_read_line(ReplSession* session, const char* prompt,
         return read_line_tty(session, prompt, buf, size);
     }
 #else
-    (void)session;
+    return read_line_windows(session, prompt, buf, size);
 #endif
     return read_line_simple(prompt, buf, size);
 }
