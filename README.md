@@ -82,8 +82,9 @@ pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3 mingw-w64-x86_64-li
 make clean && make && make test
 ```
 
-The REPL on Windows reads plain lines; history and arrow-key editing need a
-POSIX terminal.
+The Windows REPL uses the console API for command history and in-line editing.
+Arrow keys, Home, End, Backspace and Delete work in Windows Terminal and
+`cmd.exe`. Piped input still uses plain line reading.
 
 ### Standalone build (no SQLite)
 
