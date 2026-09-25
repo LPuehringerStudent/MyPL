@@ -18,9 +18,8 @@
 
   <!-- Wordmark: "My" in white, "PL" in terminal green, block cursor -->
   <text x="48" y="140" class="mono" font-size="76" font-weight="700" letter-spacing="2">
-    <tspan fill="#f0f6fc">My</tspan><tspan fill="#3fb950">PL</tspan>
+    <tspan fill="#f0f6fc">My</tspan><tspan fill="#3fb950">PL</tspan><tspan fill="#3fb950" opacity="0.9">&#9608;</tspan>
   </text>
-  <rect x="253" y="90" width="15" height="56" fill="#3fb950" opacity="0.9"/>
 
   <!-- Tagline -->
   <text x="48" y="178" class="sans" font-size="21" fill="#8b949e">A lightweight, open-source alternative to PL/SQL.</text>
