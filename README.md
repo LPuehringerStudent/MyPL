@@ -96,7 +96,7 @@ piped input falls back to plain line reading.
 
 ## Contributing
 
-Contributions and ideas are welcome — see
+Contributions and ideas are welcome! See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow (failing-test-first,
 clean rebuilds, sanitizer checks) and [`SECURITY.md`](SECURITY.md) for
 reporting vulnerabilities.
