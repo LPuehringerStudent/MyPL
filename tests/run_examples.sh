@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Smoke-test every examples/*.mypl: each must exit 0.
+# Smoke-test every runnable example in examples/ (top level and phases/):
+# each must exit 0.
 #
 # Usage: tests/run_examples.sh [path/to/mypl] [example.mypl...]
 #
@@ -45,7 +46,9 @@ trap 'rm -rf "$work"' EXIT
 if [ $# -gt 0 ]; then
     examples=("$@")
 else
-    examples=("$ROOT"/examples/*.mypl)
+    # Top-level examples/ and the phases/ walkthroughs. Subdirectories that
+    # hold imported modules (examples/modules/) are deliberately not globbed.
+    examples=("$ROOT"/examples/*.mypl "$ROOT"/examples/phases/*.mypl)
 fi
 
 passed=0
@@ -72,6 +75,10 @@ has_directive() { # file key
 
 for example in "${examples[@]}"; do
     name=$(basename "$example" .mypl)
+    # Path of the example inside the copied examples/ tree, e.g.
+    # examples/phases/phase7.mypl — setup files resolve next to it.
+    rel=${example#"$ROOT"/}
+    rel_dir=$(dirname "$rel")
 
     if has_directive "$example" skip; then
         echo "SKIP  $name ($(directive "$example" skip | head -n 1))"
@@ -103,7 +110,7 @@ for example in "${examples[@]}"; do
 
         ok=1
         for setup in $(directive "$example" setup); do
-            if ! (cd "$dir" && $timeout_cmd "$MYPL" "examples/$setup" </dev/null >"$dir/setup.out" 2>&1); then
+            if ! (cd "$dir" && $timeout_cmd "$MYPL" "$rel_dir/$setup" </dev/null >"$dir/setup.out" 2>&1); then
                 ok=0
                 cp "$dir/setup.out" "$dir/out"
                 break
@@ -111,7 +118,7 @@ for example in "${examples[@]}"; do
         done
         if [ $ok -eq 1 ]; then
             # shellcheck disable=SC2086 # args is a word list from the directive
-            (cd "$dir" && $timeout_cmd "$MYPL" $args "examples/$name.mypl" </dev/null >"$dir/out" 2>&1) || ok=0
+            (cd "$dir" && $timeout_cmd "$MYPL" $args "$rel" </dev/null >"$dir/out" 2>&1) || ok=0
         fi
 
         if [ $ok -eq 1 ]; then

@@ -119,7 +119,8 @@ endif
 	$(MAKE) --no-print-directory fuzz-replay
 	$(MAKE) --no-print-directory examples-test
 
-# Run every examples/*.mypl and require exit 0; see tests/run_examples.sh for
+# Run every runnable example (examples/*.mypl and examples/phases/*.mypl) and
+# require exit 0; see tests/run_examples.sh for
 # the `// smoke:` directives an example can use (arguments, setup, skips).
 examples-test: $(TARGET)
 	tests/run_examples.sh $(TARGET)

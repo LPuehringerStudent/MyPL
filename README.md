@@ -1,11 +1,19 @@
-# MyPL
+<p align="center">
+  <img src="assets/hero.svg" alt="MyPL — a lightweight, open-source alternative to PL/SQL" width="860">
+</p>
 
-A lightweight, open-source alternative to PL/SQL with C-like syntax. MyPL
-compiles to bytecode for a small stack VM and can run against either its
-built-in custom SQL engine or SQLite, so you get stored-procedure-style
-scripting without the weight of an Oracle installation. SQLite is entirely
-optional — build with `USE_SQLITE=0` for a standalone custom-engine-only
-binary.
+<p align="center">
+  <a href="https://github.com/LPuehringerStudent/MyPL/actions/workflows/main.yml"><img src="https://github.com/LPuehringerStudent/MyPL/actions/workflows/main.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/LPuehringerStudent/MyPL/actions/workflows/windows.yml"><img src="https://github.com/LPuehringerStudent/MyPL/actions/workflows/windows.yml/badge.svg" alt="Windows CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-blue.svg" alt="Platforms: Linux, macOS, Windows">
+</p>
+
+MyPL is a small scripting language with C-like syntax and SQL in its veins.
+It compiles to bytecode for a custom stack VM and runs against either its
+built-in SQL engine or SQLite, so you get stored-procedure-style scripting
+without the weight of an Oracle installation. SQLite is entirely optional —
+build with `USE_SQLITE=0` for a standalone custom-engine-only binary.
 
 ```mypl
 proc add_todo(title string) -> int {
@@ -27,9 +35,9 @@ proc list_todos() -> int {
   no PL/SQL boilerplate.
 - **Embedded SQL**: Write DDL, DML, and queries inline with `?var` parameter
   binding.
-- **Dual SQL backends**: Run against `:memory:` or a file with SQLite, or use
-  the built-in custom engine with no SQLite dependency at all.
-- **Small and hackable**: A single C99 codebase. 
+- **Dual SQL backends**: SQLite backend via `--db <path>` or `.connect <path>`,
+  or a Custom SQL engine built into the binary — no SQLite needed.
+- **Small and hackable**: A single C99 codebase.
 - **Scriptable**: Run `.mypl` files from the command line or explore data
   interactively in the REPL.
 
@@ -441,10 +449,11 @@ A minimal CRUD example.
 ./bin/mypl examples/todo.mypl --db todos.db
 ```
 
-### Phase feature walkthroughs (`examples/phase1.mypl` … `examples/phase7.mypl`)
+### Phase feature walkthroughs (`examples/phases/`)
 
-Each phase file demonstrates a completed milestone (exceptions, cursors,
-packages, collections, type attributes, dates, subtypes, etc.).
+Thirty-five runnable demos, one per shipped feature (exceptions, cursors,
+packages, collections, triggers, indexes, views, sequences, FFI, conditional
+compilation, and more), numbered by the milestone that added them.
 
 ### Data migration (`examples/migration.mypl`)
 
@@ -503,49 +512,23 @@ Useful commands:
 > .exit
 ```
 
-## Features
+## Also in the box
 
-- C-like syntax with procedures and functions.
-- `in`, `out`, and `in out` parameter modes.
-- Scalar types: `int`, `float`, `string`, `bool`, `date`, `timestamp`.
-- Typed collections: `array<T>`, `map<string, T>`, plus methods like `extend`,
-  `trim`, `sort`, `reverse`, `first`, `last`, etc.
-- `struct` records and table-driven `%ROWTYPE` records.
-- Control flow: `if`/`else`, `while`, `do ... while`, numeric `for`,
-  `for ... in`, `case`, `break`, `continue`, `return`.
-- Anonymous `declare ... begin ... end` blocks.
-- Embedded SQL with `?var` parameter binding.
-- Three-valued NULL semantics: `IS [NOT] NULL`, `coalesce`, `nvl`.
-- `SELECT ... INTO` for scalar, multi-value, and `array<row>` assignment.
-- `BULK COLLECT INTO` and `FORALL` for set-based operations.
-- Explicit cursor variables with `open`, `fetch`, `close`, and attributes
-  `%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`.
-- DDL in the custom engine: `create`/`drop`/`alter table`, `create`/`drop
-  index`, `create`/`drop view`, plus column constraints and `alter table add
-  or drop column`.
-- Statement-level and row-level triggers (`for each row` with `:new`/`:old`)
-  that persist in the database and fire on dynamic SQL; `drop trigger`.
-- Persistent sequences (`create_sequence`, `nextval`, `currval`,
-  `drop_sequence`) stored in the catalog.
-- Exception handling with named predefined/user-defined exceptions,
-  `raise`, `raise_application_error`, `sqlcode`, and `sqlerrm`.
-- Packages with spec/body, state, and sidecar/catalog persistence — a user
-  package of the same name overrides a built-in one.
-- The `dbms_output`, `dbms_sql` (full cursor API), and `utl_file` packages.
-- `external_call` FFI marshalling for int, float, and string signatures, and
-  `external_call_sig` for up to four arguments.
-- User-defined subtypes (`subtype name is base;`).
-- `%TYPE` and `%ROWTYPE` type attributes.
-- Import system for splitting code across files.
-- Conditional compilation with `$define`, `$undefine`, `$if`, `$elsif`,
-  `$else`, `$end`, and command-line `-DNAME` flags.
-- SQLite backend via `--db <path>` or `.connect <path>`.
-- Custom SQL engine fallback when no `--db` is supplied.
-- Standard library: `length`, `append`, `concat`, `split`, `join`, `replace`,
-  `trim`, `to_upper`, `to_lower`, `parse_int`, `split_lines`, `range`,
-  `assert`, `format`, `sort`, `reverse`, `clamp`, `to_date`, `to_char`,
-  `current_date`, `current_timestamp`, file I/O, and more.
+The tour above covers the highlights; the rest of the language is a short
+list:
 
+- `struct` records and object types with methods
+  (`examples/phases/phase10_object_types.mypl`).
+- `case` statements, `do ... while`, and numeric `for` loops.
+- Anonymous `declare ... begin ... end;` blocks.
+- `BULK COLLECT INTO` and `FORALL` for set-based fetching and DML.
+- Table functions returning `array<row>`, iterable from SQL.
+- Named predefined and user-defined exceptions, `raise`, `sqlcode`, `sqlerrm`.
+- A standard library: `length`, `concat`, `split`, `join`, `replace`, `trim`,
+  case conversions, `parse_int`, `range`, `sort`, `reverse`, `clamp`,
+  `format`, `assert`, date/time and regex natives, and file I/O.
+
+## Contributing
 
 Contributions and ideas are welcome — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow (failing-test-first,
