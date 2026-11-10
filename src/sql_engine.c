@@ -2048,7 +2048,7 @@ static int sql_parse_select(const char* query, SelectStmt* stmt) {
                 if (bound.type == VAL_STRING) free(bound.as.as_string);
                 return 0;
             }
-            stmt->limit_count = bound.as.as_int;
+            stmt->limit_count = value_int_clamp(bound.as.as_int);
         } else if (tok.type == TOK_NUMBER) {
             char buf[64];
             sql_token_text(&tok, buf, sizeof(buf));
@@ -2435,7 +2435,7 @@ static Cell compute_aggregate(AggregateFunc agg, Row** rows, int row_count,
             Cell* value = source_row_find_field(rows[i], arg);
             if (value == NULL || value->type == VAL_NULL) continue;
             if (value->type == VAL_INT) {
-                sum += value->as.as_int;
+                sum += (double)value->as.as_int;
                 numeric_count++;
             } else if (value->type == VAL_FLOAT) {
                 sum += value->as.as_float;
@@ -5359,7 +5359,7 @@ int sql_cell_to_value(const Cell* cell, Value* out) {
     switch (cell->type) {
         case VAL_INT:    *out = value_int(cell->as.as_int);     return 1;
         case VAL_FLOAT:  *out = value_float(cell->as.as_float); return 1;
-        case VAL_BOOL:   *out = value_bool(cell->as.as_int);    return 1;
+        case VAL_BOOL:   *out = value_bool(cell->as.as_int != 0); return 1;
         case VAL_STRING:
             *out = value_string(strdup(cell->as.as_string != NULL
                                        ? cell->as.as_string : ""));
