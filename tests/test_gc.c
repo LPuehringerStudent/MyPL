@@ -235,6 +235,47 @@ TEST(gc_map_read_gives_the_reader_its_own_reference) {
         free_chunk(&chunk);
     }
 }
+
+/* The other ways a map hands out one of its values: map_get and the key
+   natives (first, last, next, prior) each give the caller a reference of
+   its own, on top of the map's. */
+TEST(gc_map_accessors_give_the_caller_its_own_reference) {
+    VM* vm = vm_init();
+    MapObj* map = map_new();
+    Value a = value_string(strdup("a"));
+    Value b = value_string(strdup("b"));
+    Value text = value_string(strdup("payload"));
+    ASSERT_INT_EQ(1, map_set(map, a, text));
+    ASSERT_INT_EQ(1, map_set(map, b, value_int(2)));
+    value_release(a);
+    value_release(b);
+    value_release(text);
+    Value m = value_map(map);
+
+    Value got;
+    Value key_a = value_string(strdup("a"));
+    ASSERT_INT_EQ(1, map_get(map, key_a, &got));
+    ASSERT_STRING_EQ("payload", got.as.as_string);
+    ASSERT_INT_EQ(2, value_ref_count(got)); /* the map's and ours */
+    value_release(got);
+    ASSERT_INT_EQ(1, value_ref_count(got));
+
+    static const char* const natives[] = {"first", "last", "next", "prior"};
+    static const char* const expected[] = {"a", "b", "b", "a"};
+    for (int i = 0; i < 4; i++) {
+        Value argv[2] = {m, value_string(strdup(i == 2 ? "a" : "b"))};
+        Value key;
+        ASSERT_INT_EQ(1, native_call(vm, native_find(natives[i]), i < 2 ? 1 : 2, argv, &key));
+        ASSERT_STRING_EQ(expected[i], key.as.as_string);
+        ASSERT_INT_EQ(2, value_ref_count(key)); /* the map's key and ours */
+        value_release(key);
+        value_release(argv[1]);
+    }
+    ASSERT_INT_EQ(2, map_count(map));
+    value_release(key_a);
+    value_release(m);
+    vm_free(vm);
+}
 int main(void) {
     RUN_TEST(gc_string_starts_with_ref_count_one);
     RUN_TEST(gc_array_starts_with_ref_count_one);
@@ -247,5 +288,6 @@ int main(void) {
     RUN_TEST(gc_copying_array_natives_take_one_reference_per_element);
     RUN_TEST(gc_dbms_output_buffer_takes_one_reference_per_line);
     RUN_TEST(gc_map_read_gives_the_reader_its_own_reference);
+    RUN_TEST(gc_map_accessors_give_the_caller_its_own_reference);
     TEST_SUMMARY();
 }
