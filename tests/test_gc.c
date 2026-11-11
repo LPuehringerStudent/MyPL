@@ -192,6 +192,49 @@ TEST(gc_dbms_output_buffer_takes_one_reference_per_line) {
     vm_free(vm);
 }
 
+
+/* Reading m[k] used to drop a reference (#118): OP_INDEX_GET released the
+   reference map_get had taken for it after pushing the value, so the stack
+   held a string the map counted as its own only. The first release (a local
+   going away, the map being freed) then freed it under the other holder,
+   which crashed on exit. The map here is a package global, so it outlives
+   main and the returned string must carry one reference for each holder. */
+TEST(gc_map_read_gives_the_reader_its_own_reference) {
+    static const char* const value_types[] = {"int", "string"};
+    static const char* const keys[] = {"1", "\"k\""};
+    for (int i = 0; i < 2; i++) {
+        char source[1024];
+        snprintf(source, sizeof(source),
+            "package store is\n"
+            "    proc put(v string) -> int;\n"
+            "    func get() -> string;\n"
+            "end store;\n"
+            "package body store is\n"
+            "    map<%s, string> names;\n"
+            "    proc put(v string) -> int { names[%s] = v; return 0; }\n"
+            "    func get() -> string { return names[%s]; }\n"
+            "end store;\n"
+            "proc main() -> string {\n"
+            "    store.put(concat(\"o\", \"ne\"));\n"
+            "    return store.get();\n"
+            "}\n",
+            value_types[i], keys[i], keys[i]);
+        Chunk chunk;
+        init_chunk(&chunk);
+        char error[256];
+        ASSERT_INT_EQ(1, compile(source, &chunk, error, sizeof(error)));
+        VM* vm = vm_init();
+        ASSERT_INT_EQ(INTERPRET_OK, vm_interpret(vm, &chunk));
+        Value result = vm_pop(vm);
+        ASSERT_INT_EQ(VAL_STRING, result.type);
+        ASSERT_STRING_EQ("one", result.as.as_string);
+        /* The map in the package global, and the value main returned. */
+        ASSERT_INT_EQ(2, value_ref_count(result));
+        value_release(result);
+        vm_free(vm);
+        free_chunk(&chunk);
+    }
+}
 int main(void) {
     RUN_TEST(gc_string_starts_with_ref_count_one);
     RUN_TEST(gc_array_starts_with_ref_count_one);
@@ -203,5 +246,6 @@ int main(void) {
     RUN_TEST(gc_split_natives_give_each_element_one_owner);
     RUN_TEST(gc_copying_array_natives_take_one_reference_per_element);
     RUN_TEST(gc_dbms_output_buffer_takes_one_reference_per_line);
+    RUN_TEST(gc_map_read_gives_the_reader_its_own_reference);
     TEST_SUMMARY();
 }
